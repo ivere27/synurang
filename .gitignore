@@ -1,7 +1,7 @@
 # Generated files
 /bin/
-/lib/src/generated/
-/pkg/api/*.pb.go
+#/lib/src/generated/
+#/pkg/api/*.pb.go
 
 # Shared libraries
 *.so
