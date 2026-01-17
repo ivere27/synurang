@@ -1,0 +1,11 @@
+[package]
+name = "synurang"
+version = "0.1.0"
+edition = "2021"
+description = "Synurang Rust runtime for FFI-based gRPC communication"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

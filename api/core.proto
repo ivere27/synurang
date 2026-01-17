@@ -1,0 +1,100 @@
+syntax = "proto3";
+package core.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+
+option go_package = "synurang/pkg/api";
+
+// =============================================================================
+// HealthService - Basic health check
+// =============================================================================
+service HealthService {
+  rpc Ping (google.protobuf.Empty) returns (PingResponse);
+}
+
+// =============================================================================
+// CacheService
+// =============================================================================
+service CacheService {
+  rpc Get(GetCacheRequest) returns (GetCacheResponse);
+  // Implementation MUST be synchronous in FFI mode to support zero-copy.
+  // The memory backing the 'value' field is only valid for the duration of the call.
+  rpc Put(PutCacheRequest) returns (google.protobuf.Empty);
+  rpc Delete(DeleteCacheRequest) returns (google.protobuf.Empty);
+  rpc Clear(ClearCacheRequest) returns (google.protobuf.Empty);
+  rpc Contains(GetCacheRequest) returns (google.protobuf.BoolValue);
+  rpc Keys(GetCacheRequest) returns (GetCacheKeysResponse);
+  rpc SetMaxEntries(SetMaxEntriesRequest) returns (google.protobuf.Empty);
+  rpc SetMaxBytes(SetMaxBytesRequest) returns (google.protobuf.Empty);
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc Compact(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+// =============================================================================
+// Messages
+// =============================================================================
+
+message PingResponse {
+  google.protobuf.Timestamp timestamp = 1;
+  string version = 2;
+}
+
+message SetMaxEntriesRequest {
+  string store_name = 1;
+  int64 max_entries = 2;
+}
+
+message SetMaxBytesRequest {
+  string store_name = 1;
+  int64 max_bytes = 2;
+}
+
+message GetStatsRequest {
+  string store_name = 1;
+}
+
+message GetStatsResponse {
+  int64 count = 1;
+  int64 size_bytes = 2;
+}
+
+message GetCacheRequest {
+  string store_name = 1;
+  string key = 2;
+}
+
+message GetCacheResponse {
+  bytes value = 1;
+}
+
+message GetCacheKeysResponse {
+  repeated string keys = 1;
+}
+
+message PutCacheRequest {
+  string store_name = 1;
+  string key = 2;
+  bytes value = 3;
+  int64 ttl_seconds = 4; // 0 for infinite
+  int64 cost = 5; // explicit size/cost for eviction
+}
+
+message DeleteCacheRequest {
+  string store_name = 1;
+  string key = 2;
+}
+
+message ClearCacheRequest {
+  string store_name = 1;
+}
+
+// =============================================================================
+// Error handling
+// =============================================================================
+message Error {
+  int32 code = 1;
+  string message = 2;
+  int32 grpc_code = 3;
+}

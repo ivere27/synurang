@@ -1,0 +1,15 @@
+include: package:flutter_lints/flutter.yaml
+
+
+analyzer:
+  exclude:
+    - lib/src/generated/**
+    - lib/synurang_bindings_generated.dart
+    - "**/*.pb.dart"
+    - "**/*.pbenum.dart"
+    - "**/*.pbgrpc.dart"
+    - "**/*.pbjson.dart"
+
+linter:
+  rules:
+    # Add specific rules here if needed

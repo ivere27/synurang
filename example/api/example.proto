@@ -1,0 +1,116 @@
+syntax = "proto3";
+package example.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "core.proto"; // Import core for shared types if needed, or just standalone
+
+option go_package = "synurang/example/pkg/api";
+
+// =============================================================================
+// GoGreeterService - Go-side server, Dart client calls this
+// =============================================================================
+service GoGreeterService {
+  // Simple RPC - single request, single response
+  rpc Bar (HelloRequest) returns (HelloResponse);
+  
+  // Server-side streaming RPC - single request, stream of responses
+  rpc BarServerStream (HelloRequest) returns (stream HelloResponse);
+  
+  // Client-side streaming RPC - stream of requests, single response
+  rpc BarClientStream (stream HelloRequest) returns (HelloResponse);
+  
+  // Bidirectional streaming RPC - stream of requests, stream of responses
+  rpc BarBidiStream (stream HelloRequest) returns (stream HelloResponse);
+
+  // File Streaming RPCs
+  rpc UploadFile(stream FileChunk) returns (FileStatus);
+  rpc DownloadFile(DownloadFileRequest) returns (stream FileChunk);
+  rpc BidiFile(stream FileChunk) returns (stream FileChunk);
+
+  // Trigger - Generic entry point to trigger Go -> Dart calls (Demo specific)
+  rpc Trigger (TriggerRequest) returns (HelloResponse);
+
+  rpc GetGoroutines(GoroutinesRequest) returns (GoroutinesResponse);
+}
+
+// =============================================================================
+// DartGreeterService - Dart-side server, Go client calls this
+// =============================================================================
+service DartGreeterService {
+  // Simple RPC - single request, single response
+  rpc Foo (HelloRequest) returns (HelloResponse);
+  
+  // Server-side streaming RPC - single request, stream of responses
+  rpc FooServerStream (HelloRequest) returns (stream HelloResponse);
+  
+  // Client-side streaming RPC - stream of requests, single response
+  rpc FooClientStream (stream HelloRequest) returns (HelloResponse);
+  
+  // Bidirectional streaming RPC - stream of requests, stream of responses
+  rpc FooBidiStream (stream HelloRequest) returns (stream HelloResponse);
+
+  // File Streaming RPCs
+  rpc DartUploadFile(stream FileChunk) returns (FileStatus);
+  rpc DartDownloadFile(DownloadFileRequest) returns (stream FileChunk);
+  rpc DartBidiFile(stream FileChunk) returns (stream FileChunk);
+}
+
+// =============================================================================
+// Messages
+// =============================================================================
+message GoroutinesRequest {
+  bool as_string = 1; // If true, return full stack trace in message field
+}
+
+message GoroutinesResponse {
+  int32 count = 1;
+  string message = 2; // Optional: contains stack trace if requested
+}
+
+message HelloRequest {
+  string name = 1;
+  string language = 2;  // Optional: "en", "ko", "ja", etc.
+}
+
+message HelloResponse {
+  string message = 1;
+  string from = 2;  // "go" or "dart" - identifies which server responded
+  google.protobuf.Timestamp timestamp = 3;
+}
+
+message TriggerRequest {
+  enum Action {
+    UNARY = 0;
+    SERVER_STREAM = 1;
+    CLIENT_STREAM = 2;
+    BIDI_STREAM = 3;
+    UPLOAD_FILE = 4;
+    DOWNLOAD_FILE = 5;
+    BIDI_FILE = 6;
+  }
+  Action action = 1;
+  HelloRequest payload = 2;
+  // For file tests, we might want to pass file size/seed via payload or separate field
+  // For now, let's just reuse payload.Name as seed/size param or add dedicated fields if needed.
+  int64 file_size = 3;
+}
+
+
+message FileChunk {
+  bytes content = 1;
+}
+
+message FileStatus {
+  int64 size_received = 1;
+}
+
+message FileRequest {
+  int64 size = 1;
+}
+
+message DownloadFileRequest {
+  int64 size = 1;
+  // Seed removed as we want true random
+}
+

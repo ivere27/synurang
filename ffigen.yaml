@@ -1,0 +1,50 @@
+name: SynurangBindings
+description: FFI bindings for Synurang
+output: lib/synurang_bindings_generated.dart
+ignore-source-errors: true
+exclude-all-by-default: true
+headers:
+  entry-points:
+    - src/libsynurang.h
+  include-directives:
+    - 'src/libsynurang.h'
+compiler-opts:
+  - '-I/usr/include'
+functions:
+  include:
+    - 'StopGrpcServer'
+    - 'StartGrpcServer'
+    - 'InvokeBackend'
+    - 'InvokeBackendWithMeta'
+    - 'FreeFfiData'
+    - 'SendViewEvent'
+    - 'SendFfiResponse'
+    - 'RegisterDartCallback'
+    - 'CacheGet'
+    - 'CachePut'
+    - 'CacheContains'
+    - 'CacheDelete'
+    - 'RegisterStreamCallback'
+    - 'InvokeBackendServerStream'
+    - 'InvokeBackendClientStream'
+    - 'InvokeBackendBidiStream'
+    - 'SendStreamData'
+    - 'CloseStream'
+    - 'CloseStreamInput'
+    - 'StreamReady'
+structs:
+  include:
+    - 'CoreArgument'
+    - 'FfiData'
+typedefs:
+  include:
+    - 'InvokeDartCallback'
+    - 'StreamCallback'
+    - 'GoInt64'
+    - 'GoInt'
+preamble: |
+  // AUTO GENERATED FILE, DO NOT EDIT
+  // ignore_for_file: type=lint
+comments:
+  style: any
+  length: full

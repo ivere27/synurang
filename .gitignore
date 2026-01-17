@@ -1,0 +1,28 @@
+# Generated files
+/bin/
+/lib/src/generated/
+/pkg/api/*.pb.go
+
+# Shared libraries
+*.so
+*.dll
+*.dylib
+/src/*.h
+/src/*.so
+/src/libsynurang-android-arm.h
+/src/libsynurang-android-arm.so
+/src/libsynurang-android-arm64.h
+/src/libsynurang-android-arm64.so
+/src/libsynurang-android-x86_64.h
+/src/libsynurang-android-x86_64.so
+
+# IDE
+.idea/
+.vscode/
+
+# Flutter
+.dart_tool/
+.packages
+.pub/
+pubspec.lock
+example/android/app/src/main/jniLibs/
