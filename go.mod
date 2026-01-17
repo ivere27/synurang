@@ -1,4 +1,4 @@
-module synurang
+module github.com/ivere27/synurang
 
 go 1.22
 
