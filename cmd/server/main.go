@@ -57,8 +57,8 @@ import (
 	"time"
 	"unsafe"
 
-	pb "synurang/pkg/api"
-	"synurang/pkg/service"
+	pb "github.com/ivere27/synurang/pkg/api"
+	"github.com/ivere27/synurang/pkg/service"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"

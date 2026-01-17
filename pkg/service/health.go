@@ -4,7 +4,7 @@ import (
 	"context"
 
 	empty "github.com/golang/protobuf/ptypes/empty"
-	pb "synurang/pkg/api"
+	pb "github.com/ivere27/synurang/pkg/api"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

@@ -13,7 +13,7 @@ import (
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
-	_ "synurang/pkg/api"
+	_ "github.com/ivere27/synurang/pkg/api"
 	unsafe "unsafe"
 )
 

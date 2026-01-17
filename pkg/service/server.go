@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	pb "synurang/pkg/api"
+	pb "github.com/ivere27/synurang/pkg/api"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	pb "synurang/pkg/api"
+	pb "github.com/ivere27/synurang/pkg/api"
 )
 
 func TestCacheServiceBasicOperations(t *testing.T) {

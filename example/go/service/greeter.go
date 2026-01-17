@@ -11,7 +11,7 @@ import (
 	"time"
 
 	pb "synurang/example/pkg/api"
-	core_service "synurang/pkg/service"
+	core_service "github.com/ivere27/synurang/pkg/service"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/peer"

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	pb "synurang/pkg/api"
+	pb "github.com/ivere27/synurang/pkg/api"
 
 	_ "github.com/mattn/go-sqlite3"
 	"google.golang.org/protobuf/types/known/emptypb"

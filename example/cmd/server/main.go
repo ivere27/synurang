@@ -58,9 +58,9 @@ import (
 	"time"
 	"unsafe"
 
-	pb "synurang/pkg/api"
-	pkg_debug "synurang/pkg/debug"
-	"synurang/pkg/service"
+	pb "github.com/ivere27/synurang/pkg/api"
+	pkg_debug "github.com/ivere27/synurang/pkg/debug"
+	"github.com/ivere27/synurang/pkg/service"
 
 	example_service "synurang/example/go/service"
 	example_pb "synurang/example/pkg/api"

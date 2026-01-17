@@ -17,7 +17,7 @@ import (
 	"time"
 
 	example_pb "synurang/example/pkg/api"
-	core_pb "synurang/pkg/api"
+	core_pb "github.com/ivere27/synurang/pkg/api"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"

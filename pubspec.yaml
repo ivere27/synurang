@@ -1,6 +1,6 @@
 name: synurang
 description: "Flutter FFI + gRPC bridge for bidirectional Go/Dart communication"
-version: 0.1.3
+version: 0.1.4
 homepage: https://github.com/ivere27/synurang
 repository: https://github.com/ivere27/synurang
 
