@@ -1,3 +1,7 @@
+## 0.1.7
+
+*   Add support for Android, iOS, macOS, and Windows platforms in pubspec.yaml and project structure.
+
 ## 0.1.6
 
 *   Fix: `protoc-gen-synurang-ffi` now correctly maps `google/protobuf/` imports to `package:protobuf/well_known_types/`.

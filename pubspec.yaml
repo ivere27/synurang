@@ -1,6 +1,6 @@
 name: synurang
 description: "Flutter FFI + gRPC bridge for bidirectional Go/Dart communication"
-version: 0.1.6
+version: 0.1.7
 homepage: https://github.com/ivere27/synurang
 repository: https://github.com/ivere27/synurang
 
@@ -27,5 +27,13 @@ dev_dependencies:
 flutter:
   plugin:
     platforms:
+      android:
+        ffiPlugin: true
+      ios:
+        ffiPlugin: true
+      macos:
+        ffiPlugin: true
+      windows:
+        ffiPlugin: true
       linux:
         ffiPlugin: true

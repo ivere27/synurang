@@ -1,0 +1,36 @@
+group 'com.example.synurang'
+version '1.0-SNAPSHOT'
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.3.0'
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: 'com.android.library'
+
+android {
+    compileSdkVersion 33
+
+    defaultConfig {
+        minSdkVersion 21
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "../src/CMakeLists.txt"
+        }
+    }
+}

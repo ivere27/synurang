@@ -36,6 +36,14 @@ ELSEIF(CMAKE_SYSTEM_NAME MATCHES "Android")
   else()
     message(FATAL_ERROR "Unsupported Android ABI: ${ANDROID_ABI}")
   endif()
+ELSEIF(WIN32)
+  IF(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/synurang.dll")
+    add_library(synurang SHARED IMPORTED GLOBAL)
+    set_target_properties(synurang PROPERTIES
+      IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/synurang.dll"
+      IMPORTED_IMPLIB "${CMAKE_CURRENT_SOURCE_DIR}/synurang.lib"
+    )
+  ENDIF()
 ELSE()
   message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
 ENDIF()
