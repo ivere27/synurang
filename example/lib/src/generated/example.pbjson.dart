@@ -173,3 +173,33 @@ const DownloadFileRequest$json = {
 /// Descriptor for `DownloadFileRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List downloadFileRequestDescriptor = $convert
     .base64Decode('ChNEb3dubG9hZEZpbGVSZXF1ZXN0EhIKBHNpemUYASABKANSBHNpemU=');
+
+@$core.Deprecated('Use crossProtoTestMessageDescriptor instead')
+const CrossProtoTestMessage$json = {
+  '1': 'CrossProtoTestMessage',
+  '2': [
+    {
+      '1': 'error',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.core.v1.Error',
+      '10': 'error'
+    },
+    {
+      '1': 'ping_response',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.core.v1.PingResponse',
+      '10': 'pingResponse'
+    },
+    {'1': 'description', '3': 3, '4': 1, '5': 9, '10': 'description'},
+  ],
+};
+
+/// Descriptor for `CrossProtoTestMessage`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List crossProtoTestMessageDescriptor = $convert.base64Decode(
+    'ChVDcm9zc1Byb3RvVGVzdE1lc3NhZ2USJAoFZXJyb3IYASABKAsyDi5jb3JlLnYxLkVycm9yUg'
+    'VlcnJvchI6Cg1waW5nX3Jlc3BvbnNlGAIgASgLMhUuY29yZS52MS5QaW5nUmVzcG9uc2VSDHBp'
+    'bmdSZXNwb25zZRIgCgtkZXNjcmlwdGlvbhgDIAEoCVILZGVzY3JpcHRpb24=');

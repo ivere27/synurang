@@ -14,9 +14,10 @@ import 'dart:core' as $core;
 
 import 'package:fixnum/fixnum.dart' as $fixnum;
 import 'package:protobuf/protobuf.dart' as $pb;
-import 'package:synurang/src/generated/google/protobuf/timestamp.pb.dart'
+import 'package:protobuf/well_known_types/google/protobuf/timestamp.pb.dart'
     as $1;
 
+import 'core.pb.dart' as $2;
 import 'example.pbenum.dart';
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
@@ -590,6 +591,98 @@ class DownloadFileRequest extends $pb.GeneratedMessage {
   $core.bool hasSize() => $_has(0);
   @$pb.TagNumber(1)
   void clearSize() => $_clearField(1);
+}
+
+/// =============================================================================
+/// Cross-proto import test message
+/// These messages use types from core.proto to verify proto imports work
+/// =============================================================================
+class CrossProtoTestMessage extends $pb.GeneratedMessage {
+  factory CrossProtoTestMessage({
+    $2.Error? error,
+    $2.PingResponse? pingResponse,
+    $core.String? description,
+  }) {
+    final result = create();
+    if (error != null) result.error = error;
+    if (pingResponse != null) result.pingResponse = pingResponse;
+    if (description != null) result.description = description;
+    return result;
+  }
+
+  CrossProtoTestMessage._();
+
+  factory CrossProtoTestMessage.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CrossProtoTestMessage.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CrossProtoTestMessage',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'example.v1'),
+      createEmptyInstance: create)
+    ..aOM<$2.Error>(1, _omitFieldNames ? '' : 'error',
+        subBuilder: $2.Error.create)
+    ..aOM<$2.PingResponse>(2, _omitFieldNames ? '' : 'pingResponse',
+        subBuilder: $2.PingResponse.create)
+    ..aOS(3, _omitFieldNames ? '' : 'description')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CrossProtoTestMessage clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CrossProtoTestMessage copyWith(
+          void Function(CrossProtoTestMessage) updates) =>
+      super.copyWith((message) => updates(message as CrossProtoTestMessage))
+          as CrossProtoTestMessage;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CrossProtoTestMessage create() => CrossProtoTestMessage._();
+  @$core.override
+  CrossProtoTestMessage createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static CrossProtoTestMessage getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CrossProtoTestMessage>(create);
+  static CrossProtoTestMessage? _defaultInstance;
+
+  /// Reference to core.v1.Error from core.proto
+  @$pb.TagNumber(1)
+  $2.Error get error => $_getN(0);
+  @$pb.TagNumber(1)
+  set error($2.Error value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasError() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearError() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $2.Error ensureError() => $_ensure(0);
+
+  /// Reference to core.v1.PingResponse from core.proto
+  @$pb.TagNumber(2)
+  $2.PingResponse get pingResponse => $_getN(1);
+  @$pb.TagNumber(2)
+  set pingResponse($2.PingResponse value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPingResponse() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPingResponse() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $2.PingResponse ensurePingResponse() => $_ensure(1);
+
+  /// Local field
+  @$pb.TagNumber(3)
+  $core.String get description => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set description($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasDescription() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearDescription() => $_clearField(3);
 }
 
 const $core.bool _omitFieldNames =

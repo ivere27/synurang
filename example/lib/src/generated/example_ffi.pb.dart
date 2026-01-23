@@ -2,62 +2,61 @@
 
 import 'dart:async';
 import 'dart:typed_data';
-import 'package:synurang/synurang.dart';
+import 'package:synurang/synurang.dart' as synurang;
 import 'example.pb.dart';
-import 'google/protobuf/empty.pb.dart';
 
 class GoGreeterServiceFfi {
   static Future<HelloResponse> Bar(HelloRequest request) async {
     final bytes = request.writeToBuffer();
-    final resultBytes = await invokeBackendAsync('/example.v1.GoGreeterService/Bar', bytes);
+    final resultBytes = await synurang.invokeBackendAsync('/example.v1.GoGreeterService/Bar', bytes);
     return HelloResponse.fromBuffer(resultBytes);
   }
 
   static Stream<HelloResponse> BarServerStream(HelloRequest request) {
     final bytes = request.writeToBuffer();
-    return invokeBackendServerStream('/example.v1.GoGreeterService/BarServerStream', bytes)
+    return synurang.invokeBackendServerStream('/example.v1.GoGreeterService/BarServerStream', bytes)
         .map((data) => HelloResponse.fromBuffer(data));
   }
 
   static Future<HelloResponse> BarClientStream(Stream<HelloRequest> requests) async {
-    final resultBytes = await invokeBackendClientStream('/example.v1.GoGreeterService/BarClientStream',
+    final resultBytes = await synurang.invokeBackendClientStream('/example.v1.GoGreeterService/BarClientStream',
         requests.map((r) => r.writeToBuffer()));
     return HelloResponse.fromBuffer(resultBytes);
   }
 
   static Stream<HelloResponse> BarBidiStream(Stream<HelloRequest> requests) {
-    return invokeBackendBidiStream('/example.v1.GoGreeterService/BarBidiStream',
+    return synurang.invokeBackendBidiStream('/example.v1.GoGreeterService/BarBidiStream',
         requests.map((r) => r.writeToBuffer()))
         .map((data) => HelloResponse.fromBuffer(data));
   }
 
   static Future<FileStatus> UploadFile(Stream<FileChunk> requests) async {
-    final resultBytes = await invokeBackendClientStream('/example.v1.GoGreeterService/UploadFile',
+    final resultBytes = await synurang.invokeBackendClientStream('/example.v1.GoGreeterService/UploadFile',
         requests.map((r) => r.writeToBuffer()));
     return FileStatus.fromBuffer(resultBytes);
   }
 
   static Stream<FileChunk> DownloadFile(DownloadFileRequest request) {
     final bytes = request.writeToBuffer();
-    return invokeBackendServerStream('/example.v1.GoGreeterService/DownloadFile', bytes)
+    return synurang.invokeBackendServerStream('/example.v1.GoGreeterService/DownloadFile', bytes)
         .map((data) => FileChunk.fromBuffer(data));
   }
 
   static Stream<FileChunk> BidiFile(Stream<FileChunk> requests) {
-    return invokeBackendBidiStream('/example.v1.GoGreeterService/BidiFile',
+    return synurang.invokeBackendBidiStream('/example.v1.GoGreeterService/BidiFile',
         requests.map((r) => r.writeToBuffer()))
         .map((data) => FileChunk.fromBuffer(data));
   }
 
   static Future<HelloResponse> Trigger(TriggerRequest request) async {
     final bytes = request.writeToBuffer();
-    final resultBytes = await invokeBackendAsync('/example.v1.GoGreeterService/Trigger', bytes);
+    final resultBytes = await synurang.invokeBackendAsync('/example.v1.GoGreeterService/Trigger', bytes);
     return HelloResponse.fromBuffer(resultBytes);
   }
 
   static Future<GoroutinesResponse> GetGoroutines(GoroutinesRequest request) async {
     final bytes = request.writeToBuffer();
-    final resultBytes = await invokeBackendAsync('/example.v1.GoGreeterService/GetGoroutines', bytes);
+    final resultBytes = await synurang.invokeBackendAsync('/example.v1.GoGreeterService/GetGoroutines', bytes);
     return GoroutinesResponse.fromBuffer(resultBytes);
   }
 
@@ -66,42 +65,42 @@ class GoGreeterServiceFfi {
 class DartGreeterServiceFfi {
   static Future<HelloResponse> Foo(HelloRequest request) async {
     final bytes = request.writeToBuffer();
-    final resultBytes = await invokeBackendAsync('/example.v1.DartGreeterService/Foo', bytes);
+    final resultBytes = await synurang.invokeBackendAsync('/example.v1.DartGreeterService/Foo', bytes);
     return HelloResponse.fromBuffer(resultBytes);
   }
 
   static Stream<HelloResponse> FooServerStream(HelloRequest request) {
     final bytes = request.writeToBuffer();
-    return invokeBackendServerStream('/example.v1.DartGreeterService/FooServerStream', bytes)
+    return synurang.invokeBackendServerStream('/example.v1.DartGreeterService/FooServerStream', bytes)
         .map((data) => HelloResponse.fromBuffer(data));
   }
 
   static Future<HelloResponse> FooClientStream(Stream<HelloRequest> requests) async {
-    final resultBytes = await invokeBackendClientStream('/example.v1.DartGreeterService/FooClientStream',
+    final resultBytes = await synurang.invokeBackendClientStream('/example.v1.DartGreeterService/FooClientStream',
         requests.map((r) => r.writeToBuffer()));
     return HelloResponse.fromBuffer(resultBytes);
   }
 
   static Stream<HelloResponse> FooBidiStream(Stream<HelloRequest> requests) {
-    return invokeBackendBidiStream('/example.v1.DartGreeterService/FooBidiStream',
+    return synurang.invokeBackendBidiStream('/example.v1.DartGreeterService/FooBidiStream',
         requests.map((r) => r.writeToBuffer()))
         .map((data) => HelloResponse.fromBuffer(data));
   }
 
   static Future<FileStatus> DartUploadFile(Stream<FileChunk> requests) async {
-    final resultBytes = await invokeBackendClientStream('/example.v1.DartGreeterService/DartUploadFile',
+    final resultBytes = await synurang.invokeBackendClientStream('/example.v1.DartGreeterService/DartUploadFile',
         requests.map((r) => r.writeToBuffer()));
     return FileStatus.fromBuffer(resultBytes);
   }
 
   static Stream<FileChunk> DartDownloadFile(DownloadFileRequest request) {
     final bytes = request.writeToBuffer();
-    return invokeBackendServerStream('/example.v1.DartGreeterService/DartDownloadFile', bytes)
+    return synurang.invokeBackendServerStream('/example.v1.DartGreeterService/DartDownloadFile', bytes)
         .map((data) => FileChunk.fromBuffer(data));
   }
 
   static Stream<FileChunk> DartBidiFile(Stream<FileChunk> requests) {
-    return invokeBackendBidiStream('/example.v1.DartGreeterService/DartBidiFile',
+    return synurang.invokeBackendBidiStream('/example.v1.DartGreeterService/DartBidiFile',
         requests.map((r) => r.writeToBuffer()))
         .map((data) => FileChunk.fromBuffer(data));
   }

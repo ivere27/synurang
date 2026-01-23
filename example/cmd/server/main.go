@@ -62,8 +62,8 @@ import (
 	pkg_debug "github.com/ivere27/synurang/pkg/debug"
 	"github.com/ivere27/synurang/pkg/service"
 
-	example_service "synurang/example/go/service"
-	example_pb "synurang/example/pkg/api"
+	example_service "github.com/ivere27/synurang/example/go/service"
+	example_pb "github.com/ivere27/synurang/example/pkg/api"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"

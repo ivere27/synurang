@@ -49,22 +49,22 @@ import 'dart:developer' as developer;
 
 import 'package:ffi/ffi.dart';
 import 'package:grpc/grpc.dart';
-import 'package:synurang/src/generated/google/protobuf/any.pb.dart' as pb_any;
+import 'package:protobuf/well_known_types/google/protobuf/any.pb.dart' as pb_any;
 import 'package:synurang/src/generated/core.pb.dart' as pb;
 import 'synurang_bindings_generated.dart';
 
 // Re-export generated proto files
-export 'src/generated/core.pb.dart';
+export 'src/generated/core.pb.dart' hide PingResponse;
 export 'src/generated/core.pbgrpc.dart';
 export 'src/generated/core_ffi.pb.dart';
 
 // Re-export well-known types
-export 'src/generated/google/protobuf/any.pb.dart';
-export 'src/generated/google/protobuf/empty.pb.dart';
-export 'src/generated/google/protobuf/timestamp.pb.dart';
-export 'src/generated/google/protobuf/duration.pb.dart';
-export 'src/generated/google/protobuf/struct.pb.dart';
-export 'src/generated/google/protobuf/wrappers.pb.dart';
+export 'package:protobuf/well_known_types/google/protobuf/any.pb.dart';
+export 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
+export 'package:protobuf/well_known_types/google/protobuf/timestamp.pb.dart';
+export 'package:protobuf/well_known_types/google/protobuf/duration.pb.dart';
+export 'package:protobuf/well_known_types/google/protobuf/struct.pb.dart';
+export 'package:protobuf/well_known_types/google/protobuf/wrappers.pb.dart';
 
 // =============================================================================
 // FfiError - Structured error with gRPC status code

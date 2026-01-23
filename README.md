@@ -80,8 +80,7 @@ Synurang includes experimental support for **C++** backends.
 ### 🦀 Experimental Rust Support
 
 Synurang also includes experimental support for **Rust** backends.
-*   **Code Generation:** The `protoc-gen-synurang-ffi` plugin supports `--lang=rust` to generate Rust dispatchers and a `GeneratedService` trait.
-*   **Runtime:** A Rust runtime library (`synurang`) provides the FFI interface and service registration mechanism.
+*   **Code Generation:** The plugin `cmd/protoc-gen-synurang-ffi` generates the client-side glue code that calls the backend via FFI.
 *   **Note:** Rust support requires a manual build setup (Cargo) for dependencies.
 
 ---
@@ -228,90 +227,205 @@ Use the toggle buttons in the header (Go UDS, Go TCP, Flutter UDS, Flutter TCP) 
 
 ## 📦 Installation & Quick Start
 
+**Synurang is a bridge library.** You do not run it directly; instead, you integrate it into your own Go and Flutter project.
+
 ### Prerequisites
 
-```bash
-# Install Go (1.21+)
-# Install Flutter (3.10+)
-# Install protoc
+*   **Go** (1.22+)
+*   **Flutter** (3.19+)
+*   **Protobuf Compiler (`protoc`)**
+    *   Linux: `sudo apt install protobuf-compiler`
+    *   Mac: `brew install protobuf`
+*   **Protoc Plugins:**
+    ```bash
+    # Go plugins
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+    
+    # Synurang plugin (for FFI bindings)
+    go install github.com/ivere27/synurang/cmd/protoc-gen-synurang-ffi@latest
 
-# For Linux
-sudo apt install protobuf-compiler
+    # Dart plugin
+    dart pub global activate protoc_plugin
 
-# Install Go protoc plugins
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+    # Add Go bin to PATH (if not already added)
+    export PATH=$PATH:$(go env GOPATH)/bin
+    ```
 
-# Install Dart protoc plugin
-dart pub global activate protoc_plugin
-```
-
-### Setup in Project
+### Step 1: Project Setup
 
 Add `synurang` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  synurang:
-    path: ./synurang # or git url
+  synurang: ^0.1.6
 ```
 
-Ensure your Go module requires the backend package.
+Add `synurang` to your Go module:
 
----
+```bash
+go get github.com/ivere27/synurang
+```
 
-## 🛠 Development Workflow
+### Step 2: Define Protocol
 
-### 1. Define your Protocol (`api/service.proto`)
+Create a `.proto` file (e.g., `api/service.proto`) to define your API.
 
 ```protobuf
 syntax = "proto3";
 package api;
 
-service UserService {
-  rpc GetProfile(UserId) returns (UserProfile);
-  rpc WatchNotifications(UserId) returns (stream Notification);
+service Greeter {
+  rpc SayHello (HelloRequest) returns (HelloReply) {}
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloReply {
+  string message = 1;
 }
 ```
 
-### 2. Generate Code
+### Step 3: Generate Code
 
-Use the provided makefile target or `protoc` plugin to generate the glue code:
+Generate the Go and Dart code, including the special FFI bindings.
+
+**Tip:** If you haven't installed the `protoc-gen-synurang-ffi` plugin yet, you can build it from source if you have the repository checked out:
+```bash
+make build_plugin
+```
+Or ensure it is in your PATH.
 
 ```bash
-# Generates *_ffi.pb.dart and *_ffi.pb.go
-make proto
+# Create output directories
+mkdir -p pkg/api lib/src/generated
+
+# 1. Generate Go gRPC code
+protoc -Iapi --go_out=./pkg/api --go_opt=paths=source_relative \
+    --go-grpc_out=./pkg/api --go-grpc_opt=paths=source_relative \
+    service.proto
+
+# 2. Generate Dart gRPC code
+protoc -Iapi --dart_out=grpc:lib/src/generated service.proto
+
+# 3. Generate Synurang FFI Glue Code (Go)
+protoc -Iapi --plugin=protoc-gen-synurang-ffi=$(which protoc-gen-synurang-ffi) \
+    --synurang-ffi_out=./pkg/api --synurang-ffi_opt=lang=go \
+    service.proto
+
+# 4. Generate Synurang FFI Glue Code (Dart)
+protoc -Iapi --plugin=protoc-gen-synurang-ffi=$(which protoc-gen-synurang-ffi) \
+    --synurang-ffi_out=./lib/src/generated \
+    --synurang-ffi_opt=lang=dart,dart_package=my_app \
+    service.proto
 ```
 
-### 3. Implement Logic (Go)
+> [!NOTE]
+> **Package Imports:** The `dart_package` option is recommended. It ensures generated files use `package:my_app/...` imports instead of relative paths (e.g., `../`). If omitted, relative imports are used by default.
 
-Implement the generated interface in your Go backend.
+> [!NOTE]
+> **Well-Known Types:** The `protoc-gen-synurang-ffi` plugin automatically maps `google/protobuf/*` imports to `package:protobuf/well_known_types/*`. This avoids duplicating well-known types locally and ensures compatibility with the `protobuf` package. If you use other libraries that generate their own `google/protobuf/*.pb.dart` files, you may encounter type conflicts.
+
+### Step 4: Implement Go Service
+
+Implement the server interface in Go.
 
 ```go
-type UserServer struct {}
+// pkg/service/greeter.go
+package service
 
-func (s *UserServer) GetProfile(ctx context.Context, req *api.UserId) (*api.UserProfile, error) {
-    // Database logic here...
-    return &api.UserProfile{Name: "Alice"}, nil
+import (
+    "context"
+    "fmt"
+    pb "my-app/pkg/api"
+)
+
+type GreeterServer struct {
+    pb.UnimplementedGreeterServer
+}
+
+func (s *GreeterServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloReply, error) {
+    return &pb.HelloReply{Message: fmt.Sprintf("Hello, %s!", req.Name)}, nil
 }
 ```
 
-### 4. Call from View (Dart)
+### Step 5: Create Go Entry Point
 
-Use the generated static methods to call your backend.
+Create a `main.go` file (e.g., `cmd/server/main.go`). This is the **most critical step**, as it defines the shared library entry point.
+
+**You must import `github.com/ivere27/synurang/src` to export the necessary C symbols.**
+
+```go
+package main
+
+import (
+	"C" // Required for CGO
+	"context"
+	
+	"github.com/ivere27/synurang/pkg/service"
+	// IMPORT THIS TO EXPORT FFI SYMBOLS
+	_ "github.com/ivere27/synurang/src" 
+	
+	pb "my-app/pkg/api"
+	myservice "my-app/pkg/service"
+	"google.golang.org/grpc"
+)
+
+// Init is called by Synurang when the library is loaded
+func init() {
+	service.RegisterGrpcServer(func(s *grpc.Server) {
+		pb.RegisterGreeterServer(s, &myservice.GreeterServer{})
+	})
+}
+
+func main() {
+    // Empty main is required for buildmode=c-shared
+}
+```
+
+### Step 6: Build Shared Library
+
+Compile your Go code into a C-shared library.
+
+**Linux:**
+```bash
+go build -buildmode=c-shared -o libmyapp.so cmd/server/main.go
+```
+
+**Android:**
+Requires the Android NDK and a configured environment (see the `synurang` makefile for reference).
+
+### Step 7: Flutter Integration
+
+1.  **Place the Library:**
+    *   **Linux:** Place `libmyapp.so` in a location accessible to the runner (or use `LD_LIBRARY_PATH` during dev).
+    *   **Android:** Place `.so` files in `android/app/src/main/jniLibs/<arch>/`.
+
+2.  **Initialize & Call:**
 
 ```dart
-// Unary Call
-final profile = await UserServiceFfi.GetProfile(UserId(id: 123));
+import 'package:synurang/synurang.dart';
+import 'src/generated/service_ffi.pb.dart'; // Generated FFI client
+import 'src/generated/service.pb.dart';     // Generated messages
 
-// Streaming Call
-final stream = UserServiceFfi.WatchNotifications(UserId(id: 123));
-stream.listen((notification) {
-  print("New notification: ${notification.message}");
-});
+void main() async {
+  // 1. Load your shared library
+  configureSynurang(libraryName: 'myapp', libraryPath: './libmyapp.so');
+  
+  // 2. Start the embedded server
+  await startGrpcServerAsync();
+
+  // 3. Make a call!
+  final response = await GreeterFfi.SayHello(HelloRequest(name: "World"));
+  print(response.message); // "Hello, World!"
+}
 ```
 
 ---
+
+## 🛠 Development Workflow
 
 ## 📚 API Reference
 

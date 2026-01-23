@@ -53,7 +53,7 @@ ffigen:
 build_plugin:
 	go build -o bin/protoc-gen-synurang-ffi ./cmd/protoc-gen-synurang-ffi
 
-proto: proto_google build_plugin
+proto: build_plugin
 	@echo "Generating proto code..."
 	mkdir -p pkg/api
 	protoc -Iapi -I/usr/include \
@@ -69,10 +69,8 @@ proto: proto_google build_plugin
 		core.proto
 	protoc -Iapi -I/usr/include \
 		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
-		--synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart,dart_runtime_import=package:synurang/synurang.dart \
+		--synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart \
 		core.proto
-	sed -i 's|package:protobuf/well_known_types/|package:synurang/src/generated/|g' lib/src/generated/*.dart
-	sed -i 's|package:protobuf/well_known_types/|package:synurang/src/generated/|g' lib/src/generated/google/protobuf/*.dart
 
 	@echo "Generating example proto code..."
 	mkdir -p example/pkg/api
@@ -81,6 +79,10 @@ proto: proto_google build_plugin
 		--go_out=./example/pkg/api --go_opt=paths=source_relative \
 		--go-grpc_out=./example/pkg/api --go-grpc_opt=paths=source_relative \
 		example.proto
+	# Generate core.proto for example Dart (needed for cross-proto imports)
+	protoc -Iapi -I/usr/include \
+		--dart_out=grpc:example/lib/src/generated \
+		core.proto
 	protoc -Iexample/api -Iapi -I/usr/include \
 		--dart_out=grpc:example/lib/src/generated \
 		example.proto
@@ -91,20 +93,10 @@ proto: proto_google build_plugin
 		example.proto
 	protoc -Iexample/api -Iapi -I/usr/include \
 		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
-		--synurang-ffi_out=./example/lib/src/generated --synurang-ffi_opt=lang=dart,dart_runtime_import=package:synurang/synurang.dart \
+		--synurang-ffi_out=./example/lib/src/generated --synurang-ffi_opt=lang=dart \
 		example.proto
-	sed -i 's|package:protobuf/well_known_types/|package:synurang/src/generated/|g' example/lib/src/generated/*.dart
 
 	@echo "Proto generation complete."
-
-proto_google:
-	mkdir -p lib/src/generated
-	protoc -I/usr/include --dart_out=grpc:lib/src/generated google/protobuf/any.proto
-	protoc -I/usr/include --dart_out=grpc:lib/src/generated google/protobuf/timestamp.proto
-	protoc -I/usr/include --dart_out=grpc:lib/src/generated google/protobuf/empty.proto
-	protoc -I/usr/include --dart_out=grpc:lib/src/generated google/protobuf/struct.proto
-	protoc -I/usr/include --dart_out=grpc:lib/src/generated google/protobuf/wrappers.proto
-	protoc -I/usr/include --dart_out=grpc:lib/src/generated google/protobuf/duration.proto
 
 # =============================================================================
 # Shared Library Builds
@@ -220,7 +212,9 @@ test_rust_ffi:
 # Go tests only (requires generated proto code)
 test_go: proto
 	@echo "Running Go tests..."
+	go test -v ./pkg/api/...
 	go test -v ./pkg/service/...
+	go test -v ./example/pkg/api/...
 	@echo "Go tests complete."
 
 # Dart tests only (requires shared library + FFI bindings + server binary for benchmarks)

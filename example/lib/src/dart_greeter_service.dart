@@ -9,7 +9,7 @@ import 'file_service.dart';
 
 import 'generated/example.pb.dart' as pb;
 import 'generated/example.pbgrpc.dart' as pbgrpc;
-import 'package:synurang/src/generated/google/protobuf/timestamp.pb.dart'
+import 'package:protobuf/well_known_types/google/protobuf/timestamp.pb.dart'
     as timestamp_pb;
 
 // =============================================================================

@@ -1,6 +1,6 @@
 // This is a generated file - do not edit.
 //
-// Generated from google/protobuf/wrappers.proto.
+// Generated from core.proto.
 
 // @dart = 3.3
 

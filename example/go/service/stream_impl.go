@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	pb "synurang/example/pkg/api"
+	pb "github.com/ivere27/synurang/example/pkg/api"
 	core_service "github.com/ivere27/synurang/pkg/service"
 
 	"google.golang.org/protobuf/proto"

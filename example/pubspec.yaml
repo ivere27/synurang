@@ -36,13 +36,13 @@ dependencies:
   cupertino_icons: ^1.0.8
   synurang:
     path: ../
-  grpc: ^4.0.1
+  grpc: ^5.1.0
   path_provider: ^2.1.5
   crypto: ^3.0.3
   convert: ^3.1.1
 
   fixnum: any
-  protobuf: any
+  protobuf: ^6.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

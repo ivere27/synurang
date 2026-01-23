@@ -16,7 +16,7 @@ import (
 	"net"
 	"time"
 
-	example_pb "synurang/example/pkg/api"
+	example_pb "github.com/ivere27/synurang/example/pkg/api"
 	core_pb "github.com/ivere27/synurang/pkg/api"
 
 	"google.golang.org/grpc"

@@ -5,7 +5,7 @@ import "google/protobuf/timestamp.proto";
 import "google/protobuf/empty.proto";
 import "core.proto"; // Import core for shared types if needed, or just standalone
 
-option go_package = "synurang/example/pkg/api";
+option go_package = "github.com/ivere27/synurang/example/pkg/api";
 
 // =============================================================================
 // GoGreeterService - Go-side server, Dart client calls this
@@ -114,3 +114,15 @@ message DownloadFileRequest {
   // Seed removed as we want true random
 }
 
+// =============================================================================
+// Cross-proto import test message
+// These messages use types from core.proto to verify proto imports work
+// =============================================================================
+message CrossProtoTestMessage {
+  // Reference to core.v1.Error from core.proto
+  core.v1.Error error = 1;
+  // Reference to core.v1.PingResponse from core.proto  
+  core.v1.PingResponse ping_response = 2;
+  // Local field
+  string description = 3;
+}

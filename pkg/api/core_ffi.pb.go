@@ -2,6 +2,10 @@
 
 package api
 
+import (
+	empty "github.com/golang/protobuf/ptypes/empty"
+)
+
 /*
 #include <stdlib.h>
 */
@@ -12,7 +16,6 @@ import (
 	"fmt"
 	"unsafe"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type FfiServer interface {
@@ -23,7 +26,7 @@ type FfiServer interface {
 func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
 	switch method {
 	case "/core.v1.HealthService/Ping":
-		req := &emptypb.Empty{}
+		req := &empty.Empty{}
 		if err := proto.Unmarshal(data, req); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
 		}
@@ -123,7 +126,7 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 		}
 		return proto.Marshal(resp)
 	case "/core.v1.CacheService/Compact":
-		req := &emptypb.Empty{}
+		req := &empty.Empty{}
 		if err := proto.Unmarshal(data, req); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
 		}
@@ -143,7 +146,7 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {
 	switch method {
 	case "/core.v1.HealthService/Ping":
-		req := &emptypb.Empty{}
+		req := &empty.Empty{}
 		if err := proto.Unmarshal(data, req); err != nil {
 			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
 		}
@@ -353,7 +356,7 @@ func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (un
 		}
 		return cPtr, int64(size), nil
 	case "/core.v1.CacheService/Compact":
-		req := &emptypb.Empty{}
+		req := &empty.Empty{}
 		if err := proto.Unmarshal(data, req); err != nil {
 			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
 		}
