@@ -195,7 +195,10 @@ class ServerManager {
   Future<void> connectGoClient({TransportMode mode = TransportMode.ffi}) async {
     await disconnectGoClient();
 
-    if (mode == TransportMode.uds && _goSocketPath != null) {
+    if (mode == TransportMode.ffi) {
+      _goClientChannel = FfiClientChannel();
+      onLog('Flutter→Go gRPC client connected via FFI');
+    } else if (mode == TransportMode.uds && _goSocketPath != null) {
       _goClientChannel = grpc.ClientChannel(
         InternetAddress(_goSocketPath!, type: InternetAddressType.unix),
         port: 0,

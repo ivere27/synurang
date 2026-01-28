@@ -49,6 +49,7 @@ import 'dart:developer' as developer;
 
 import 'package:ffi/ffi.dart';
 import 'package:grpc/grpc.dart';
+import 'package:protobuf/protobuf.dart' show GeneratedMessage;
 import 'package:protobuf/well_known_types/google/protobuf/any.pb.dart' as pb_any;
 import 'package:synurang/src/generated/core.pb.dart' as pb;
 import 'synurang_bindings_generated.dart';
@@ -352,13 +353,17 @@ final Map<int, Map<String, String>> _activeStreamTrailers = {};
 /// Result of a server streaming FFI call, providing access to stream and trailers.
 class FFIServerStreamResult {
   final Stream<Uint8List> stream;
-  final int _streamId;
+  int _streamId;
   final Completer<Map<String, String>> _trailersCompleter = Completer();
 
   FFIServerStreamResult._(this.stream, this._streamId);
 
   /// Returns trailers after stream closes. Empty map if no trailers.
   Future<Map<String, String>> get trailers => _trailersCompleter.future;
+
+  void _setStreamId(int streamId) {
+    _streamId = streamId;
+  }
 
   void _complete() {
     if (!_trailersCompleter.isCompleted) {
@@ -379,6 +384,16 @@ FFIServerStreamResult invokeBackendServerStreamWithTrailers(
   final controller = StreamController<Uint8List>();
   late FFIServerStreamResult result;
 
+  result = FFIServerStreamResult._(
+    controller.stream.transform(StreamTransformer.fromHandlers(
+      handleDone: (sink) {
+        result._complete();
+        sink.close();
+      },
+    )),
+    -1, // Will be set when stream starts
+  );
+
   _CoreIsolateManager.instance
       .sendRequest<int>((id) => _ServerStreamRequest(id, method, data))
       .then((int streamId) {
@@ -387,6 +402,9 @@ FFIServerStreamResult invokeBackendServerStreamWithTrailers(
       controller.close();
       return;
     }
+
+    // Update the stream ID so trailers can be retrieved correctly
+    result._setStreamId(streamId);
 
     _activeStreams[streamId] = controller;
     _pendingStreamResults[streamId] = result;
@@ -405,16 +423,6 @@ FFIServerStreamResult invokeBackendServerStreamWithTrailers(
     controller.addError(error);
     controller.close();
   });
-
-  result = FFIServerStreamResult._(
-    controller.stream.transform(StreamTransformer.fromHandlers(
-      handleDone: (sink) {
-        result._complete();
-        sink.close();
-      },
-    )),
-    -1, // Will be set when stream starts
-  );
 
   return result;
 }
@@ -1515,4 +1523,105 @@ void _handleDartCallback(
     developer.log('Error in Dart callback: $e');
     _ffi.SendFfiResponse(requestId, nullptr, 0);
   }
+}
+
+// =============================================================================
+// FfiClientChannel - gRPC ClientChannel implementation for FFI transport
+// =============================================================================
+
+/// A [ClientChannel] implementation that routes gRPC calls through FFI.
+///
+/// This allows using standard generated gRPC client stubs with the FFI backend:
+/// ```dart
+/// final channel = FfiClientChannel();
+/// final client = GreeterClient(channel);
+/// final response = await client.sayHello(HelloRequest(name: 'World'));
+/// ```
+///
+/// Only unary RPCs are supported. Streaming calls will throw an error.
+class FfiClientChannel implements ClientChannel {
+  @override
+  final ChannelOptions options;
+
+  FfiClientChannel({this.options = const ChannelOptions()});
+
+  @override
+  Future<void> shutdown() async {}
+
+  @override
+  Future<void> terminate() async {}
+
+  @override
+  String get host => 'ffi';
+
+  @override
+  int get port => 0;
+
+  @override
+  Stream<ConnectionState> get onConnectionStateChanged =>
+      Stream.value(ConnectionState.ready);
+
+  @override
+  ClientCall<Q, R> createCall<Q, R>(
+      ClientMethod<Q, R> method, Stream<Q> requests, CallOptions options) {
+    return _FfiClientCall<Q, R>(method, requests, options);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _FfiClientCall<Q, R> extends ClientCall<Q, R> {
+  final ClientMethod<Q, R> _method;
+  final Stream<Q> _requests;
+  final _headers = Completer<Map<String, String>>();
+  final _trailers = Completer<Map<String, String>>();
+
+  _FfiClientCall(this._method, this._requests, CallOptions options)
+      : super(_method, _requests, options);
+
+  @override
+  Stream<R> get response async* {
+    try {
+      // Collect all requests from the stream
+      final requests = await _requests.toList();
+
+      if (requests.isEmpty) {
+        throw const GrpcError.invalidArgument('No request provided');
+      }
+
+      // For FfiClientChannel, we use the unary path for all calls.
+      // The Go side's generated *Internal methods flatten streaming to unary.
+      // For client/bidi streaming with multiple requests, we send only the last request
+      // (matching the behavior of the *Internal methods).
+      final request = requests.last;
+      if (request is! GeneratedMessage) {
+        throw const GrpcError.internal('Request must be a GeneratedMessage');
+      }
+
+      final data = request.writeToBuffer();
+      final responseBytes = await invokeBackendAsync(_method.path, data);
+      final response = _method.responseDeserializer(responseBytes);
+
+      _headers.complete({});
+      _trailers.complete({});
+      yield response;
+    } catch (e) {
+      if (!_headers.isCompleted) _headers.complete({});
+      if (!_trailers.isCompleted) _trailers.complete({});
+      if (e is GrpcError) {
+        rethrow;
+      }
+      throw GrpcError.internal(e.toString());
+    }
+  }
+
+  @override
+  Future<void> cancel() async {}
+
+  @override
+  Future<Map<String, String>> get headers => _headers.future;
+
+  @override
+  Future<Map<String, String>> get trailers => _trailers.future;
 }

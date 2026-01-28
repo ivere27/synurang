@@ -3,6 +3,12 @@
 #/lib/src/generated/
 #/pkg/api/*.pb.go
 
+
+# test
+protoc-gen-synurang-ffi
+test/cpp_ffi/ffi_channel_test
+
+
 # Shared libraries
 *.so
 *.dll

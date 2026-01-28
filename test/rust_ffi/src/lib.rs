@@ -3,6 +3,10 @@
 //! This crate provides a simple mock implementation of the Synurang FFI
 //! interface for testing purposes.
 
+// Include FfiChannel tests
+#[cfg(test)]
+mod ffi_channel_test;
+
 use std::ffi::{c_char, c_void, CStr};
 
 /// FFI data structure matching C/Go definitions

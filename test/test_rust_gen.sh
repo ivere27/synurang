@@ -29,23 +29,23 @@ if [ ! -f "$CORE_FFI" ]; then
     exit 1
 fi
 
-if ! grep -q 'pub trait' "$CORE_FFI"; then
-    echo "Error: core_ffi.rs missing service trait!"
+if ! grep -q 'pub trait FfiServer' "$CORE_FFI"; then
+    echo "Error: core_ffi.rs missing FfiServer trait!"
     exit 1
 fi
 
-if ! grep -q 'pub struct FfiDispatcher' "$CORE_FFI"; then
-    echo "Error: core_ffi.rs missing FfiDispatcher struct!"
+if ! grep -q 'pub struct FfiChannel' "$CORE_FFI"; then
+    echo "Error: core_ffi.rs missing FfiChannel struct!"
     exit 1
 fi
 
-if ! grep -q 'use synurang::{FfiData, GeneratedService};' "$CORE_FFI"; then
-    echo "Error: core_ffi.rs missing synurang imports!"
+if ! grep -q 'use prost::Message;' "$CORE_FFI"; then
+    echo "Error: core_ffi.rs missing prost imports!"
     exit 1
 fi
 
-if ! grep -q 'impl.*GeneratedService for FfiDispatcher' "$CORE_FFI"; then
-    echo "Error: core_ffi.rs missing GeneratedService implementation!"
+if ! grep -q 'pub fn invoke' "$CORE_FFI"; then
+    echo "Error: core_ffi.rs missing invoke function!"
     exit 1
 fi
 
@@ -63,8 +63,8 @@ if [ ! -f "$EXAMPLE_FFI" ]; then
     exit 1
 fi
 
-if ! grep -q 'pub trait GoGreeterService' "$EXAMPLE_FFI"; then
-    echo "Error: example_ffi.rs missing GoGreeterService trait!"
+if ! grep -q 'pub trait FfiServer' "$EXAMPLE_FFI"; then
+    echo "Error: example_ffi.rs missing FfiServer trait!"
     exit 1
 fi
 

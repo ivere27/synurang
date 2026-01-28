@@ -4,7 +4,13 @@
 
 **Synurang** is a high-performance bridge connecting **Flutter** and **Go** using **gRPC over FFI**.
 
-It decouples the **Transport Layer** from the **Application Layer**, enabling hybrid apps where the UI lives in Flutter and the business logic runs natively in Go—without the overhead of standard platform channels.
+**Primary use case:**
+- **Flutter <-> Go**: Native mobile/desktop apps with embedded Go logic
+
+**Experimental:**
+- **C++ / Rust**: Native backend support (experimental)
+
+Synurang decouples the **Transport Layer** from the **Application Layer**, enabling hybrid apps and high-performance IPC—without the overhead of standard platform channels or network transport.
 
 > **Note:** This project serves as the underlying engine for **Synura**, a content viewer application. While Synura is the product, **Synurang** is the reusable infrastructure.
 
@@ -83,6 +89,19 @@ Synurang also includes experimental support for **Rust** backends.
 *   **Code Generation:** The plugin `cmd/protoc-gen-synurang-ffi` generates the client-side glue code that calls the backend via FFI.
 *   **Note:** Rust support requires a manual build setup (Cargo) for dependencies.
 
+### 🧪 Go-to-Go FFI (Optional)
+
+Synurang also supports **Go-to-Go** communication via `FfiClientConn`. This enables building libraries that can work both as **standalone gRPC servers** or be **embedded directly** into the caller—using the same gRPC client interface.
+
+```go
+// Same client code works for both embedded and remote
+conn := api.NewFfiClientConn(embeddedServer)  // Embedded mode
+// OR: conn, _ := grpc.Dial("localhost:50051") // Remote mode
+
+client := pb.NewMyServiceClient(conn)
+resp, err := client.MyMethod(ctx, req)  // Same API, different transport
+```
+
 ---
 
 ## 💡 Common Use Cases
@@ -96,6 +115,21 @@ Run a robust database engine (like SQLite, DuckDB, or specialized Go-based DBs) 
 ### 3. System-Level Integration
 Use Go's `cgo` capabilities to interface with legacy C/C++ libraries or OS-specific APIs that might be cumbersome to access directly from Dart. Wrap these interactions in a clean gRPC API for your Flutter frontend.
 
+### 4. Embeddable Libraries (Optional)
+Build libraries that can run as standalone gRPC servers or be embedded directly:
+
+```go
+// Embedded mode - same process, no network
+conn := api.NewFfiClientConn(myLibrary)
+client := pb.NewMyServiceClient(conn)
+resp, _ := client.Process(ctx, req)
+
+// Remote mode - same client code works over network
+conn, _ := grpc.Dial("localhost:50051")
+client := pb.NewMyServiceClient(conn)
+resp, _ := client.Process(ctx, req)
+```
+
 ---
 
 ## 🚀 Key Features
@@ -105,6 +139,7 @@ Use Go's `cgo` capabilities to interface with legacy C/C++ libraries or OS-speci
 *   **🔄 Bidirectional Communication**:
     *   **Flutter -> Go**: Standard client calls.
     *   **Go -> Flutter**: Dart acts as a **gRPC Server** via reverse-FFI callbacks, allowing Go to push updates or request UI state.
+*   **🔌 Drop-in Replacement**: `FfiClientChannel` (Dart) is a drop-in replacement for standard gRPC `ClientChannel`—use the same generated client code with FFI transport.
 *   **🧵 Thread Safety**: Automatically manages Dart **Isolates** and Go **Goroutines** to ensure the UI thread never blocks.
 *   **🛠 Code Generation**: Includes `protoc-gen-synurang-ffi` to auto-generate type-safe bindings from your `.proto` files.
 *   **💾 Built-in Caching**: High-performance L2 cache implementation using SQLite (via Go) exposed directly to Dart.
@@ -459,27 +494,59 @@ Direct access to the Go-managed SQLite cache.
 *   **`RegisterServerStreamHandler`**: Register a callback for server-side streaming.
 *   **`RegisterBidiStreamHandler`**: Register a callback for bidirectional streaming.
 
+### Go API (`package:synurang/pkg/synurang`)
+
+#### FFI Client Connection (Optional - for Embeddable Libraries)
+
+Zero-copy Go-to-Go communication for building libraries that work both as standalone gRPC servers or embedded directly. Supports all RPC patterns.
+
+*   **`NewFfiClientConn(invoker Invoker)`**: Creates an FFI client connection. Implements `grpc.ClientConnInterface`.
+*   **`Invoker`**: Interface for dispatching RPC calls (implemented by generated `ffiInvoker`).
+
+```go
+// Embedded mode - same process, zero-copy, no network
+server := &myservice.GreeterServer{}
+conn := api.NewFfiClientConn(server)
+client := pb.NewMyServiceClient(conn)
+
+// Same client API works for both embedded and remote
+resp, err := client.SayHello(ctx, &pb.HelloRequest{Name: "World"})
+
+// Streaming also works
+stream, err := client.StreamMessages(ctx)
+stream.Send(&pb.Message{Text: "hello"})
+reply, err := stream.Recv()
+```
+
 ## 📂 Directory Structure
 
 ```
 synurang/
 ├── api/core.proto           # Core Protocol definitions
-├── cmd/server/main.go       # Go main with FFI exports
+├── cmd/
+│   ├── server/main.go       # Go main with FFI exports
+│   └── protoc-gen-synurang-ffi/  # Code generator plugin
 ├── example/                 # Example Flutter Application
 │   ├── api/example.proto    # Example service definitions
 │   ├── cmd/                  # Go CLI tools
 │   ├── lib/main.dart        # Flutter Example App
 │   └── test/                # Integration tests
 ├── pkg/
-│   ├── api/                 # Generated Go proto
+│   ├── api/                 # Generated Go proto + FFI bindings
+│   ├── synurang/            # Runtime library for FfiClientConn
+│   │   └── synurang.go      # FfiClientConn, Invoker interfaces
 │   └── service/             # Go service implementations
 │       ├── cache.go         # SQLite cache service
 │       ├── server.go        # gRPC server setup
 │       └── stream_handler.go # FFI stream protocol
 ├── src/                     # Shared libraries (.so/.dylib output)
 ├── lib/
-│   ├── synurang.dart        # Main Dart entry point
+│   ├── synurang.dart        # Main Dart entry point (includes FfiClientChannel)
 │   └── src/generated/       # Generated Dart proto
+├── test/                    # Test suites
+│   ├── go_ffi/              # Go-to-Go FFI tests (optional)
+│   ├── cpp_ffi/             # C++ FFI tests (experimental)
+│   └── rust_ffi/            # Rust FFI tests (experimental)
 ├── makefile
 └── pubspec.yaml
 ```

@@ -4,6 +4,7 @@ package api
 
 import (
 	empty "github.com/golang/protobuf/ptypes/empty"
+	wrappers "github.com/golang/protobuf/ptypes/wrappers"
 )
 
 /*
@@ -15,6 +16,9 @@ import (
 	"context"
 	"fmt"
 	"unsafe"
+
+	"github.com/ivere27/synurang/pkg/synurang"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -379,4 +383,153 @@ func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (un
 	default:
 		return nil, 0, fmt.Errorf("unknown method: %s", method)
 	}
+}
+
+// InvokeStream dispatches streaming RPC calls to the appropriate server method.
+func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {
+	switch method {
+	default:
+		return fmt.Errorf("unknown streaming method: %s", method)
+	}
+}
+
+// =============================================================================
+// FFI Invoker - wraps FfiServer to implement synurang.Invoker interface
+// =============================================================================
+
+// ffiInvoker wraps FfiServer to implement the synurang.Invoker interface.
+// This allows using the synurang runtime's FfiClientConn with generated code.
+// Uses zero-copy: proto.Message pointers are passed directly without serialization.
+type ffiInvoker struct {
+	server FfiServer
+}
+
+// Invoke implements synurang.UnaryInvoker (zero-copy).
+func (i *ffiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
+	switch method {
+	case "/core.v1.HealthService/Ping":
+		resp, err := i.server.Ping(ctx, req.(*empty.Empty))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*PingResponse)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/Get":
+		resp, err := i.server.Get(ctx, req.(*GetCacheRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*GetCacheResponse)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/Put":
+		resp, err := i.server.Put(ctx, req.(*PutCacheRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*empty.Empty)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/Delete":
+		resp, err := i.server.Delete(ctx, req.(*DeleteCacheRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*empty.Empty)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/Clear":
+		resp, err := i.server.Clear(ctx, req.(*ClearCacheRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*empty.Empty)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/Contains":
+		resp, err := i.server.Contains(ctx, req.(*GetCacheRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*wrappers.BoolValue)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/Keys":
+		resp, err := i.server.Keys(ctx, req.(*GetCacheRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*GetCacheKeysResponse)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/SetMaxEntries":
+		resp, err := i.server.SetMaxEntries(ctx, req.(*SetMaxEntriesRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*empty.Empty)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/SetMaxBytes":
+		resp, err := i.server.SetMaxBytes(ctx, req.(*SetMaxBytesRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*empty.Empty)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/GetStats":
+		resp, err := i.server.GetStats(ctx, req.(*GetStatsRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*GetStatsResponse)
+		*dst = *resp
+		return nil
+	case "/core.v1.CacheService/Compact":
+		resp, err := i.server.Compact(ctx, req.(*empty.Empty))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*empty.Empty)
+		*dst = *resp
+		return nil
+	default:
+		return fmt.Errorf("unknown method: %s", method)
+	}
+}
+
+// InvokeStream implements synurang.StreamInvoker (zero-copy).
+func (i *ffiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {
+	switch method {
+	default:
+		return fmt.Errorf("unknown streaming method: %s", method)
+	}
+}
+
+var _ synurang.Invoker = (*ffiInvoker)(nil)
+
+// =============================================================================
+// FFI Client - convenience wrapper for synurang.FfiClientConn
+// =============================================================================
+
+// NewFfiClientConn creates a new FFI client connection that implements
+// grpc.ClientConnInterface. This allows using standard generated gRPC clients
+// with embedded FFI calls instead of network transport.
+// Supports unary and all streaming patterns (server, client, bidi).
+// Uses zero-copy mode for Go-to-Go FFI (no serialization overhead).
+func NewFfiClientConn(server FfiServer) grpc.ClientConnInterface {
+	return synurang.NewFfiClientConn(&ffiInvoker{server: server})
 }

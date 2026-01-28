@@ -11,6 +11,9 @@ import (
 	"context"
 	"fmt"
 	"unsafe"
+
+	"github.com/ivere27/synurang/pkg/synurang"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -542,4 +545,750 @@ func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (un
 	default:
 		return nil, 0, fmt.Errorf("unknown method: %s", method)
 	}
+}
+
+// InvokeStream dispatches streaming RPC calls to the appropriate server method.
+func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {
+	switch method {
+	case "/example.v1.GoGreeterService/BarServerStream":
+		// Server streaming
+		req := &HelloRequest{}
+		if err := stream.RecvMsg(req); err != nil {
+			return err
+		}
+		return s.BarServerStream(req, &grpcGoGreeterServiceBarServerStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarClientStream":
+		// Client streaming
+		return s.BarClientStream(&grpcGoGreeterServiceBarClientStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarBidiStream":
+		// Bidi streaming
+		return s.BarBidiStream(&grpcGoGreeterServiceBarBidiStreamStream{stream})
+	case "/example.v1.GoGreeterService/UploadFile":
+		// Client streaming
+		return s.UploadFile(&grpcGoGreeterServiceUploadFileStream{stream})
+	case "/example.v1.GoGreeterService/DownloadFile":
+		// Server streaming
+		req := &DownloadFileRequest{}
+		if err := stream.RecvMsg(req); err != nil {
+			return err
+		}
+		return s.DownloadFile(req, &grpcGoGreeterServiceDownloadFileStream{stream})
+	case "/example.v1.GoGreeterService/BidiFile":
+		// Bidi streaming
+		return s.BidiFile(&grpcGoGreeterServiceBidiFileStream{stream})
+	case "/example.v1.DartGreeterService/FooServerStream":
+		// Server streaming
+		req := &HelloRequest{}
+		if err := stream.RecvMsg(req); err != nil {
+			return err
+		}
+		return s.FooServerStream(req, &grpcDartGreeterServiceFooServerStreamStream{stream})
+	case "/example.v1.DartGreeterService/FooClientStream":
+		// Client streaming
+		return s.FooClientStream(&grpcDartGreeterServiceFooClientStreamStream{stream})
+	case "/example.v1.DartGreeterService/FooBidiStream":
+		// Bidi streaming
+		return s.FooBidiStream(&grpcDartGreeterServiceFooBidiStreamStream{stream})
+	case "/example.v1.DartGreeterService/DartUploadFile":
+		// Client streaming
+		return s.DartUploadFile(&grpcDartGreeterServiceDartUploadFileStream{stream})
+	case "/example.v1.DartGreeterService/DartDownloadFile":
+		// Server streaming
+		req := &DownloadFileRequest{}
+		if err := stream.RecvMsg(req); err != nil {
+			return err
+		}
+		return s.DartDownloadFile(req, &grpcDartGreeterServiceDartDownloadFileStream{stream})
+	case "/example.v1.DartGreeterService/DartBidiFile":
+		// Bidi streaming
+		return s.DartBidiFile(&grpcDartGreeterServiceDartBidiFileStream{stream})
+	default:
+		return fmt.Errorf("unknown streaming method: %s", method)
+	}
+}
+
+// grpcGoGreeterServiceBarServerStreamStream wraps grpc.ServerStream for GoGreeterService.BarServerStream
+type grpcGoGreeterServiceBarServerStreamStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcGoGreeterServiceBarServerStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_BarServerStreamServer = (*grpcGoGreeterServiceBarServerStreamStream)(nil)
+
+// grpcGoGreeterServiceBarClientStreamStream wraps grpc.ServerStream for GoGreeterService.BarClientStream
+type grpcGoGreeterServiceBarClientStreamStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcGoGreeterServiceBarClientStreamStream) Recv() (*HelloRequest, error) {
+	m := &HelloRequest{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *grpcGoGreeterServiceBarClientStreamStream) SendAndClose(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_BarClientStreamServer = (*grpcGoGreeterServiceBarClientStreamStream)(nil)
+
+// grpcGoGreeterServiceBarBidiStreamStream wraps grpc.ServerStream for GoGreeterService.BarBidiStream
+type grpcGoGreeterServiceBarBidiStreamStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcGoGreeterServiceBarBidiStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *grpcGoGreeterServiceBarBidiStreamStream) Recv() (*HelloRequest, error) {
+	m := &HelloRequest{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+var _ GoGreeterService_BarBidiStreamServer = (*grpcGoGreeterServiceBarBidiStreamStream)(nil)
+
+// grpcGoGreeterServiceUploadFileStream wraps grpc.ServerStream for GoGreeterService.UploadFile
+type grpcGoGreeterServiceUploadFileStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcGoGreeterServiceUploadFileStream) Recv() (*FileChunk, error) {
+	m := &FileChunk{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *grpcGoGreeterServiceUploadFileStream) SendAndClose(m *FileStatus) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_UploadFileServer = (*grpcGoGreeterServiceUploadFileStream)(nil)
+
+// grpcGoGreeterServiceDownloadFileStream wraps grpc.ServerStream for GoGreeterService.DownloadFile
+type grpcGoGreeterServiceDownloadFileStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcGoGreeterServiceDownloadFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_DownloadFileServer = (*grpcGoGreeterServiceDownloadFileStream)(nil)
+
+// grpcGoGreeterServiceBidiFileStream wraps grpc.ServerStream for GoGreeterService.BidiFile
+type grpcGoGreeterServiceBidiFileStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcGoGreeterServiceBidiFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *grpcGoGreeterServiceBidiFileStream) Recv() (*FileChunk, error) {
+	m := &FileChunk{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+var _ GoGreeterService_BidiFileServer = (*grpcGoGreeterServiceBidiFileStream)(nil)
+
+// grpcDartGreeterServiceFooServerStreamStream wraps grpc.ServerStream for DartGreeterService.FooServerStream
+type grpcDartGreeterServiceFooServerStreamStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcDartGreeterServiceFooServerStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_FooServerStreamServer = (*grpcDartGreeterServiceFooServerStreamStream)(nil)
+
+// grpcDartGreeterServiceFooClientStreamStream wraps grpc.ServerStream for DartGreeterService.FooClientStream
+type grpcDartGreeterServiceFooClientStreamStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcDartGreeterServiceFooClientStreamStream) Recv() (*HelloRequest, error) {
+	m := &HelloRequest{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *grpcDartGreeterServiceFooClientStreamStream) SendAndClose(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_FooClientStreamServer = (*grpcDartGreeterServiceFooClientStreamStream)(nil)
+
+// grpcDartGreeterServiceFooBidiStreamStream wraps grpc.ServerStream for DartGreeterService.FooBidiStream
+type grpcDartGreeterServiceFooBidiStreamStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcDartGreeterServiceFooBidiStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *grpcDartGreeterServiceFooBidiStreamStream) Recv() (*HelloRequest, error) {
+	m := &HelloRequest{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+var _ DartGreeterService_FooBidiStreamServer = (*grpcDartGreeterServiceFooBidiStreamStream)(nil)
+
+// grpcDartGreeterServiceDartUploadFileStream wraps grpc.ServerStream for DartGreeterService.DartUploadFile
+type grpcDartGreeterServiceDartUploadFileStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcDartGreeterServiceDartUploadFileStream) Recv() (*FileChunk, error) {
+	m := &FileChunk{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *grpcDartGreeterServiceDartUploadFileStream) SendAndClose(m *FileStatus) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_DartUploadFileServer = (*grpcDartGreeterServiceDartUploadFileStream)(nil)
+
+// grpcDartGreeterServiceDartDownloadFileStream wraps grpc.ServerStream for DartGreeterService.DartDownloadFile
+type grpcDartGreeterServiceDartDownloadFileStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcDartGreeterServiceDartDownloadFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_DartDownloadFileServer = (*grpcDartGreeterServiceDartDownloadFileStream)(nil)
+
+// grpcDartGreeterServiceDartBidiFileStream wraps grpc.ServerStream for DartGreeterService.DartBidiFile
+type grpcDartGreeterServiceDartBidiFileStream struct {
+	grpc.ServerStream
+}
+
+func (s *grpcDartGreeterServiceDartBidiFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *grpcDartGreeterServiceDartBidiFileStream) Recv() (*FileChunk, error) {
+	m := &FileChunk{}
+	if err := s.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+var _ DartGreeterService_DartBidiFileServer = (*grpcDartGreeterServiceDartBidiFileStream)(nil)
+
+// =============================================================================
+// FFI Invoker - wraps FfiServer to implement synurang.Invoker interface
+// =============================================================================
+
+// ffiInvoker wraps FfiServer to implement the synurang.Invoker interface.
+// This allows using the synurang runtime's FfiClientConn with generated code.
+// Uses zero-copy: proto.Message pointers are passed directly without serialization.
+type ffiInvoker struct {
+	server FfiServer
+}
+
+// Invoke implements synurang.UnaryInvoker (zero-copy).
+func (i *ffiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
+	switch method {
+	case "/example.v1.GoGreeterService/Bar":
+		resp, err := i.server.Bar(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/BarServerStream":
+		resp, err := i.server.BarServerStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/BarClientStream":
+		resp, err := i.server.BarClientStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/BarBidiStream":
+		resp, err := i.server.BarBidiStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/UploadFile":
+		resp, err := i.server.UploadFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*FileStatus)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/DownloadFile":
+		resp, err := i.server.DownloadFileInternal(ctx, req.(*DownloadFileRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*FileChunk)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/BidiFile":
+		resp, err := i.server.BidiFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*FileChunk)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/Trigger":
+		resp, err := i.server.Trigger(ctx, req.(*TriggerRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.GoGreeterService/GetGoroutines":
+		resp, err := i.server.GetGoroutines(ctx, req.(*GoroutinesRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*GoroutinesResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.DartGreeterService/Foo":
+		resp, err := i.server.Foo(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.DartGreeterService/FooServerStream":
+		resp, err := i.server.FooServerStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.DartGreeterService/FooClientStream":
+		resp, err := i.server.FooClientStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.DartGreeterService/FooBidiStream":
+		resp, err := i.server.FooBidiStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*HelloResponse)
+		*dst = *resp
+		return nil
+	case "/example.v1.DartGreeterService/DartUploadFile":
+		resp, err := i.server.DartUploadFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*FileStatus)
+		*dst = *resp
+		return nil
+	case "/example.v1.DartGreeterService/DartDownloadFile":
+		resp, err := i.server.DartDownloadFileInternal(ctx, req.(*DownloadFileRequest))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*FileChunk)
+		*dst = *resp
+		return nil
+	case "/example.v1.DartGreeterService/DartBidiFile":
+		resp, err := i.server.DartBidiFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Zero-copy: direct struct copy
+		dst := reply.(*FileChunk)
+		*dst = *resp
+		return nil
+	default:
+		return fmt.Errorf("unknown method: %s", method)
+	}
+}
+
+// InvokeStream implements synurang.StreamInvoker (zero-copy).
+func (i *ffiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {
+	switch method {
+	case "/example.v1.GoGreeterService/BarServerStream":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*HelloRequest)
+		return i.server.BarServerStream(req, &ffiGoGreeterServiceBarServerStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarClientStream":
+		// Client streaming (zero-copy)
+		return i.server.BarClientStream(&ffiGoGreeterServiceBarClientStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarBidiStream":
+		// Bidi streaming (zero-copy)
+		return i.server.BarBidiStream(&ffiGoGreeterServiceBarBidiStreamStream{stream})
+	case "/example.v1.GoGreeterService/UploadFile":
+		// Client streaming (zero-copy)
+		return i.server.UploadFile(&ffiGoGreeterServiceUploadFileStream{stream})
+	case "/example.v1.GoGreeterService/DownloadFile":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*DownloadFileRequest)
+		return i.server.DownloadFile(req, &ffiGoGreeterServiceDownloadFileStream{stream})
+	case "/example.v1.GoGreeterService/BidiFile":
+		// Bidi streaming (zero-copy)
+		return i.server.BidiFile(&ffiGoGreeterServiceBidiFileStream{stream})
+	case "/example.v1.DartGreeterService/FooServerStream":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*HelloRequest)
+		return i.server.FooServerStream(req, &ffiDartGreeterServiceFooServerStreamStream{stream})
+	case "/example.v1.DartGreeterService/FooClientStream":
+		// Client streaming (zero-copy)
+		return i.server.FooClientStream(&ffiDartGreeterServiceFooClientStreamStream{stream})
+	case "/example.v1.DartGreeterService/FooBidiStream":
+		// Bidi streaming (zero-copy)
+		return i.server.FooBidiStream(&ffiDartGreeterServiceFooBidiStreamStream{stream})
+	case "/example.v1.DartGreeterService/DartUploadFile":
+		// Client streaming (zero-copy)
+		return i.server.DartUploadFile(&ffiDartGreeterServiceDartUploadFileStream{stream})
+	case "/example.v1.DartGreeterService/DartDownloadFile":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*DownloadFileRequest)
+		return i.server.DartDownloadFile(req, &ffiDartGreeterServiceDartDownloadFileStream{stream})
+	case "/example.v1.DartGreeterService/DartBidiFile":
+		// Bidi streaming (zero-copy)
+		return i.server.DartBidiFile(&ffiDartGreeterServiceDartBidiFileStream{stream})
+	default:
+		return fmt.Errorf("unknown streaming method: %s", method)
+	}
+}
+
+// =============================================================================
+// Stream Wrappers (zero-copy)
+// =============================================================================
+
+// ffiGoGreeterServiceBarServerStreamStream wraps ServerStream for zero-copy GoGreeterService.BarServerStream
+type ffiGoGreeterServiceBarServerStreamStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiGoGreeterServiceBarServerStreamStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiGoGreeterServiceBarServerStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_BarServerStreamServer = (*ffiGoGreeterServiceBarServerStreamStream)(nil)
+
+// ffiGoGreeterServiceBarClientStreamStream wraps ServerStream for zero-copy GoGreeterService.BarClientStream
+type ffiGoGreeterServiceBarClientStreamStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiGoGreeterServiceBarClientStreamStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiGoGreeterServiceBarClientStreamStream) Recv() (*HelloRequest, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*HelloRequest), nil
+}
+
+func (s *ffiGoGreeterServiceBarClientStreamStream) SendAndClose(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_BarClientStreamServer = (*ffiGoGreeterServiceBarClientStreamStream)(nil)
+
+// ffiGoGreeterServiceBarBidiStreamStream wraps ServerStream for zero-copy GoGreeterService.BarBidiStream
+type ffiGoGreeterServiceBarBidiStreamStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiGoGreeterServiceBarBidiStreamStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiGoGreeterServiceBarBidiStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *ffiGoGreeterServiceBarBidiStreamStream) Recv() (*HelloRequest, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*HelloRequest), nil
+}
+
+var _ GoGreeterService_BarBidiStreamServer = (*ffiGoGreeterServiceBarBidiStreamStream)(nil)
+
+// ffiGoGreeterServiceUploadFileStream wraps ServerStream for zero-copy GoGreeterService.UploadFile
+type ffiGoGreeterServiceUploadFileStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiGoGreeterServiceUploadFileStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiGoGreeterServiceUploadFileStream) Recv() (*FileChunk, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*FileChunk), nil
+}
+
+func (s *ffiGoGreeterServiceUploadFileStream) SendAndClose(m *FileStatus) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_UploadFileServer = (*ffiGoGreeterServiceUploadFileStream)(nil)
+
+// ffiGoGreeterServiceDownloadFileStream wraps ServerStream for zero-copy GoGreeterService.DownloadFile
+type ffiGoGreeterServiceDownloadFileStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiGoGreeterServiceDownloadFileStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiGoGreeterServiceDownloadFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ GoGreeterService_DownloadFileServer = (*ffiGoGreeterServiceDownloadFileStream)(nil)
+
+// ffiGoGreeterServiceBidiFileStream wraps ServerStream for zero-copy GoGreeterService.BidiFile
+type ffiGoGreeterServiceBidiFileStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiGoGreeterServiceBidiFileStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiGoGreeterServiceBidiFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *ffiGoGreeterServiceBidiFileStream) Recv() (*FileChunk, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*FileChunk), nil
+}
+
+var _ GoGreeterService_BidiFileServer = (*ffiGoGreeterServiceBidiFileStream)(nil)
+
+// ffiDartGreeterServiceFooServerStreamStream wraps ServerStream for zero-copy DartGreeterService.FooServerStream
+type ffiDartGreeterServiceFooServerStreamStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiDartGreeterServiceFooServerStreamStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiDartGreeterServiceFooServerStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_FooServerStreamServer = (*ffiDartGreeterServiceFooServerStreamStream)(nil)
+
+// ffiDartGreeterServiceFooClientStreamStream wraps ServerStream for zero-copy DartGreeterService.FooClientStream
+type ffiDartGreeterServiceFooClientStreamStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiDartGreeterServiceFooClientStreamStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiDartGreeterServiceFooClientStreamStream) Recv() (*HelloRequest, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*HelloRequest), nil
+}
+
+func (s *ffiDartGreeterServiceFooClientStreamStream) SendAndClose(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_FooClientStreamServer = (*ffiDartGreeterServiceFooClientStreamStream)(nil)
+
+// ffiDartGreeterServiceFooBidiStreamStream wraps ServerStream for zero-copy DartGreeterService.FooBidiStream
+type ffiDartGreeterServiceFooBidiStreamStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiDartGreeterServiceFooBidiStreamStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiDartGreeterServiceFooBidiStreamStream) Send(m *HelloResponse) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *ffiDartGreeterServiceFooBidiStreamStream) Recv() (*HelloRequest, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*HelloRequest), nil
+}
+
+var _ DartGreeterService_FooBidiStreamServer = (*ffiDartGreeterServiceFooBidiStreamStream)(nil)
+
+// ffiDartGreeterServiceDartUploadFileStream wraps ServerStream for zero-copy DartGreeterService.DartUploadFile
+type ffiDartGreeterServiceDartUploadFileStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiDartGreeterServiceDartUploadFileStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiDartGreeterServiceDartUploadFileStream) Recv() (*FileChunk, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*FileChunk), nil
+}
+
+func (s *ffiDartGreeterServiceDartUploadFileStream) SendAndClose(m *FileStatus) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_DartUploadFileServer = (*ffiDartGreeterServiceDartUploadFileStream)(nil)
+
+// ffiDartGreeterServiceDartDownloadFileStream wraps ServerStream for zero-copy DartGreeterService.DartDownloadFile
+type ffiDartGreeterServiceDartDownloadFileStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiDartGreeterServiceDartDownloadFileStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiDartGreeterServiceDartDownloadFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+var _ DartGreeterService_DartDownloadFileServer = (*ffiDartGreeterServiceDartDownloadFileStream)(nil)
+
+// ffiDartGreeterServiceDartBidiFileStream wraps ServerStream for zero-copy DartGreeterService.DartBidiFile
+type ffiDartGreeterServiceDartBidiFileStream struct {
+	synurang.ServerStream
+}
+
+func (s *ffiDartGreeterServiceDartBidiFileStream) Context() context.Context {
+	return s.ServerStream.Context()
+}
+
+func (s *ffiDartGreeterServiceDartBidiFileStream) Send(m *FileChunk) error {
+	return s.ServerStream.SendMsg(m)
+}
+
+func (s *ffiDartGreeterServiceDartBidiFileStream) Recv() (*FileChunk, error) {
+	msg, err := s.ServerStream.RecvMsgDirect()
+	if err != nil {
+		return nil, err
+	}
+	return msg.(*FileChunk), nil
+}
+
+var _ DartGreeterService_DartBidiFileServer = (*ffiDartGreeterServiceDartBidiFileStream)(nil)
+
+var _ synurang.Invoker = (*ffiInvoker)(nil)
+
+// =============================================================================
+// FFI Client - convenience wrapper for synurang.FfiClientConn
+// =============================================================================
+
+// NewFfiClientConn creates a new FFI client connection that implements
+// grpc.ClientConnInterface. This allows using standard generated gRPC clients
+// with embedded FFI calls instead of network transport.
+// Supports unary and all streaming patterns (server, client, bidi).
+// Uses zero-copy mode for Go-to-Go FFI (no serialization overhead).
+func NewFfiClientConn(server FfiServer) grpc.ClientConnInterface {
+	return synurang.NewFfiClientConn(&ffiInvoker{server: server})
 }

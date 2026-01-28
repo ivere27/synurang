@@ -22,25 +22,25 @@ protoc -Iapi -I/usr/include \
     --synurang-ffi_opt=lang=cpp \
     core.proto
 
-echo "Verifying core_ffi.cc..."
-CORE_FFI="$ROOT_DIR/test/generated_cpp/core_ffi.cc"
+echo "Verifying core_ffi.h..."
+CORE_FFI="$ROOT_DIR/test/generated_cpp/core_ffi.h"
 if [ ! -f "$CORE_FFI" ]; then
-    echo "Error: core_ffi.cc was not generated!"
+    echo "Error: core_ffi.h was not generated!"
     exit 1
 fi
 
-if ! grep -q '#include "synurang.hpp"' "$CORE_FFI"; then
-    echo "Error: core_ffi.cc missing synurang.hpp include!"
+if ! grep -q '#include "core.pb.h"' "$CORE_FFI"; then
+    echo "Error: core_ffi.h missing core.pb.h include!"
     exit 1
 fi
 
-if ! grep -q 'class FfiDispatcher' "$CORE_FFI"; then
-    echo "Error: core_ffi.cc missing FfiDispatcher class!"
+if ! grep -q 'class FfiServer' "$CORE_FFI"; then
+    echo "Error: core_ffi.h missing FfiServer class!"
     exit 1
 fi
 
 if ! grep -q 'namespace core::v1 {' "$CORE_FFI"; then
-    echo "Error: core_ffi.cc missing namespace core::v1!"
+    echo "Error: core_ffi.h missing namespace core::v1!"
     exit 1
 fi
 
@@ -51,15 +51,15 @@ protoc -Iexample/api -Iapi -I/usr/include \
     --synurang-ffi_opt=lang=cpp \
     example.proto
 
-echo "Verifying example_ffi.cc..."
-EXAMPLE_FFI="$ROOT_DIR/test/generated_cpp/example_ffi.cc"
+echo "Verifying example_ffi.h..."
+EXAMPLE_FFI="$ROOT_DIR/test/generated_cpp/example_ffi.h"
 if [ ! -f "$EXAMPLE_FFI" ]; then
-    echo "Error: example_ffi.cc was not generated!"
+    echo "Error: example_ffi.h was not generated!"
     exit 1
 fi
 
 if ! grep -q 'if (method == "/example.v1.GoGreeterService/Bar") {' "$EXAMPLE_FFI"; then
-    echo "Error: example_ffi.cc missing Bar dispatch logic!"
+    echo "Error: example_ffi.h missing Bar dispatch logic!"
     exit 1
 fi
 

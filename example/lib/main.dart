@@ -78,6 +78,8 @@ class _TestSuitePageState extends State<TestSuitePage> {
   Future<void> _initServers() async {
     // Start with FFI-only (no UDS/TCP toggles selected)
     await _serverManager.startGoServer();
+    // Connect using FfiClientChannel for FFI mode
+    await _serverManager.connectGoClient(mode: TransportMode.ffi);
   }
 
   void _addLog(String message) {
@@ -495,6 +497,7 @@ class _TestSuitePageState extends State<TestSuitePage> {
     await _serverManager.stopGoServer();
     await _serverManager.disconnectGoClient();
     await _serverManager.startGoServer(); // FFI Only
+    await _serverManager.connectGoClient(mode: TransportMode.ffi); // Use FfiClientChannel
     setState(() {});
 
     await runSuite('Test 1: FFI Mode (Default)');
@@ -532,6 +535,7 @@ class _TestSuitePageState extends State<TestSuitePage> {
     await _serverManager.disconnectGoClient();
     await _serverManager.stopFlutterTcpServer();
     await _serverManager.startGoServer(); // FFI default
+    await _serverManager.connectGoClient(mode: TransportMode.ffi); // Use FfiClientChannel
     setState(() {});
 
     setState(() => _isRunningAll = false);
@@ -618,8 +622,9 @@ class _TestSuitePageState extends State<TestSuitePage> {
                   await _serverManager.startGoServer(uds: true);
                   await _serverManager.connectGoClient(mode: TransportMode.uds);
                 } else {
-                  // Turn OFF - start FFI only
+                  // Turn OFF - start FFI only with FfiClientChannel
                   await _serverManager.startGoServer();
+                  await _serverManager.connectGoClient(mode: TransportMode.ffi);
                 }
                 setState(() {});
               },
@@ -634,8 +639,9 @@ class _TestSuitePageState extends State<TestSuitePage> {
                   await _serverManager.startGoServer(tcp: true);
                   await _serverManager.connectGoClient(mode: TransportMode.tcp);
                 } else {
-                  // Turn OFF - start FFI only
+                  // Turn OFF - start FFI only with FfiClientChannel
                   await _serverManager.startGoServer();
+                  await _serverManager.connectGoClient(mode: TransportMode.ffi);
                 }
                 setState(() {});
               },
@@ -661,8 +667,9 @@ class _TestSuitePageState extends State<TestSuitePage> {
                     mode: wasGoTcp ? TransportMode.tcp : TransportMode.uds,
                   );
                 } else {
-                  // Restart in FFI mode
+                  // Restart in FFI mode with FfiClientChannel
                   await _serverManager.startGoServer();
+                  await _serverManager.connectGoClient(mode: TransportMode.ffi);
                 }
                 setState(() {});
               },
@@ -685,8 +692,9 @@ class _TestSuitePageState extends State<TestSuitePage> {
                     mode: wasGoTcp ? TransportMode.tcp : TransportMode.uds,
                   );
                 } else {
-                  // Restart in FFI mode
+                  // Restart in FFI mode with FfiClientChannel
                   await _serverManager.startGoServer();
+                  await _serverManager.connectGoClient(mode: TransportMode.ffi);
                 }
                 setState(() {});
               },
