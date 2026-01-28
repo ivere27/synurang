@@ -5,7 +5,7 @@
 
 
 # test
-protoc-gen-synurang-ffi
+/protoc-gen-synurang-ffi
 test/cpp_ffi/ffi_channel_test
 
 

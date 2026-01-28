@@ -1,3 +1,7 @@
+## 0.1.8
+
+*   Add runtime library and Go-to-Go FFI support.
+
 ## 0.1.7
 
 *   Add support for Android, iOS, macOS, and Windows platforms in pubspec.yaml and project structure.
