@@ -4,8 +4,9 @@
 
 **Synurang** is a high-performance bridge connecting **Flutter** and **Go** using **gRPC over FFI**.
 
-**Primary use case:**
+**Primary use cases:**
 - **Flutter <-> Go**: Native mobile/desktop apps with embedded Go logic
+- **In-Process Microservices**: Ship proprietary gRPC services as shared libraries
 
 **Experimental:**
 - **C++ / Rust**: Native backend support (experimental)
@@ -89,7 +90,7 @@ Synurang also includes experimental support for **Rust** backends.
 *   **Code Generation:** The plugin `cmd/protoc-gen-synurang-ffi` generates the client-side glue code that calls the backend via FFI.
 *   **Note:** Rust support requires a manual build setup (Cargo) for dependencies.
 
-### 🧪 Go-to-Go FFI (Optional)
+### 🧪 Go-to-Go FFI (Embedded)
 
 Synurang also supports **Go-to-Go** communication via `FfiClientConn`. This enables building libraries that can work both as **standalone gRPC servers** or be **embedded directly** into the caller—using the same gRPC client interface.
 
@@ -100,6 +101,197 @@ conn := api.NewFfiClientConn(embeddedServer)  // Embedded mode
 
 client := pb.NewMyServiceClient(conn)
 resp, err := client.MyMethod(ctx, req)  // Same API, different transport
+```
+
+### 🔄 Three Transports, One Interface
+
+Synurang enables **drop-in replacement** across three transport modes using the standard `grpc.ClientConnInterface`. Write your client code once, switch transports without changing business logic:
+
+```go
+// Transport 1: FFI with Source (in-process, zero-copy)
+conn := api.NewFfiClientConn(embeddedServer)
+
+// Transport 2: TCP/UDS (standard gRPC over network)
+conn, _ := grpc.Dial("localhost:50051", grpc.WithInsecure())
+
+// Transport 3: Plugin FFI (in-process, binary shared library)
+plugin, _ := synurang.LoadPlugin("./plugin.so")
+conn := synurang.NewPluginClientConn(plugin, "MyService")
+
+// Same client code for ALL transports - including streaming!
+client := pb.NewMyServiceClient(conn)
+resp, err := client.MyMethod(ctx, req)
+
+// Streaming works identically across all transports
+stream, _ := client.ServerStream(ctx, req)
+for {
+    msg, err := stream.Recv()
+    if err == io.EOF { break }
+    // process msg
+}
+```
+
+| Transport | Use Case | Performance | Source Required |
+|-----------|----------|-------------|-----------------|
+| FFI with Source | Embedded libraries | Zero-copy | Yes |
+| TCP/UDS | Remote/debug | Network overhead | No |
+| Plugin FFI | Proprietary plugins | Near zero-copy | No (binary only) |
+
+### 🧩 In-Process Microservice (Shared Library Plugin)
+
+Synurang supports **In-Process Microservices** — ship proprietary gRPC services as shared libraries (`.so`/`.dll`) that can be dynamically loaded by host applications.
+
+**Use Case:** You have an open-source Go project and want to distribute **closed-source business logic** as a compiled binary. The host loads your plugin and communicates via standard gRPC interfaces — no network overhead, no source code exposure.
+
+```
+┌─────────────────────────────────────────┐
+│ Host Process (Open Source)              │
+│                                         │
+│  ┌──────────┐      ┌──────────────────┐ │
+│  │ Host App │ ◄──► │ In-Process       │ │
+│  │          │ gRPC │ Microservice     │ │
+│  │          │ API  │ (plugin.so)      │ │
+│  └──────────┘      │ [Proprietary]    │ │
+│                    └──────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+**Key Benefits:**
+*   **Ship Proprietary Logic:** Distribute closed-source implementations as compiled binaries.
+*   **gRPC Interface:** Same proto/gRPC contracts — familiar API, type-safe.
+*   **Drop-in Replacement:** Use `PluginClientConn` with standard gRPC clients — same code works across FFI, TCP, and Plugin transports.
+*   **Full Streaming Support:** Server streaming, client streaming, and bidirectional streaming all work over plugin FFI.
+*   **Per-Service Interfaces:** Only implement the service you need — no stubs for other services.
+*   **Error Propagation:** Errors are returned to the host with full error messages.
+*   **Version Independence:** Host and Plugin can be compiled with different Go versions.
+*   **Dynamic Loading:** Load plugins at runtime via `dlopen` (CGO).
+
+#### 1. Define Protocol (`service.proto`)
+Same as standard gRPC.
+
+#### 2. Generate Plugin Code (Server Side)
+Use the `mode=plugin_server` option to generate per-service interfaces and C-exports.
+
+```bash
+protoc -Iapi \
+    --go_out=./pkg/api --go_opt=paths=source_relative \
+    --go-grpc_out=./pkg/api --go-grpc_opt=paths=source_relative \
+    --plugin=protoc-gen-synurang-ffi=bin/protoc-gen-synurang-ffi \
+    --synurang-ffi_out=./pkg/api \
+    --synurang-ffi_opt=paths=source_relative,mode=plugin_server,services=MyService \
+    service.proto
+```
+
+This generates:
+*   `MyServicePlugin` interface — only methods for this service
+*   `RegisterMyServicePlugin(s MyServicePlugin)` — per-service registration
+*   `Synurang_Invoke_MyService` — C-exported function with error handling
+
+#### 3. Implement Plugin (`plugin/main.go`)
+Implement only the interface for your service — no stubs needed!
+
+```go
+package main
+
+import "C"
+import pb "my-plugin/pkg/api"
+
+// Only implement MyServicePlugin - clean interface!
+type MyPlugin struct{}
+
+func (s *MyPlugin) MyMethod(ctx context.Context, req *pb.Request) (*pb.Response, error) {
+    return &pb.Response{Message: "Hello from plugin!"}, nil
+}
+
+func init() {
+    // Per-service registration
+    pb.RegisterMyServicePlugin(&MyPlugin{})
+}
+
+func main() {} // Required for -buildmode=c-shared
+```
+
+Compile as shared library:
+```bash
+go build -buildmode=c-shared -o plugin.so ./plugin/main.go
+```
+
+#### 4. Load from Host
+
+**Option A: gRPC ClientConnInterface (Recommended)**
+
+Use `synurang.NewPluginClientConn` for drop-in gRPC client compatibility. This is the recommended approach—same client code works across FFI, TCP, and Plugin transports:
+
+```go
+import "github.com/ivere27/synurang/pkg/synurang"
+
+// Load the plugin
+plugin, err := synurang.LoadPlugin("./plugin.so")
+if err != nil {
+    log.Fatal(err)
+}
+defer plugin.Close()
+
+// Create gRPC ClientConnInterface - drop-in replacement!
+conn := synurang.NewPluginClientConn(plugin, "MyService")
+
+// Use standard gRPC client - same code as network gRPC
+client := pb.NewMyServiceClient(conn)
+resp, err := client.MyMethod(ctx, &pb.Request{Name: "test"})
+
+// Streaming works too!
+stream, _ := client.ServerStream(ctx, &pb.Request{})
+for {
+    msg, err := stream.Recv()
+    if err == io.EOF { break }
+    fmt.Println(msg)
+}
+```
+
+**Option B: Raw Invoke (Low-Level)**
+
+For direct control, use `plugin.Invoke` with manual protobuf marshaling:
+
+```go
+// Prepare request
+req := &pb.MyRequest{Name: "test"}
+reqBytes, _ := proto.Marshal(req)
+
+// Call the plugin - errors are automatically parsed
+respBytes, err := plugin.Invoke("MyService", "/pkg.MyService/MyMethod", reqBytes)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Unmarshal response
+resp := &pb.MyResponse{}
+proto.Unmarshal(respBytes, resp)
+```
+
+**Under the hood:** The plugin returns `[status:1byte][payload...]` where status=0 is success and status=1 is error. Both `PluginClientConn` and `Invoke` handle this automatically.
+
+#### 5. Optional: Generate Plugin Client (Host Side)
+Use `mode=plugin_client` to generate typed clients for the host:
+
+```bash
+protoc -Iapi \
+    --synurang-ffi_out=./pkg/client \
+    --synurang-ffi_opt=mode=plugin_client,services=MyService \
+    service.proto
+```
+
+This generates `MyServicePluginClient` with typed methods:
+
+```go
+// With purego (pure Go, no CGO)
+lib, _ := purego.Dlopen("./plugin.so", purego.RTLD_LAZY)
+var invoke func(*byte, *byte, int32, *int32) *byte
+var free func(*byte)
+purego.RegisterLibFunc(&invoke, lib, "Synurang_Invoke_MyService")
+purego.RegisterLibFunc(&free, lib, "Synurang_Free")
+
+client := pb.NewMyServicePluginClient(invoke, free)
+resp, err := client.MyMethod(ctx, &pb.Request{})
 ```
 
 ---
@@ -115,20 +307,11 @@ Run a robust database engine (like SQLite, DuckDB, or specialized Go-based DBs) 
 ### 3. System-Level Integration
 Use Go's `cgo` capabilities to interface with legacy C/C++ libraries or OS-specific APIs that might be cumbersome to access directly from Dart. Wrap these interactions in a clean gRPC API for your Flutter frontend.
 
-### 4. Embeddable Libraries (Optional)
-Build libraries that can run as standalone gRPC servers or be embedded directly:
+### 4. Embeddable Libraries
+Build libraries that work both as standalone gRPC servers or embedded directly via `FfiClientConn`. See [Go-to-Go FFI](#-go-to-go-ffi-embedded) for details and code examples.
 
-```go
-// Embedded mode - same process, no network
-conn := api.NewFfiClientConn(myLibrary)
-client := pb.NewMyServiceClient(conn)
-resp, _ := client.Process(ctx, req)
-
-// Remote mode - same client code works over network
-conn, _ := grpc.Dial("localhost:50051")
-client := pb.NewMyServiceClient(conn)
-resp, _ := client.Process(ctx, req)
-```
+### 5. In-Process Microservices (Proprietary Plugins)
+Ship closed-source gRPC services as shared libraries for open-source host applications. See [In-Process Microservice](#-in-process-microservice-shared-library-plugin) for implementation details and code examples.
 
 ---
 
@@ -424,13 +607,32 @@ func main() {
 
 Compile your Go code into a C-shared library.
 
-**Linux:**
-```bash
-go build -buildmode=c-shared -o libmyapp.so cmd/server/main.go
+**Project Structure:**
+```
+my-app/
+├── cmd/server/main.go    # Entry point (Step 5)
+├── pkg/
+│   ├── api/              # Generated proto + FFI bindings
+│   └── service/          # Your service implementations
+└── api/service.proto     # Protocol definitions
 ```
 
-**Android:**
-Requires the Android NDK and a configured environment (see the `synurang` makefile for reference).
+**Build Command:**
+```bash
+CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" \
+    -buildmode=c-shared -o libmyapp.so cmd/server/main.go
+```
+
+**Flags:**
+| Flag | Description |
+|------|-------------|
+| `CGO_ENABLED=1` | Required for C shared library |
+| `-trimpath` | Remove file paths from binary |
+| `-ldflags "-s -w"` | Strip debug info (smaller binary) |
+| `-buildmode=c-shared` | Output as shared library |
+
+**Cross-Platform:**
+See the `synurang` makefile for Android NDK, macOS, and Windows build examples.
 
 ### Step 7: Flutter Integration
 
@@ -496,7 +698,7 @@ Direct access to the Go-managed SQLite cache.
 
 ### Go API (`package:synurang/pkg/synurang`)
 
-#### FFI Client Connection (Optional - for Embeddable Libraries)
+#### FFI Client Connection (for Embeddable Libraries)
 
 Zero-copy Go-to-Go communication for building libraries that work both as standalone gRPC servers or embedded directly. Supports all RPC patterns.
 
@@ -518,6 +720,48 @@ stream.Send(&pb.Message{Text: "hello"})
 reply, err := stream.Recv()
 ```
 
+#### Plugin Loader (for Loading Shared Library Plugins)
+
+Load and call plugin shared libraries with automatic error handling. Supports full gRPC semantics including streaming.
+
+*   **`LoadPlugin(path string) (*Plugin, error)`**: Loads a plugin from a `.so`/`.dylib`/`.dll` file.
+*   **`NewPluginClientConn(plugin *Plugin, serviceName string) *PluginClientConn`**: Creates a `grpc.ClientConnInterface` for using standard gRPC clients with plugin transport. **Recommended approach.**
+*   **`(*Plugin) Invoke(serviceName, method string, data []byte) ([]byte, error)`**: Low-level method call. Handles status byte parsing and error propagation.
+*   **`(*Plugin) OpenStream(serviceName, method string) (*PluginStream, error)`**: Opens a streaming RPC to the plugin.
+*   **`(*Plugin) Close() error`**: Unloads the plugin.
+
+```go
+// Load plugin
+plugin, err := synurang.LoadPlugin("./myplugin.so")
+if err != nil {
+    log.Fatal(err)
+}
+defer plugin.Close()
+
+// Option 1: gRPC ClientConnInterface (Recommended)
+conn := synurang.NewPluginClientConn(plugin, "MyService")
+client := pb.NewMyServiceClient(conn)
+
+// Unary call
+resp, err := client.MyMethod(ctx, &pb.Request{})
+
+// Server streaming
+stream, _ := client.ServerStream(ctx, &pb.Request{})
+for {
+    msg, err := stream.Recv()
+    if err == io.EOF { break }
+    // process msg
+}
+
+// Option 2: Raw invoke (low-level)
+respBytes, err := plugin.Invoke("MyService", "/pkg.MyService/Method", reqBytes)
+if err != nil {
+    if pluginErr, ok := err.(*synurang.PluginError); ok {
+        fmt.Println("Plugin error:", pluginErr.Message)
+    }
+}
+```
+
 ## 📂 Directory Structure
 
 ```
@@ -533,8 +777,10 @@ synurang/
 │   └── test/                # Integration tests
 ├── pkg/
 │   ├── api/                 # Generated Go proto + FFI bindings
-│   ├── synurang/            # Runtime library for FfiClientConn
-│   │   └── synurang.go      # FfiClientConn, Invoker interfaces
+│   ├── synurang/            # Runtime library
+│   │   ├── synurang.go      # FfiClientConn, Invoker interfaces
+│   │   ├── plugin.go        # Plugin loader (LoadPlugin, dlopen/dlsym)
+│   │   └── plugin_conn.go   # PluginClientConn (grpc.ClientConnInterface)
 │   └── service/             # Go service implementations
 │       ├── cache.go         # SQLite cache service
 │       ├── server.go        # gRPC server setup
@@ -544,7 +790,11 @@ synurang/
 │   ├── synurang.dart        # Main Dart entry point (includes FfiClientChannel)
 │   └── src/generated/       # Generated Dart proto
 ├── test/                    # Test suites
-│   ├── go_ffi/              # Go-to-Go FFI tests (optional)
+│   ├── go_ffi/              # Go-to-Go FFI tests
+│   ├── plugin/              # Plugin FFI tests (shared library loading)
+│   │   ├── api/             # Generated plugin API
+│   │   ├── impl/            # Plugin implementation (builds to .so)
+│   │   └── host/            # Host application that loads plugin
 │   ├── cpp_ffi/             # C++ FFI tests (experimental)
 │   └── rust_ffi/            # Rust FFI tests (experimental)
 ├── makefile

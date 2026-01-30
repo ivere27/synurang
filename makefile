@@ -19,7 +19,7 @@ ANDROID_CC_ARM := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-l
 ANDROID_CC_ARM64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
 ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang
 
-.PHONY: all proto shared_linux shared_android clean test test_go test_dart test_cpp test_rust run ffigen benchmark build_server
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host
 
 # =============================================================================
 # Default Target
@@ -96,6 +96,25 @@ proto: build_plugin
 		--synurang-ffi_out=./example/lib/src/generated --synurang-ffi_opt=lang=dart \
 		example.proto
 
+	@echo "Generating test/plugin proto code..."
+	mkdir -p test/plugin/api
+	protoc -Iexample/api -Iapi -I/usr/include \
+		--go_out=./test/plugin/api --go_opt=paths=source_relative \
+		--go_opt=Mcore.proto=github.com/ivere27/synurang/pkg/api \
+		--go-grpc_out=./test/plugin/api --go-grpc_opt=paths=source_relative \
+		--go-grpc_opt=Mcore.proto=github.com/ivere27/synurang/pkg/api \
+		example.proto
+	protoc -Iexample/api -Iapi -I/usr/include \
+		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
+		--synurang-ffi_out=./test/plugin/api \
+		--synurang-ffi_opt=lang=go,mode=plugin_server,services=GoGreeterService \
+		example.proto
+	protoc -Iexample/api -Iapi -I/usr/include \
+		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
+		--synurang-ffi_out=./test/plugin/api \
+		--synurang-ffi_opt=lang=dart,mode=plugin_server,services=GoGreeterService \
+		example.proto
+
 	@echo "Proto generation complete."
 
 # =============================================================================
@@ -165,12 +184,25 @@ run_android_debug: shared_android
 	echo "Using Android device: $$DEVICE_ID"; \
 	cd example && flutter run -d $$DEVICE_ID --debug
 
+# Plugin Shared Library (for test/plugin)
+shared_plugin:
+	@echo "Building plugin shared library..."
+	CGO_ENABLED=1 go build -buildmode=c-shared \
+		-o test/plugin/impl/plugin.so ./test/plugin/impl/
+	@echo "Plugin build complete: test/plugin/impl/plugin.so"
+
+# Plugin Host Application
+build_plugin_host:
+	@echo "Building plugin host application..."
+	go build -o test/plugin/host/host ./test/plugin/host/
+	@echo "Plugin host build complete: test/plugin/host/host"
+
 # =============================================================================
 # Tests
 # =============================================================================
 
-# Run all tests (Go + Dart + C++ + Rust)
-test: test_go test_dart test_cpp test_rust
+# Run all tests (Go + Dart + C++ + Rust + Plugin)
+test: test_go test_dart test_cpp test_rust test_plugin
 	@echo "All tests complete."
 
 # C++ Tests (Generation + FFI)
@@ -208,6 +240,19 @@ test_rust_ffi:
 	flutter pub get
 	LD_LIBRARY_PATH=$(CURRENT_DIR)/test/rust_ffi/target/release:${LD_LIBRARY_PATH} dart test test/rust_ffi/rust_integration_test.dart
 	@echo "Rust FFI Integration tests complete."
+
+# Plugin FFI tests (Go-to-Go via shared library)
+test_plugin: proto shared_plugin build_plugin_host
+	@echo "Running Plugin FFI tests..."
+	cd test/plugin/host && ./host
+	@echo "Plugin FFI tests complete."
+
+# Plugin FFI tests with race detector
+test_plugin_race: proto shared_plugin
+	@echo "Building and running Plugin FFI tests with race detector..."
+	go build -race -o test/plugin/host/host_race ./test/plugin/host/
+	cd test/plugin/host && ./host_race
+	@echo "Plugin FFI race tests complete."
 
 # Go tests only (requires generated proto code)
 test_go: proto
@@ -354,6 +399,9 @@ clean:
 	rm -f pkg/api/*.pb.go
 	rm -rf lib/src/generated/*.dart
 	rm -f bin/protoc-gen-synurang-ffi
+	rm -f test/plugin/api/*.pb.go test/plugin/api/*.pb.dart
+	rm -f test/plugin/impl/plugin.so test/plugin/impl/plugin.h
+	rm -f test/plugin/host/host
 
 # =============================================================================
 # Help
@@ -366,12 +414,15 @@ help:
 	@echo "  all            - Build proto and Linux shared library"
 	@echo "  shared_linux   - Build Linux amd64 shared library"
 	@echo "  shared_android - Build Android ARM/ARM64/x86_64 shared libraries"
-	@echo "  proto          - Generate Go and Dart proto code"
+	@echo "  shared_plugin  - Build plugin shared library (test/plugin/impl/plugin.so)"
+	@echo "  proto          - Generate Go and Dart proto code (includes test/plugin)"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test           - Run all tests (Go + Dart)"
+	@echo "  test           - Run all tests (Go + Dart + C++ + Rust + Plugin)"
 	@echo "  test_go        - Run Go tests only"
 	@echo "  test_dart      - Run Dart tests only"
+	@echo "  test_plugin    - Run plugin FFI tests (Go-to-Go via shared library)"
+	@echo "  test_plugin_race - Run plugin FFI tests with race detector"
 	@echo "  test_quick     - Run Go tests (no verbose)"
 	@echo ""
 	@echo "Development:"
@@ -383,3 +434,4 @@ help:
 	@echo ""
 	@echo "Example:"
 	@echo "  make shared_linux test_go run_example"
+	@echo "  make test_plugin  # Test plugin FFI"

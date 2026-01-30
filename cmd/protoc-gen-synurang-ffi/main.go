@@ -13,6 +13,7 @@ import (
 func main() {
 	var flags flag.FlagSet
 	lang := flags.String("lang", "", "language to generate (go, dart, cpp, or rust)")
+	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client")
 	dartPackage := flags.String("dart_package", "", "Dart package name for imports (e.g. my_app). If set, generates package imports.")
 	services := flags.String("services", "", "comma-separated list of services to generate for (empty for all)")
 
@@ -33,7 +34,7 @@ func main() {
 				continue
 			}
 			if *lang == "go" || *lang == "" {
-				generateGoFile(gen, f, serviceList)
+				generateGoFile(gen, f, serviceList, *mode)
 			}
 			if *lang == "dart" || *lang == "" {
 				generateDartFile(gen, f, serviceList, *dartPackage)
@@ -49,7 +50,6 @@ func main() {
 	})
 }
 
-
 func shouldGenerateService(serviceName string, serviceList map[string]bool) bool {
 	if len(serviceList) == 0 {
 		return true
@@ -61,7 +61,7 @@ func shouldGenerateService(serviceName string, serviceList map[string]bool) bool
 // Go Code Generation
 // =============================================================================
 
-func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool) {
+func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool, mode string) {
 	filename := strings.TrimSuffix(file.Desc.Path(), ".proto") + "_ffi.pb.go"
 	if idx := strings.LastIndex(filename, "/"); idx >= 0 {
 		filename = filename[idx+1:]
@@ -79,18 +79,44 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 	g.P(`import "C"`)
 	g.P()
 
+	// Generate imports based on mode
 	g.P("import (")
-	g.P(`	"context"`)
-	g.P(`	"fmt"`)
-	g.P(`	"unsafe"`)
+	g.P("\t\"context\"")
+	g.P("\t\"fmt\"")
+	g.P("\t\"unsafe\"")
 	g.P()
-	g.P(`	"github.com/ivere27/synurang/pkg/synurang"`)
-	g.P(`	"google.golang.org/grpc"`)
-	g.P(`	"google.golang.org/protobuf/proto"`)
+	if mode == "" || mode == "default" {
+		g.P("\t\"github.com/ivere27/synurang/pkg/synurang\"")
+		g.P("\t\"google.golang.org/grpc\"")
+	}
+	if mode == "plugin_server" {
+		g.P("\t\"github.com/ivere27/synurang/pkg/plugin\"")
+	}
+	g.P("\t\"google.golang.org/protobuf/proto\"")
 	g.P(")")
 	g.P()
 
-	// Generate FfiServer interface
+	// ==========================================================================
+	// Plugin Server Mode: Generate per-service interfaces and C exports
+	// ==========================================================================
+	if mode == "plugin_server" {
+		generatePluginServerMode(g, file, serviceList)
+		return
+	}
+
+	// ==========================================================================
+	// Plugin Client Mode: Generate host-side loader and typed clients
+	// ==========================================================================
+	if mode == "plugin_client" {
+		generatePluginClientMode(g, file, serviceList)
+		return
+	}
+
+	// ==========================================================================
+	// Default Mode: Generate FfiServer interface and client support
+	// ==========================================================================
+
+	// Generate FfiServer interface (combines all services)
 	g.P("type FfiServer interface {")
 	for _, service := range file.Services {
 		if !shouldGenerateService(service.GoName, serviceList) {
@@ -122,10 +148,10 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 		}
 		for _, method := range service.Methods {
 			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P(fmt.Sprintf(`	case "%s":`, methodName))
+			g.P("\tcase \"", methodName, "\":")
 			g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
 			g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
-			g.P(`			return nil, fmt.Errorf("failed to unmarshal request: %w", err)`)
+			g.P("\t\t\treturn nil, fmt.Errorf(\"failed to unmarshal request: %w\", err)")
 			g.P("\t\t}")
 
 			callMethod := method.GoName
@@ -142,7 +168,7 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 	}
 
 	g.P("\tdefault:")
-	g.P(`		return nil, fmt.Errorf("unknown method: %s", method)`)
+	g.P("\t\treturn nil, fmt.Errorf(\"unknown method: %s\", method)")
 	g.P("\t}")
 	g.P("}")
 	g.P()
@@ -160,10 +186,10 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 		}
 		for _, method := range service.Methods {
 			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P(fmt.Sprintf(`	case "%s":`, methodName))
+			g.P("\tcase \"", methodName, "\":")
 			g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
 			g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
-			g.P(`			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)`)
+			g.P("\t\t\treturn nil, 0, fmt.Errorf(\"failed to unmarshal request: %w\", err)")
 			g.P("\t\t}")
 
 			callMethod := method.GoName
@@ -181,6 +207,9 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 			g.P("\t\t\treturn nil, 0, nil")
 			g.P("\t\t}")
 			g.P("\t\tcPtr := C.malloc(C.size_t(size))")
+			g.P("\t\tif cPtr == nil {")
+			g.P("\t\t\treturn nil, 0, fmt.Errorf(\"failed to allocate memory for response\")")
+			g.P("\t\t}")
 			g.P("\t\tbuf := unsafe.Slice((*byte)(cPtr), size)")
 			g.P("\t\tif _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {")
 			g.P("\t\t\tC.free(cPtr)")
@@ -191,105 +220,113 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 	}
 
 	g.P("\tdefault:")
-	g.P(`		return nil, 0, fmt.Errorf("unknown method: %s", method)`)
+	g.P("\t\treturn nil, 0, fmt.Errorf(\"unknown method: %s\", method)")
 	g.P("\t}")
 	g.P("}")
 	g.P()
 
-	// Generate InvokeStream for streaming RPCs
-	g.P("// InvokeStream dispatches streaming RPC calls to the appropriate server method.")
-	g.P("func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {")
-	g.P("\tswitch method {")
-
+	// Check if there are any streaming methods
+	hasGrpcStreaming := false
 	for _, service := range file.Services {
 		if !shouldGenerateService(service.GoName, serviceList) {
 			continue
 		}
 		for _, method := range service.Methods {
-			if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-				continue // Skip unary methods
+			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
+				hasGrpcStreaming = true
+				break
 			}
-
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P(fmt.Sprintf(`	case "%s":`, methodName))
-
-			// Generate the typed stream wrapper (grpc prefix for serialization-based dispatch)
-			streamType := fmt.Sprintf("grpc%s%sStream", service.GoName, method.GoName)
-
-			if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
-				// Server streaming: Method(req, stream) error
-				g.P("\t\t// Server streaming")
-				g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-				g.P("\t\tif err := stream.RecvMsg(req); err != nil {")
-				g.P("\t\t\treturn err")
-				g.P("\t\t}")
-				g.P("\t\treturn s.", method.GoName, "(req, &", streamType, "{stream})")
-			} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-				// Client streaming: Method(stream) error
-				g.P("\t\t// Client streaming")
-				g.P("\t\treturn s.", method.GoName, "(&", streamType, "{stream})")
-			} else {
-				// Bidi streaming: Method(stream) error
-				g.P("\t\t// Bidi streaming")
-				g.P("\t\treturn s.", method.GoName, "(&", streamType, "{stream})")
-			}
+		}
+		if hasGrpcStreaming {
+			break
 		}
 	}
 
-	g.P("\tdefault:")
-	g.P(`		return fmt.Errorf("unknown streaming method: %s", method)`)
-	g.P("\t}")
-	g.P("}")
-	g.P()
+	// Generate InvokeStream and stream wrappers only if there are streaming methods
+	if hasGrpcStreaming {
+		g.P("// InvokeStream dispatches streaming RPC calls to the appropriate server method.")
+		g.P("func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {")
+		g.P("\tswitch method {")
 
-	// Generate typed stream wrappers for each streaming method (for InvokeStream function)
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+		for _, service := range file.Services {
+			if !shouldGenerateService(service.GoName, serviceList) {
 				continue
 			}
+			for _, method := range service.Methods {
+				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+					continue
+				}
 
-			streamType := fmt.Sprintf("grpc%s%sStream", service.GoName, method.GoName)
+				methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
+				g.P("\tcase \"", methodName, "\":")
 
-			g.P("// ", streamType, " wraps grpc.ServerStream for ", service.GoName, ".", method.GoName)
-			g.P("type ", streamType, " struct {")
-			g.P("\tgrpc.ServerStream")
-			g.P("}")
-			g.P()
+				streamType := fmt.Sprintf("grpc%s%sStream", service.GoName, method.GoName)
 
-			if method.Desc.IsStreamingServer() {
-				// Add Send method
-				g.P("func (s *", streamType, ") Send(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
-				g.P("\treturn s.ServerStream.SendMsg(m)")
-				g.P("}")
-				g.P()
+				if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
+					g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
+					g.P("\t\tif err := stream.RecvMsg(req); err != nil {")
+					g.P("\t\t\treturn err")
+					g.P("\t\t}")
+					g.P("\t\treturn s.", method.GoName, "(req, &", streamType, "{stream})")
+				} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+					g.P("\t\treturn s.", method.GoName, "(&", streamType, "{stream})")
+				} else {
+					g.P("\t\treturn s.", method.GoName, "(&", streamType, "{stream})")
+				}
 			}
+		}
 
-			if method.Desc.IsStreamingClient() {
-				// Add Recv method
-				g.P("func (s *", streamType, ") Recv() (*", g.QualifiedGoIdent(method.Input.GoIdent), ", error) {")
-				g.P("\tm := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-				g.P("\tif err := s.ServerStream.RecvMsg(m); err != nil {")
-				g.P("\t\treturn nil, err")
-				g.P("\t}")
-				g.P("\treturn m, nil")
+		g.P("\tdefault:")
+		g.P("\t\treturn fmt.Errorf(\"unknown streaming method: %s\", method)")
+		g.P("\t}")
+		g.P("}")
+		g.P()
+
+		// Generate typed stream wrappers
+		for _, service := range file.Services {
+			if !shouldGenerateService(service.GoName, serviceList) {
+				continue
+			}
+			for _, method := range service.Methods {
+				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+					continue
+				}
+
+				streamType := fmt.Sprintf("grpc%s%sStream", service.GoName, method.GoName)
+
+				g.P("type ", streamType, " struct {")
+				g.P("\tgrpc.ServerStream")
 				g.P("}")
 				g.P()
 
-				if !method.Desc.IsStreamingServer() {
-					// Client streaming also needs SendAndClose
-					g.P("func (s *", streamType, ") SendAndClose(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
+				if method.Desc.IsStreamingServer() {
+					g.P("func (s *", streamType, ") Send(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
 					g.P("\treturn s.ServerStream.SendMsg(m)")
 					g.P("}")
 					g.P()
 				}
-			}
 
-			g.P("var _ ", service.GoName, "_", method.GoName, "Server = (*", streamType, ")(nil)")
-			g.P()
+				if method.Desc.IsStreamingClient() {
+					g.P("func (s *", streamType, ") Recv() (*", g.QualifiedGoIdent(method.Input.GoIdent), ", error) {")
+					g.P("\tm := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
+					g.P("\tif err := s.ServerStream.RecvMsg(m); err != nil {")
+					g.P("\t\treturn nil, err")
+					g.P("\t}")
+					g.P("\treturn m, nil")
+					g.P("}")
+					g.P()
+
+					if !method.Desc.IsStreamingServer() {
+						g.P("func (s *", streamType, ") SendAndClose(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
+						g.P("\treturn s.ServerStream.SendMsg(m)")
+						g.P("}")
+						g.P()
+					}
+				}
+
+				g.P("var _ ", service.GoName, "_", method.GoName, "Server = (*", streamType, ")(nil)")
+				g.P()
+			}
 		}
 	}
 
@@ -319,7 +356,7 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 		}
 		for _, method := range service.Methods {
 			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P(fmt.Sprintf(`	case "%s":`, methodName))
+			g.P("\tcase \"", methodName, "\":")
 
 			callMethod := method.GoName
 			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
@@ -330,15 +367,14 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 			g.P("\t\tif err != nil {")
 			g.P("\t\t\treturn err")
 			g.P("\t\t}")
-			g.P("\t\t// Zero-copy: direct struct copy")
-			g.P("\t\tdst := reply.(*", g.QualifiedGoIdent(method.Output.GoIdent), ")")
-			g.P("\t\t*dst = *resp")
+			g.P("\t\t// Use proto.Merge to avoid copying mutex in MessageState")
+			g.P("\t\tproto.Merge(reply.(proto.Message), resp)")
 			g.P("\t\treturn nil")
 		}
 	}
 
 	g.P("\tdefault:")
-	g.P(`		return fmt.Errorf("unknown method: %s", method)`)
+	g.P("\t\treturn fmt.Errorf(\"unknown method: %s\", method)")
 	g.P("\t}")
 	g.P("}")
 	g.P()
@@ -360,7 +396,7 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 			hasStreamingMethods = true
 
 			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P(fmt.Sprintf(`	case "%s":`, methodName))
+			g.P("\tcase \"", methodName, "\":")
 
 			streamType := fmt.Sprintf("ffi%s%sStream", service.GoName, method.GoName)
 
@@ -386,7 +422,7 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 	}
 
 	g.P("\tdefault:")
-	g.P(`		return fmt.Errorf("unknown streaming method: %s", method)`)
+	g.P("\t\treturn fmt.Errorf(\"unknown streaming method: %s\", method)")
 	g.P("\t}")
 	g.P("}")
 	g.P()
@@ -463,15 +499,502 @@ func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[s
 	g.P("// FFI Client - convenience wrapper for synurang.FfiClientConn")
 	g.P("// =============================================================================")
 	g.P()
-	g.P("// NewFfiClientConn creates a new FFI client connection that implements")
-	g.P("// grpc.ClientConnInterface. This allows using standard generated gRPC clients")
-	g.P("// with embedded FFI calls instead of network transport.")
-	g.P("// Supports unary and all streaming patterns (server, client, bidi).")
-	g.P("// Uses zero-copy mode for Go-to-Go FFI (no serialization overhead).")
 	g.P("func NewFfiClientConn(server FfiServer) grpc.ClientConnInterface {")
 	g.P("\treturn synurang.NewFfiClientConn(&ffiInvoker{server: server})")
 	g.P("}")
 	g.P()
+}
+
+// =============================================================================
+// Plugin Server Mode - Per-service interfaces and C exports
+// =============================================================================
+
+func generatePluginServerMode(g *protogen.GeneratedFile, file *protogen.File, serviceList map[string]bool) {
+	// Check if we have streaming methods
+	hasStreaming := false
+	for _, service := range file.Services {
+		if !shouldGenerateService(service.GoName, serviceList) {
+			continue
+		}
+		for _, method := range service.Methods {
+			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
+				hasStreaming = true
+				break
+			}
+		}
+		if hasStreaming {
+			break
+		}
+	}
+
+	// Add additional imports for streaming
+	if hasStreaming {
+		g.P("import (")
+		g.P("\t\"io\"")
+		g.P()
+		g.P("\t\"google.golang.org/grpc/metadata\"")
+		g.P(")")
+		g.P()
+	}
+
+	// Generate helper for non-blocking error send
+	g.P("// trySendErr sends error to channel non-blocking")
+	g.P("func trySendErr(ch chan<- error, err error) {")
+	g.P("\tselect {")
+	g.P("\tcase ch <- err:")
+	g.P("\tdefault:")
+	g.P("\t}")
+	g.P("}")
+	g.P()
+
+	// Generate per-service plugin interface
+	for _, service := range file.Services {
+		if !shouldGenerateService(service.GoName, serviceList) {
+			continue
+		}
+
+		interfaceName := service.GoName + "Plugin"
+
+		g.P("// ", interfaceName, " is the interface that plugin implementations must satisfy.")
+		g.P("// Only methods for this specific service are required.")
+		g.P("type ", interfaceName, " interface {")
+		for _, method := range service.Methods {
+			if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
+				// Server streaming: Method(req, stream) error
+				streamType := service.GoName + "_" + method.GoName + "Server"
+				g.P("\t", method.GoName, "(*", g.QualifiedGoIdent(method.Input.GoIdent), ", ", streamType, ") error")
+			} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+				// Client streaming: Method(stream) (*Resp, error)
+				streamType := service.GoName + "_" + method.GoName + "Server"
+				g.P("\t", method.GoName, "(", streamType, ") (*", g.QualifiedGoIdent(method.Output.GoIdent), ", error)")
+			} else if method.Desc.IsStreamingClient() && method.Desc.IsStreamingServer() {
+				// Bidi streaming: Method(stream) error
+				streamType := service.GoName + "_" + method.GoName + "Server"
+				g.P("\t", method.GoName, "(", streamType, ") error")
+			} else {
+				// Unary
+				g.P("\t", method.GoName, "(context.Context, *", g.QualifiedGoIdent(method.Input.GoIdent), ") (*", g.QualifiedGoIdent(method.Output.GoIdent), ", error)")
+			}
+		}
+		g.P("}")
+		g.P()
+
+		// Generate per-service global variable and registration
+		varName := "plugin" + service.GoName
+		g.P("var ", varName, " ", interfaceName)
+		g.P()
+
+		g.P("// Register", service.GoName, "Plugin sets the plugin implementation for ", service.GoName, ".")
+		g.P("// This must be called in the plugin's init() function.")
+		g.P("func Register", service.GoName, "Plugin(s ", interfaceName, ") {")
+		g.P("\t", varName, " = s")
+		g.P("}")
+		g.P()
+	}
+
+	// Generate per-service invoke function (internal) - unary methods only
+	// Streaming methods are handled by the stream handler
+	for _, service := range file.Services {
+		if !shouldGenerateService(service.GoName, serviceList) {
+			continue
+		}
+
+		varName := "plugin" + service.GoName
+		funcName := "invoke" + service.GoName
+
+		g.P("func ", funcName, "(ctx context.Context, method string, data []byte) ([]byte, error) {")
+		g.P("\tif ", varName, " == nil {")
+		g.P("\t\treturn nil, fmt.Errorf(\"plugin not registered for ", service.GoName, "\")")
+		g.P("\t}")
+		g.P("\tswitch method {")
+
+		for _, method := range service.Methods {
+			// Skip streaming methods - they're handled via the stream handler
+			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
+				continue
+			}
+
+			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
+			g.P("\tcase \"", methodName, "\":")
+			g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
+			g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
+			g.P("\t\t\treturn nil, fmt.Errorf(\"failed to unmarshal request: %w\", err)")
+			g.P("\t\t}")
+			g.P("\t\tresp, err := ", varName, ".", method.GoName, "(ctx, req)")
+			g.P("\t\tif err != nil {")
+			g.P("\t\t\treturn nil, err")
+			g.P("\t\t}")
+			g.P("\t\treturn proto.Marshal(resp)")
+		}
+
+		g.P("\tdefault:")
+		g.P("\t\treturn nil, fmt.Errorf(\"unknown method: %s\", method)")
+		g.P("\t}")
+		g.P("}")
+		g.P()
+	}
+
+	g.P("// =============================================================================")
+	g.P("// C-Exported Functions")
+	g.P("// =============================================================================")
+	g.P()
+	g.P("// Response format: [status:1][payload...]")
+	g.P("// status=0: success, payload=protobuf response")
+	g.P("// status=1: error, payload=error string")
+	g.P()
+
+	// Generate C-exported function for each service
+	for _, service := range file.Services {
+		if !shouldGenerateService(service.GoName, serviceList) {
+			continue
+		}
+
+		exportName := "Synurang_Invoke_" + service.GoName
+		funcName := "invoke" + service.GoName
+
+		g.P("//export ", exportName)
+		g.P("func ", exportName, "(method *C.char, data *C.char, dataLen C.int, respLen *C.int) *C.char {")
+		g.P("\tctx := context.Background()")
+		g.P("\tm := C.GoString(method)")
+		g.P()
+		g.P("\t// Handle nil data safely")
+		g.P("\tvar d []byte")
+		g.P("\tif data != nil && dataLen > 0 {")
+		g.P("\t\td = C.GoBytes(unsafe.Pointer(data), dataLen)")
+		g.P("\t}")
+		g.P()
+		g.P("\tres, err := ", funcName, "(ctx, m, d)")
+		g.P("\tif err != nil {")
+		g.P("\t\t// Return error with status byte = 1")
+		g.P("\t\terrBytes := []byte(err.Error())")
+		g.P("\t\tresult := make([]byte, 1+len(errBytes))")
+		g.P("\t\tresult[0] = 1 // error status")
+		g.P("\t\tcopy(result[1:], errBytes)")
+		g.P("\t\t*respLen = C.int(len(result))")
+		g.P("\t\treturn (*C.char)(C.CBytes(result))")
+		g.P("\t}")
+		g.P()
+		g.P("\t// Return success with status byte = 0")
+		g.P("\tresult := make([]byte, 1+len(res))")
+		g.P("\tresult[0] = 0 // success status")
+		g.P("\tcopy(result[1:], res)")
+		g.P("\t*respLen = C.int(len(result))")
+		g.P("\treturn (*C.char)(C.CBytes(result))")
+		g.P("}")
+		g.P()
+	}
+
+	if hasStreaming {
+		g.P("// =============================================================================")
+		g.P("// Streaming Support")
+		g.P("// =============================================================================")
+		g.P()
+
+		// Generate stream open for each service
+		for _, service := range file.Services {
+			if !shouldGenerateService(service.GoName, serviceList) {
+				continue
+			}
+
+			varName := "plugin" + service.GoName
+			openName := "Synurang_Stream_" + service.GoName + "_Open"
+
+			g.P("//export ", openName)
+			g.P("func ", openName, "(method *C.char) C.ulonglong {")
+			g.P("\tif ", varName, " == nil {")
+			g.P("\t\treturn 0")
+			g.P("\t}")
+			g.P()
+			g.P("\tm := C.GoString(method)")
+			// Use plugin.NewStream from pkg/plugin
+			g.P("\thandle, ps := plugin.NewStream(m)")
+			g.P()
+			g.P("\t// Start stream handler goroutine")
+			g.P("\tgo func() {")
+			g.P("\t\tdefer ps.CloseRecvCh()")
+			g.P("\t\tdefer ps.Cancel()")
+			g.P()
+			g.P("\t\t// Recover from panics in plugin methods")
+			g.P("\t\tdefer func() {")
+			g.P("\t\t\tif r := recover(); r != nil {")
+			g.P("\t\t\t\ttrySendErr(ps.ErrCh, fmt.Errorf(\"panic in plugin: %v\", r))")
+			g.P("\t\t\t}")
+			g.P("\t\t}()")
+			g.P()
+			g.P("\t\tswitch m {")
+
+			for _, method := range service.Methods {
+				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+					continue
+				}
+
+				methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
+				g.P("\t\tcase \"", methodName, "\":")
+
+				streamWrapper := fmt.Sprintf("pluginStream%s%s", service.GoName, method.GoName)
+
+				if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
+					// Server streaming
+					g.P("\t\t\t// Server streaming - receive initial request, then send responses")
+					g.P("\t\t\tselect {")
+					g.P("\t\t\tcase data := <-ps.SendCh:")
+					g.P("\t\t\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
+					g.P("\t\t\t\tif err := proto.Unmarshal(data, req); err != nil {")
+					g.P("\t\t\t\t\ttrySendErr(ps.ErrCh, err)")
+					g.P("\t\t\t\t\treturn")
+					g.P("\t\t\t\t}")
+					g.P("\t\t\t\tif err := ", varName, ".", method.GoName, "(req, &", streamWrapper, "{ps}); err != nil && err != io.EOF {")
+					g.P("\t\t\t\t\ttrySendErr(ps.ErrCh, err)")
+					g.P("\t\t\t\t}")
+					g.P("\t\t\tcase <-ps.Ctx.Done():")
+					g.P("\t\t\t\treturn")
+					g.P("\t\t\t}")
+				} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+					// Client streaming
+					g.P("\t\t\t// Client streaming")
+					g.P("\t\t\tresp, err := ", varName, ".", method.GoName, "(&", streamWrapper, "{ps})")
+					g.P("\t\t\tif err != nil {")
+					g.P("\t\t\t\ttrySendErr(ps.ErrCh, err)")
+					g.P("\t\t\t\treturn")
+					g.P("\t\t\t}")
+					g.P("\t\t\tif data, err := proto.Marshal(resp); err != nil {")
+					g.P("\t\t\t\ttrySendErr(ps.ErrCh, err)")
+					g.P("\t\t\t} else {")
+					g.P("\t\t\t\tselect {")
+					g.P("\t\t\t\tcase ps.RecvCh <- data:")
+					g.P("\t\t\t\tcase <-ps.Ctx.Done():")
+					g.P("\t\t\t\t}")
+					g.P("\t\t\t}")
+				} else {
+					// Bidi streaming
+					g.P("\t\t\t// Bidi streaming")
+					g.P("\t\t\tif err := ", varName, ".", method.GoName, "(&", streamWrapper, "{ps}); err != nil && err != io.EOF {")
+					g.P("\t\t\t\ttrySendErr(ps.ErrCh, err)")
+					g.P("\t\t\t}")
+				}
+			}
+
+			g.P("\t\t}")
+			g.P("\t}()")
+			g.P()
+			g.P("\treturn C.ulonglong(handle)")
+			g.P("}")
+			g.P()
+		}
+
+		// Generate stream wrappers for each streaming method
+		for _, service := range file.Services {
+			if !shouldGenerateService(service.GoName, serviceList) {
+				continue
+			}
+			for _, method := range service.Methods {
+				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
+					continue
+				}
+
+				wrapperName := fmt.Sprintf("pluginStream%s%s", service.GoName, method.GoName)
+
+				g.P("type ", wrapperName, " struct {")
+				g.P("\tps *plugin.PluginStream")
+				g.P("}")
+				g.P()
+
+				// Context
+				g.P("func (s *", wrapperName, ") Context() context.Context {")
+				g.P("\treturn s.ps.Ctx")
+				g.P("}")
+				g.P()
+
+				if method.Desc.IsStreamingServer() {
+					// Send for server streaming
+					g.P("func (s *", wrapperName, ") Send(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
+					g.P("\tdata, err := proto.Marshal(m)")
+					g.P("\tif err != nil {")
+					g.P("\t\treturn err")
+					g.P("\t}")
+					g.P("\tselect {")
+					g.P("\tcase s.ps.RecvCh <- data:")
+					g.P("\t\treturn nil")
+					g.P("\tcase <-s.ps.Ctx.Done():")
+					g.P("\t\treturn s.ps.Ctx.Err()")
+					g.P("\t}")
+					g.P("}")
+					g.P()
+				}
+
+				if method.Desc.IsStreamingClient() {
+					// Recv for client streaming
+					g.P("func (s *", wrapperName, ") Recv() (*", g.QualifiedGoIdent(method.Input.GoIdent), ", error) {")
+					g.P("\tselect {")
+					g.P("\tcase data, ok := <-s.ps.SendCh:")
+					g.P("\t\tif !ok {")
+					g.P("\t\t\treturn nil, io.EOF")
+					g.P("\t\t}")
+					g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
+					g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
+					g.P("\t\t\treturn nil, err")
+					g.P("\t\t}")
+					g.P("\t\treturn req, nil")
+					g.P("\tcase <-s.ps.Ctx.Done():")
+					g.P("\t\treturn nil, s.ps.Ctx.Err()")
+					g.P("\t}")
+					g.P("}")
+					g.P()
+
+					if !method.Desc.IsStreamingServer() {
+						// SendAndClose for client streaming only
+						g.P("func (s *", wrapperName, ") SendAndClose(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
+						g.P("\tdata, err := proto.Marshal(m)")
+						g.P("\tif err != nil {")
+						g.P("\t\treturn err")
+						g.P("\t}")
+						g.P("\tselect {")
+						g.P("\tcase s.ps.RecvCh <- data:")
+						g.P("\t\treturn nil")
+						g.P("\tcase <-s.ps.Ctx.Done():")
+						g.P("\t\treturn s.ps.Ctx.Err()")
+						g.P("\t}")
+						g.P("}")
+						g.P()
+					}
+				}
+
+				// Stub methods for grpc.ServerStream compatibility
+				g.P("func (s *", wrapperName, ") SetHeader(metadata.MD) error { return nil }")
+				g.P("func (s *", wrapperName, ") SendHeader(metadata.MD) error { return nil }")
+				g.P("func (s *", wrapperName, ") SetTrailer(metadata.MD) {}")
+				g.P("func (s *", wrapperName, ") SendMsg(m any) error { return nil }")
+				g.P("func (s *", wrapperName, ") RecvMsg(m any) error { return nil }")
+				g.P()
+			}
+		}
+	}
+}
+
+// =============================================================================
+// Plugin Client Mode - Host-side loader and typed clients
+// =============================================================================
+
+func generatePluginClientMode(g *protogen.GeneratedFile, file *protogen.File, serviceList map[string]bool) {
+	g.P("// =============================================================================")
+	g.P("// Plugin Client Mode - Host-side Loader and Typed Clients")
+	g.P("// =============================================================================")
+	g.P()
+
+	// Add purego import hint
+	g.P("// This file provides typed clients for loading and calling plugin shared libraries.")
+	g.P("// It uses github.com/ebitengine/purego for cross-platform dynamic loading.")
+	g.P("// Alternatively, you can use CGO with dlopen/dlsym directly.")
+	g.P()
+
+	// Generate PluginError type
+	g.P("// PluginError represents an error returned from a plugin.")
+	g.P("type PluginError struct {")
+	g.P("\tMessage string")
+	g.P("}")
+	g.P()
+	g.P("func (e *PluginError) Error() string {")
+	g.P("\treturn e.Message")
+	g.P("}")
+	g.P()
+
+	// Generate per-service plugin client
+	for _, service := range file.Services {
+		if !shouldGenerateService(service.GoName, serviceList) {
+			continue
+		}
+
+		clientName := service.GoName + "PluginClient"
+		exportName := "Synurang_Invoke_" + service.GoName
+
+		g.P("// ", clientName, " wraps a loaded plugin shared library.")
+		g.P("type ", clientName, " struct {")
+		g.P("\tinvoke func(method *byte, data *byte, dataLen int32, respLen *int32) *byte")
+		g.P("\tfree   func(ptr *byte)")
+		g.P("}")
+		g.P()
+
+		g.P("// New", clientName, " creates a client from function pointers.")
+		g.P("// Use purego.RegisterLibFunc to obtain these from a loaded .so/.dll.")
+		g.P("//")
+		g.P("// Example with purego:")
+		g.P("//   lib, _ := purego.Dlopen(\"./plugin.so\", purego.RTLD_LAZY)")
+		g.P("//   var invoke func(*byte, *byte, int32, *int32) *byte")
+		g.P("//   var free func(*byte)")
+		g.P("//   purego.RegisterLibFunc(&invoke, lib, \"", exportName, "\")")
+		g.P("//   purego.RegisterLibFunc(&free, lib, \"Synurang_Free\")")
+		g.P("//   client := New", clientName, "(invoke, free)")
+		g.P("func New", clientName, "(invoke func(*byte, *byte, int32, *int32) *byte, free func(*byte)) *", clientName, " {")
+		g.P("\treturn &", clientName, "{invoke: invoke, free: free}")
+		g.P("}")
+		g.P()
+
+		// Generate helper method for calling
+		g.P("func (c *", clientName, ") call(method string, reqBytes []byte) ([]byte, error) {")
+		g.P("\tmethodBytes := append([]byte(method), 0) // null-terminated")
+		g.P("\tvar respLen int32")
+		g.P()
+		g.P("\tvar dataPtr *byte")
+		g.P("\tif len(reqBytes) > 0 {")
+		g.P("\t\tdataPtr = &reqBytes[0]")
+		g.P("\t}")
+		g.P()
+		g.P("\tresultPtr := c.invoke(&methodBytes[0], dataPtr, int32(len(reqBytes)), &respLen)")
+		g.P("\tif resultPtr == nil {")
+		g.P("\t\treturn nil, fmt.Errorf(\"plugin returned nil\")")
+		g.P("\t}")
+		g.P("\tdefer c.free(resultPtr)")
+		g.P()
+		g.P("\t// Copy result before freeing")
+		g.P("\tresult := make([]byte, respLen)")
+		g.P("\tfor i := int32(0); i < respLen; i++ {")
+		g.P("\t\tresult[i] = *(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(resultPtr)) + uintptr(i)))")
+		g.P("\t}")
+		g.P()
+		g.P("\t// Check status byte")
+		g.P("\tif len(result) == 0 {")
+		g.P("\t\treturn nil, fmt.Errorf(\"empty response from plugin\")")
+		g.P("\t}")
+		g.P("\tif result[0] == 1 {")
+		g.P("\t\treturn nil, &PluginError{Message: string(result[1:])}")
+		g.P("\t}")
+		g.P("\treturn result[1:], nil")
+		g.P("}")
+		g.P()
+
+		// Generate typed methods for each RPC
+		for _, method := range service.Methods {
+			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
+				// Skip streaming for now (would need more complex implementation)
+				g.P("// ", method.GoName, " - streaming not yet supported in plugin client mode")
+				g.P()
+				continue
+			}
+
+			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
+
+			g.P("// ", method.GoName, " calls the ", method.GoName, " method on the plugin.")
+			g.P("func (c *", clientName, ") ", method.GoName, "(ctx context.Context, req *", g.QualifiedGoIdent(method.Input.GoIdent), ") (*", g.QualifiedGoIdent(method.Output.GoIdent), ", error) {")
+			g.P("\t_ = ctx // context not propagated to plugin (could add deadline)")
+			g.P("\treqBytes, err := proto.Marshal(req)")
+			g.P("\tif err != nil {")
+			g.P("\t\treturn nil, fmt.Errorf(\"failed to marshal request: %w\", err)")
+			g.P("\t}")
+			g.P()
+			g.P("\trespBytes, err := c.call(\"", methodName, "\", reqBytes)")
+			g.P("\tif err != nil {")
+			g.P("\t\treturn nil, err")
+			g.P("\t}")
+			g.P()
+			g.P("\tresp := &", g.QualifiedGoIdent(method.Output.GoIdent), "{}")
+			g.P("\tif err := proto.Unmarshal(respBytes, resp); err != nil {")
+			g.P("\t\treturn nil, fmt.Errorf(\"failed to unmarshal response: %w\", err)")
+			g.P("\t}")
+			g.P("\treturn resp, nil")
+			g.P("}")
+			g.P()
+		}
+	}
 }
 
 // =============================================================================

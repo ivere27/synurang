@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	timestamp "github.com/golang/protobuf/ptypes/timestamp"
-	"google.golang.org/protobuf/proto"
 	coreapi "github.com/ivere27/synurang/pkg/api"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestCrossProtoImport_ErrorFromCoreProto(t *testing.T) {

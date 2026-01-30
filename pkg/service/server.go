@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"log"
 	"sync"
 	"time"
@@ -244,7 +245,7 @@ func (s *CoreServiceServer) InvokeDartStream(method string, req proto.Message, f
 		for {
 			resp := factory()
 			if err := stream.RecvMsg(resp); err != nil {
-				if err.Error() == "EOF" {
+				if err == io.EOF {
 					break
 				}
 				// Check for gRPC EOF
@@ -386,6 +387,7 @@ func (s *CoreServiceServer) InvokeDartBidiStream(method string, reqs []proto.Mes
 	}
 
 	var responses []proto.Message
+	var mu sync.Mutex // Protects responses slice
 	var respErr error
 	var wg sync.WaitGroup
 
@@ -404,7 +406,9 @@ func (s *CoreServiceServer) InvokeDartBidiStream(method string, reqs []proto.Mes
 					log.Printf("Bidi unmarshal error: %v", err)
 					continue
 				}
+				mu.Lock()
 				responses = append(responses, resp)
+				mu.Unlock()
 			case <-session.DoneChan:
 				return
 			}
@@ -433,13 +437,25 @@ func (s *CoreServiceServer) InvokeDartBidiStream(method string, reqs []proto.Mes
 		timeoutChan = time.After(s.cfg.StreamTimeout)
 	}
 
+	timedOut := false
 	select {
 	case <-done:
 		// success
 	case <-timeoutChan:
 		CloseStreamSession(session.ID)
 		respErr = fmt.Errorf("timeout waiting for bidi completion")
+		timedOut = true
 	}
 
-	return responses, respErr
+	// If timeout occurred, wait for reader goroutine to finish
+	// to prevent data race on the responses slice
+	if timedOut {
+		<-done
+	}
+
+	mu.Lock()
+	result := responses
+	mu.Unlock()
+
+	return result, respErr
 }

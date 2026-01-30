@@ -185,16 +185,33 @@ func (s *ffiClientStream) Context() context.Context {
 	return s.ctx
 }
 
-func (s *ffiClientStream) SendMsg(m any) error {
+func (s *ffiClientStream) SendMsg(m any) (err error) {
 	msg, ok := m.(proto.Message)
 	if !ok {
 		return fmt.Errorf("message must be proto.Message")
 	}
 
+	// Check if already closed before attempting to send
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return fmt.Errorf("send on closed stream")
+	}
+	sendCh := s.sendCh
+	s.mu.Unlock()
+
+	// Use panic recovery to handle race between Send and CloseSend
+	// where CloseSend might close the channel while we're trying to send.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("send on closed stream")
+		}
+	}()
+
 	select {
 	case <-s.ctx.Done():
 		return s.ctx.Err()
-	case s.sendCh <- msg: // Zero-copy: pass pointer directly
+	case sendCh <- msg: // Zero-copy: pass pointer directly
 		return nil
 	}
 }
@@ -209,45 +226,69 @@ func (s *ffiClientStream) RecvMsg(m any) error {
 	}
 	s.mu.Unlock()
 
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err, ok := <-s.errCh:
-		if ok && err != nil {
-			// Store the error so subsequent calls also return it
-			s.mu.Lock()
-			s.streamErr = err
-			s.mu.Unlock()
-			return err
-		}
-		// Channel closed without error, fall through to check recvCh
+	dst, ok := m.(proto.Message)
+	if !ok {
+		return fmt.Errorf("message must be proto.Message")
+	}
+
+	// Two-phase select: prioritize data over errors to avoid data loss.
+	// Phase 1: Non-blocking check for data first
+	for {
 		select {
 		case received, ok := <-s.recvCh:
 			if !ok {
+				// Channel closed - check for any pending error
+				select {
+				case err := <-s.errCh:
+					if err != nil {
+						s.mu.Lock()
+						s.streamErr = err
+						s.mu.Unlock()
+						return err
+					}
+				default:
+				}
 				return io.EOF
-			}
-			dst, ok := m.(proto.Message)
-			if !ok {
-				return fmt.Errorf("message must be proto.Message")
 			}
 			proto.Reset(dst)
 			proto.Merge(dst, received)
 			return nil
 		default:
-			return io.EOF
 		}
-	case received, ok := <-s.recvCh:
-		if !ok {
-			return io.EOF
+
+		// Phase 2: Wait with all channels, but prioritize data over error
+		select {
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		case received, ok := <-s.recvCh:
+			if !ok {
+				// Channel closed - check for any pending error
+				select {
+				case err := <-s.errCh:
+					if err != nil {
+						s.mu.Lock()
+						s.streamErr = err
+						s.mu.Unlock()
+						return err
+					}
+				default:
+				}
+				return io.EOF
+			}
+			proto.Reset(dst)
+			proto.Merge(dst, received)
+			return nil
+		case err, ok := <-s.errCh:
+			if ok && err != nil {
+				// Store the error so subsequent calls also return it
+				s.mu.Lock()
+				s.streamErr = err
+				s.mu.Unlock()
+				return err
+			}
+			// errCh closed without error - continue to drain recvCh
+			continue
 		}
-		// Zero-copy: direct struct copy
-		dst, ok := m.(proto.Message)
-		if !ok {
-			return fmt.Errorf("message must be proto.Message")
-		}
-		proto.Reset(dst)
-		proto.Merge(dst, received)
-		return nil
 	}
 }
 

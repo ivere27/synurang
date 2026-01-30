@@ -6,8 +6,9 @@
 
 # test
 /protoc-gen-synurang-ffi
-test/cpp_ffi/ffi_channel_test
-
+/test/cpp_ffi/ffi_channel_test
+/test/plugin/host/host
+/test/plugin/host/host_race
 
 # Shared libraries
 *.so

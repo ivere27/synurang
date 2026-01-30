@@ -17,10 +17,10 @@ import (
 // =============================================================================
 
 type mockInvoker struct {
-	invokeCount  int64
-	streamCount  int64
-	invokeFunc   func(ctx context.Context, method string, req, reply proto.Message) error
-	streamFunc   func(ctx context.Context, method string, stream ServerStream) error
+	invokeCount int64
+	streamCount int64
+	invokeFunc  func(ctx context.Context, method string, req, reply proto.Message) error
+	streamFunc  func(ctx context.Context, method string, stream ServerStream) error
 }
 
 func (m *mockInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
