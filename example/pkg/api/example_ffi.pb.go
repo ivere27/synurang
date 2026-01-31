@@ -17,15 +17,19 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// =============================================================================
+// FFI Server Interface
+// =============================================================================
+
 type FfiServer interface {
 	GoGreeterServiceServer
-	DartGreeterServiceServer
 	BarServerStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
 	BarClientStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
 	BarBidiStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
 	UploadFileInternal(context.Context, *FileChunk) (*FileStatus, error)
 	DownloadFileInternal(context.Context, *DownloadFileRequest) (*FileChunk, error)
 	BidiFileInternal(context.Context, *FileChunk) (*FileChunk, error)
+	DartGreeterServiceServer
 	FooServerStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
 	FooClientStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
 	FooBidiStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
@@ -33,6 +37,10 @@ type FfiServer interface {
 	DartDownloadFileInternal(context.Context, *DownloadFileRequest) (*FileChunk, error)
 	DartBidiFileInternal(context.Context, *FileChunk) (*FileChunk, error)
 }
+
+// =============================================================================
+// Invoke - returns []byte (for TCP/UDS)
+// =============================================================================
 
 func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
 	switch method {
@@ -200,6 +208,10 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
 }
+
+// =============================================================================
+// InvokeFfi - returns C pointer (for zero-copy FFI)
+// =============================================================================
 
 // InvokeFfi is the zero-copy variant for FFI mode.
 // It allocates C memory and serializes directly into it.
@@ -595,7 +607,10 @@ func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (un
 	}
 }
 
-// InvokeStream dispatches streaming RPC calls to the appropriate server method.
+// =============================================================================
+// InvokeStream - dispatches streaming RPC calls
+// =============================================================================
+
 func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {
 	switch method {
 	case "/example.v1.GoGreeterService/BarServerStream":
@@ -642,6 +657,10 @@ func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.S
 		return fmt.Errorf("unknown streaming method: %s", method)
 	}
 }
+
+// =============================================================================
+// gRPC Stream Wrappers
+// =============================================================================
 
 type grpcGoGreeterServiceBarServerStreamStream struct {
 	grpc.ServerStream

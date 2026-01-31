@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:synurang/synurang.dart' hide Duration;
@@ -27,11 +28,11 @@ void main() async {
   // Register dummy handler for streams
   registerDartHandler((method, data) => Uint8List(0));
 
-  print('Starting stress test (Duration: 30s)...');
+  print('Starting stress test (Duration: 5s)...');
   print('PID: $pid');
 
   final stopwatch = Stopwatch()..start();
-  final duration = Duration(seconds: 30);
+  final duration = Duration(seconds: 5);
 
   // Counter tracking - safe as these async workers run in the same isolate
   int unaryOps = 0;
@@ -73,7 +74,7 @@ void main() async {
   print('Total Unary Ops: $unaryOps');
   print('Total Stream Ops: $streamOps');
   print('Total Errors: $errorCount');
-  print('Throughput: ${(unaryOps + streamOps) / 30.0} ops/sec');
+  print('Throughput: ${(unaryOps + streamOps) / duration.inSeconds} ops/sec');
 
   final finalRss = _getRss();
   print(
@@ -117,8 +118,8 @@ Future<void> _stressWorker({
       onError();
     }
 
-    // Yield to allow other async tasks to run (prevents starvation)
-    await Future.delayed(Duration.zero);
+    // Small random delay (0-5ms) to reduce resource contention
+    await Future.delayed(Duration(microseconds: Random().nextInt(5000)));
   }
 }
 

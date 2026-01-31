@@ -12,14 +12,12 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/ivere27/synurang/pkg/plugin"
-	"google.golang.org/protobuf/proto"
-)
-
-import (
 	"io"
 
 	"google.golang.org/grpc/metadata"
+
+	"github.com/ivere27/synurang/pkg/plugin"
+	"google.golang.org/protobuf/proto"
 )
 
 // trySendErr sends error to channel non-blocking
@@ -29,6 +27,10 @@ func trySendErr(ch chan<- error, err error) {
 	default:
 	}
 }
+
+// =============================================================================
+// Plugin Interfaces and Registration
+// =============================================================================
 
 // GoGreeterServicePlugin is the interface that plugin implementations must satisfy.
 // Only methods for this specific service are required.
@@ -51,6 +53,10 @@ var pluginGoGreeterService GoGreeterServicePlugin
 func RegisterGoGreeterServicePlugin(s GoGreeterServicePlugin) {
 	pluginGoGreeterService = s
 }
+
+// =============================================================================
+// Internal Invoke Functions (unary methods only)
+// =============================================================================
 
 func invokeGoGreeterService(ctx context.Context, method string, data []byte) ([]byte, error) {
 	if pluginGoGreeterService == nil {
@@ -231,6 +237,10 @@ func Synurang_Stream_GoGreeterService_Open(method *C.char) C.ulonglong {
 
 	return C.ulonglong(handle)
 }
+
+// =============================================================================
+// Plugin Stream Wrappers
+// =============================================================================
 
 type pluginStreamGoGreeterServiceBarServerStream struct {
 	ps *plugin.PluginStream

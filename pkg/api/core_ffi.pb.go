@@ -2,10 +2,6 @@
 
 package api
 
-import (
-	empty "github.com/golang/protobuf/ptypes/empty"
-)
-
 /*
 #include <stdlib.h>
 */
@@ -19,12 +15,21 @@ import (
 	"github.com/ivere27/synurang/pkg/synurang"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	empty "github.com/golang/protobuf/ptypes/empty"
 )
+
+// =============================================================================
+// FFI Server Interface
+// =============================================================================
 
 type FfiServer interface {
 	HealthServiceServer
 	CacheServiceServer
 }
+
+// =============================================================================
+// Invoke - returns []byte (for TCP/UDS)
+// =============================================================================
 
 func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
 	switch method {
@@ -142,6 +147,10 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
 }
+
+// =============================================================================
+// InvokeFfi - returns C pointer (for zero-copy FFI)
+// =============================================================================
 
 // InvokeFfi is the zero-copy variant for FFI mode.
 // It allocates C memory and serializes directly into it.

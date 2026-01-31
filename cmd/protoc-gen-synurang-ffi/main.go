@@ -1,21 +1,132 @@
 package main
 
 import (
+	"bytes"
+	"embed"
 	"flag"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
+	"text/template"
 
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/types/pluginpb"
 )
 
+//go:embed templates/*
+var templateFS embed.FS
+
+var templates *template.Template
+
+// =============================================================================
+// Data Types for Templates
+// =============================================================================
+
+type FileData struct {
+	Package       string
+	GoPackageName string
+	Services      []ServiceData
+	HasStreaming  bool
+	DartPackage   string
+	// For imports
+	ExternalImports []string
+	GoImports       []GoImport
+	PbDartFile      string
+	PbHeaderFile    string
+	CppNamespace    string
+	CppGuardName    string
+	RustModPath     string
+}
+
+type GoImport struct {
+	Alias string
+	Path  string
+}
+
+type ServiceData struct {
+	Name    string
+	GoName  string
+	Methods []MethodData
+}
+
+type MethodData struct {
+	Name              string
+	GoName            string
+	FullMethodName    string
+	InputType         string // Simple type name (for Dart/C++/Rust)
+	OutputType        string // Simple type name (for Dart/C++/Rust)
+	InputGoIdent      string // Qualified Go type (e.g., "empty.Empty" or "HelloRequest")
+	OutputGoIdent     string // Qualified Go type
+	IsServerStreaming bool
+	IsClientStreaming bool
+	IsBidiStreaming   bool
+	IsUnary           bool
+}
+
+// =============================================================================
+// Template Helper Functions
+// =============================================================================
+
+func toSnakeCase(s string) string {
+	var result strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			result.WriteRune('_')
+		}
+		result.WriteRune(r)
+	}
+	return strings.ToLower(result.String())
+}
+
+func callMethod(m MethodData) string {
+	if !m.IsUnary {
+		return m.GoName + "Internal"
+	}
+	return m.GoName
+}
+
+func streamType(prefix string, svc ServiceData, m MethodData) string {
+	return fmt.Sprintf("%s%s%sStream", prefix, svc.GoName, m.GoName)
+}
+
+func grpcStreamType(svc ServiceData, m MethodData) string {
+	return streamType("grpc", svc, m)
+}
+
+func ffiStreamType(svc ServiceData, m MethodData) string {
+	return streamType("ffi", svc, m)
+}
+
+func pluginStreamType(svc ServiceData, m MethodData) string {
+	return fmt.Sprintf("pluginStream%s%s", svc.GoName, m.GoName)
+}
+
+func init() {
+	funcs := template.FuncMap{
+		"snakeCase":        toSnakeCase,
+		"callMethod":       callMethod,
+		"grpcStreamType":   grpcStreamType,
+		"ffiStreamType":    ffiStreamType,
+		"pluginStreamType": pluginStreamType,
+	}
+	var err error
+	templates, err = template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
+	if err != nil {
+		panic(fmt.Sprintf("failed to parse templates: %v", err))
+	}
+}
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
 func main() {
 	var flags flag.FlagSet
 	lang := flags.String("lang", "", "language to generate (go, dart, cpp, or rust)")
 	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client")
-	dartPackage := flags.String("dart_package", "", "Dart package name for imports (e.g. my_app). If set, generates package imports.")
-	services := flags.String("services", "", "comma-separated list of services to generate for (empty for all)")
+	dartPackage := flags.String("dart_package", "", "Dart package name for imports")
+	services := flags.String("services", "", "comma-separated list of services to generate")
 
 	protogen.Options{
 		ParamFunc: flags.Set,
@@ -34,20 +145,188 @@ func main() {
 				continue
 			}
 			if *lang == "go" || *lang == "" {
-				generateGoFile(gen, f, serviceList, *mode)
+				generateFromTemplate(gen, f, serviceList, "go", *mode)
 			}
 			if *lang == "dart" || *lang == "" {
-				generateDartFile(gen, f, serviceList, *dartPackage)
+				generateFromTemplate(gen, f, serviceList, "dart", *dartPackage)
 			}
 			if *lang == "cpp" {
-				generateCppFile(gen, f, serviceList)
+				generateFromTemplate(gen, f, serviceList, "cpp", "")
 			}
 			if *lang == "rust" {
-				generateRustFile(gen, f, serviceList)
+				generateFromTemplate(gen, f, serviceList, "rust", "")
 			}
 		}
 		return nil
 	})
+}
+
+// =============================================================================
+// Template Execution
+// =============================================================================
+
+func generateFromTemplate(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool, lang, modeOrOpt string) {
+	data := buildFileData(gen, file, serviceList, lang, modeOrOpt)
+
+	tmplName := selectTemplate(lang, modeOrOpt)
+	var buf bytes.Buffer
+	if err := templates.ExecuteTemplate(&buf, tmplName, data); err != nil {
+		gen.Error(fmt.Errorf("template %s: %v", tmplName, err))
+		return
+	}
+
+	filename := outputFilename(file, lang)
+	g := gen.NewGeneratedFile(filename, file.GoImportPath)
+	g.P(buf.String())
+}
+
+func selectTemplate(lang, modeOrOpt string) string {
+	switch lang {
+	case "go":
+		switch modeOrOpt {
+		case "plugin_server":
+			return "go_plugin_server.go.tmpl"
+		case "plugin_client":
+			return "go_plugin_client.go.tmpl"
+		default:
+			return "go_default.go.tmpl"
+		}
+	case "dart":
+		return "dart.dart.tmpl"
+	case "cpp":
+		return "cpp.h.tmpl"
+	case "rust":
+		return "rust.rs.tmpl"
+	}
+	return ""
+}
+
+func outputFilename(file *protogen.File, lang string) string {
+	base := strings.TrimSuffix(file.Desc.Path(), ".proto")
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	switch lang {
+	case "go":
+		return base + "_ffi.pb.go"
+	case "dart":
+		return base + "_ffi.pb.dart"
+	case "cpp":
+		return base + "_ffi.h"
+	case "rust":
+		return base + "_ffi.rs"
+	}
+	return base + "_ffi"
+}
+
+// =============================================================================
+// Build Template Data
+// =============================================================================
+
+func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool, lang, modeOrOpt string) FileData {
+	data := FileData{
+		Package:       string(file.Desc.Package()),
+		GoPackageName: string(file.GoPackageName),
+	}
+
+	// Language-specific fields
+	baseProto := filepath.Base(file.Desc.Path())
+	switch lang {
+	case "dart":
+		data.DartPackage = modeOrOpt
+		data.PbDartFile = strings.TrimSuffix(baseProto, ".proto") + ".pb.dart"
+	case "cpp":
+		data.PbHeaderFile = strings.TrimSuffix(baseProto, ".proto") + ".pb.h"
+		data.CppNamespace = strings.ReplaceAll(data.Package, ".", "::")
+		guardBase := strings.TrimSuffix(outputFilename(file, "cpp"), ".h")
+		data.CppGuardName = strings.ToUpper(strings.ReplaceAll(guardBase, ".", "_")) + "_H_"
+	case "rust":
+		data.RustModPath = strings.ReplaceAll(data.Package, ".", "_")
+	}
+
+	// Track Go imports for external packages
+	goImports := make(map[string]string) // import path -> alias
+
+	// Helper to get qualified Go type name (optionally adds import)
+	qualifyGoType := func(ident protogen.GoIdent, addImport bool) string {
+		if ident.GoImportPath == file.GoImportPath {
+			return ident.GoName
+		}
+		// External package - need qualified name
+		alias := goPackageAlias(string(ident.GoImportPath))
+		if addImport {
+			goImports[string(ident.GoImportPath)] = alias
+		}
+		return alias + "." + ident.GoName
+	}
+
+	// Build services and methods
+	for _, service := range file.Services {
+		if !shouldGenerateService(service.GoName, serviceList) {
+			continue
+		}
+
+		svcData := ServiceData{
+			Name:   string(service.Desc.Name()),
+			GoName: service.GoName,
+		}
+
+		for _, method := range service.Methods {
+			isServerStream := method.Desc.IsStreamingServer()
+			isClientStream := method.Desc.IsStreamingClient()
+			isStreaming := isServerStream || isClientStream
+
+			m := MethodData{
+				Name:              string(method.Desc.Name()),
+				GoName:            method.GoName,
+				FullMethodName:    fmt.Sprintf("/%s.%s/%s", data.Package, service.Desc.Name(), method.Desc.Name()),
+				InputType:         method.Input.GoIdent.GoName,
+				OutputType:        method.Output.GoIdent.GoName,
+				InputGoIdent:      qualifyGoType(method.Input.GoIdent, true),        // Input always used
+				OutputGoIdent:     qualifyGoType(method.Output.GoIdent, isStreaming), // Output only for streaming
+				IsServerStreaming: isServerStream && !isClientStream,
+				IsClientStreaming: isClientStream && !isServerStream,
+				IsBidiStreaming:   isServerStream && isClientStream,
+				IsUnary:           !isServerStream && !isClientStream,
+			}
+
+			if isStreaming {
+				data.HasStreaming = true
+			}
+
+			svcData.Methods = append(svcData.Methods, m)
+		}
+
+		data.Services = append(data.Services, svcData)
+	}
+
+	// Convert Go imports map to slice (sorted for deterministic output)
+	for path, alias := range goImports {
+		data.GoImports = append(data.GoImports, GoImport{Alias: alias, Path: path})
+	}
+	sort.Slice(data.GoImports, func(i, j int) bool {
+		return data.GoImports[i].Path < data.GoImports[j].Path
+	})
+
+	// Build external imports for Dart
+	if lang == "dart" {
+		imports := make(map[string]bool)
+		for _, service := range file.Services {
+			if !shouldGenerateService(service.GoName, serviceList) {
+				continue
+			}
+			for _, method := range service.Methods {
+				addDartImport(imports, file, method.Input.Desc.ParentFile().Path(), modeOrOpt)
+				addDartImport(imports, file, method.Output.Desc.ParentFile().Path(), modeOrOpt)
+			}
+		}
+		for imp := range imports {
+			data.ExternalImports = append(data.ExternalImports, imp)
+		}
+		sort.Strings(data.ExternalImports)
+	}
+
+	return data
 }
 
 func shouldGenerateService(serviceName string, serviceList map[string]bool) bool {
@@ -57,1368 +336,28 @@ func shouldGenerateService(serviceName string, serviceList map[string]bool) bool
 	return serviceList[serviceName]
 }
 
-// =============================================================================
-// Go Code Generation
-// =============================================================================
-
-func generateGoFile(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool, mode string) {
-	filename := strings.TrimSuffix(file.Desc.Path(), ".proto") + "_ffi.pb.go"
-	if idx := strings.LastIndex(filename, "/"); idx >= 0 {
-		filename = filename[idx+1:]
-	}
-	g := gen.NewGeneratedFile(filename, file.GoImportPath)
-	g.P("// Code generated by protoc-gen-synurang-ffi. DO NOT EDIT.")
-	g.P()
-	g.P("package ", file.GoPackageName)
-	g.P()
-
-	// CGO import block for zero-copy FFI
-	g.P("/*")
-	g.P("#include <stdlib.h>")
-	g.P("*/")
-	g.P(`import "C"`)
-	g.P()
-
-	// Generate imports based on mode
-	g.P("import (")
-	g.P("\t\"context\"")
-	g.P("\t\"fmt\"")
-	g.P("\t\"unsafe\"")
-	g.P()
-	if mode == "" || mode == "default" {
-		g.P("\t\"github.com/ivere27/synurang/pkg/synurang\"")
-		g.P("\t\"google.golang.org/grpc\"")
-	}
-	if mode == "plugin_server" {
-		g.P("\t\"github.com/ivere27/synurang/pkg/plugin\"")
-	}
-	g.P("\t\"google.golang.org/protobuf/proto\"")
-	g.P(")")
-	g.P()
-
-	// ==========================================================================
-	// Plugin Server Mode: Generate per-service interfaces and C exports
-	// ==========================================================================
-	if mode == "plugin_server" {
-		generatePluginServerMode(g, file, serviceList)
+func addDartImport(imports map[string]bool, file *protogen.File, path, dartPackage string) {
+	if path == file.Desc.Path() {
 		return
 	}
-
-	// ==========================================================================
-	// Plugin Client Mode: Generate host-side loader and typed clients
-	// ==========================================================================
-	if mode == "plugin_client" {
-		generatePluginClientMode(g, file, serviceList)
-		return
-	}
-
-	// ==========================================================================
-	// Default Mode: Generate FfiServer interface and client support
-	// ==========================================================================
-
-	// Generate FfiServer interface (combines all services)
-	g.P("type FfiServer interface {")
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		g.P("\t", service.GoName, "Server")
-	}
-	// Add streaming methods signatures
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				g.P("\t", method.GoName, "Internal(context.Context, *", g.QualifiedGoIdent(method.Input.GoIdent), ") (*", g.QualifiedGoIdent(method.Output.GoIdent), ", error)")
-			}
-		}
-	}
-	g.P("}")
-	g.P()
-
-	// Generate Invoke (returns []byte - for TCP/UDS)
-	g.P("func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {")
-	g.P("\tswitch method {")
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P("\tcase \"", methodName, "\":")
-			g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-			g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
-			g.P("\t\t\treturn nil, fmt.Errorf(\"failed to unmarshal request: %w\", err)")
-			g.P("\t\t}")
-
-			callMethod := method.GoName
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				callMethod += "Internal"
-			}
-
-			g.P("\t\tresp, err := s.", callMethod, "(ctx, req)")
-			g.P("\t\tif err != nil {")
-			g.P("\t\t\treturn nil, err")
-			g.P("\t\t}")
-			g.P("\t\treturn proto.Marshal(resp)")
-		}
-	}
-
-	g.P("\tdefault:")
-	g.P("\t\treturn nil, fmt.Errorf(\"unknown method: %s\", method)")
-	g.P("\t}")
-	g.P("}")
-	g.P()
-
-	// Generate InvokeFfi (returns C pointer - for zero-copy FFI)
-	g.P("// InvokeFfi is the zero-copy variant for FFI mode.")
-	g.P("// It allocates C memory and serializes directly into it.")
-	g.P("// Caller is responsible for freeing the returned pointer via C.free().")
-	g.P("func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {")
-	g.P("\tswitch method {")
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P("\tcase \"", methodName, "\":")
-			g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-			g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
-			g.P("\t\t\treturn nil, 0, fmt.Errorf(\"failed to unmarshal request: %w\", err)")
-			g.P("\t\t}")
-
-			callMethod := method.GoName
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				callMethod += "Internal"
-			}
-
-			g.P("\t\tresp, err := s.", callMethod, "(ctx, req)")
-			g.P("\t\tif err != nil {")
-			g.P("\t\t\treturn nil, 0, err")
-			g.P("\t\t}")
-			g.P("\t\t// Zero-copy: allocate C memory and serialize directly")
-			g.P("\t\tsize := proto.Size(resp)")
-			g.P("\t\tif size == 0 {")
-			g.P("\t\t\treturn nil, 0, nil")
-			g.P("\t\t}")
-			g.P("\t\tcPtr := C.malloc(C.size_t(size))")
-			g.P("\t\tif cPtr == nil {")
-			g.P("\t\t\treturn nil, 0, fmt.Errorf(\"failed to allocate memory for response\")")
-			g.P("\t\t}")
-			g.P("\t\tbuf := unsafe.Slice((*byte)(cPtr), size)")
-			g.P("\t\tif _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {")
-			g.P("\t\t\tC.free(cPtr)")
-			g.P("\t\t\treturn nil, 0, err")
-			g.P("\t\t}")
-			g.P("\t\treturn cPtr, int64(size), nil")
-		}
-	}
-
-	g.P("\tdefault:")
-	g.P("\t\treturn nil, 0, fmt.Errorf(\"unknown method: %s\", method)")
-	g.P("\t}")
-	g.P("}")
-	g.P()
-
-	// Check if there are any streaming methods
-	hasGrpcStreaming := false
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				hasGrpcStreaming = true
-				break
-			}
-		}
-		if hasGrpcStreaming {
-			break
-		}
-	}
-
-	// Generate InvokeStream and stream wrappers only if there are streaming methods
-	if hasGrpcStreaming {
-		g.P("// InvokeStream dispatches streaming RPC calls to the appropriate server method.")
-		g.P("func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {")
-		g.P("\tswitch method {")
-
-		for _, service := range file.Services {
-			if !shouldGenerateService(service.GoName, serviceList) {
-				continue
-			}
-			for _, method := range service.Methods {
-				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-					continue
-				}
-
-				methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-				g.P("\tcase \"", methodName, "\":")
-
-				streamType := fmt.Sprintf("grpc%s%sStream", service.GoName, method.GoName)
-
-				if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
-					g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-					g.P("\t\tif err := stream.RecvMsg(req); err != nil {")
-					g.P("\t\t\treturn err")
-					g.P("\t\t}")
-					g.P("\t\treturn s.", method.GoName, "(req, &", streamType, "{stream})")
-				} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-					g.P("\t\treturn s.", method.GoName, "(&", streamType, "{stream})")
-				} else {
-					g.P("\t\treturn s.", method.GoName, "(&", streamType, "{stream})")
-				}
-			}
-		}
-
-		g.P("\tdefault:")
-		g.P("\t\treturn fmt.Errorf(\"unknown streaming method: %s\", method)")
-		g.P("\t}")
-		g.P("}")
-		g.P()
-
-		// Generate typed stream wrappers
-		for _, service := range file.Services {
-			if !shouldGenerateService(service.GoName, serviceList) {
-				continue
-			}
-			for _, method := range service.Methods {
-				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-					continue
-				}
-
-				streamType := fmt.Sprintf("grpc%s%sStream", service.GoName, method.GoName)
-
-				g.P("type ", streamType, " struct {")
-				g.P("\tgrpc.ServerStream")
-				g.P("}")
-				g.P()
-
-				if method.Desc.IsStreamingServer() {
-					g.P("func (s *", streamType, ") Send(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
-					g.P("\treturn s.ServerStream.SendMsg(m)")
-					g.P("}")
-					g.P()
-				}
-
-				if method.Desc.IsStreamingClient() {
-					g.P("func (s *", streamType, ") Recv() (*", g.QualifiedGoIdent(method.Input.GoIdent), ", error) {")
-					g.P("\tm := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-					g.P("\tif err := s.ServerStream.RecvMsg(m); err != nil {")
-					g.P("\t\treturn nil, err")
-					g.P("\t}")
-					g.P("\treturn m, nil")
-					g.P("}")
-					g.P()
-
-					if !method.Desc.IsStreamingServer() {
-						g.P("func (s *", streamType, ") SendAndClose(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
-						g.P("\treturn s.ServerStream.SendMsg(m)")
-						g.P("}")
-						g.P()
-					}
-				}
-
-				g.P("var _ ", service.GoName, "_", method.GoName, "Server = (*", streamType, ")(nil)")
-				g.P()
-			}
-		}
-	}
-
-	// ==========================================================================
-	// Generate ffiInvoker - wraps FfiServer to implement synurang.Invoker
-	// ==========================================================================
-	g.P("// =============================================================================")
-	g.P("// FFI Invoker - wraps FfiServer to implement synurang.Invoker interface")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("// ffiInvoker wraps FfiServer to implement the synurang.Invoker interface.")
-	g.P("// This allows using the synurang runtime's FfiClientConn with generated code.")
-	g.P("// Uses zero-copy: proto.Message pointers are passed directly without serialization.")
-	g.P("type ffiInvoker struct {")
-	g.P("\tserver FfiServer")
-	g.P("}")
-	g.P()
-
-	// Generate Invoke for zero-copy unary
-	g.P("// Invoke implements synurang.UnaryInvoker (zero-copy).")
-	g.P("func (i *ffiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {")
-	g.P("\tswitch method {")
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P("\tcase \"", methodName, "\":")
-
-			callMethod := method.GoName
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				callMethod += "Internal"
-			}
-
-			g.P("\t\tresp, err := i.server.", callMethod, "(ctx, req.(*", g.QualifiedGoIdent(method.Input.GoIdent), "))")
-			g.P("\t\tif err != nil {")
-			g.P("\t\t\treturn err")
-			g.P("\t\t}")
-			g.P("\t\t// Use proto.Merge to avoid copying mutex in MessageState")
-			g.P("\t\tproto.Merge(reply.(proto.Message), resp)")
-			g.P("\t\treturn nil")
-		}
-	}
-
-	g.P("\tdefault:")
-	g.P("\t\treturn fmt.Errorf(\"unknown method: %s\", method)")
-	g.P("\t}")
-	g.P("}")
-	g.P()
-
-	// Generate InvokeStream for zero-copy streaming
-	g.P("// InvokeStream implements synurang.StreamInvoker (zero-copy).")
-	g.P("func (i *ffiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {")
-	g.P("\tswitch method {")
-
-	hasStreamingMethods := false
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-				continue // Skip unary methods
-			}
-			hasStreamingMethods = true
-
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P("\tcase \"", methodName, "\":")
-
-			streamType := fmt.Sprintf("ffi%s%sStream", service.GoName, method.GoName)
-
-			if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
-				// Server streaming
-				g.P("\t\t// Server streaming (zero-copy)")
-				g.P("\t\treqMsg, err := stream.RecvMsgDirect()")
-				g.P("\t\tif err != nil {")
-				g.P("\t\t\treturn err")
-				g.P("\t\t}")
-				g.P("\t\treq := reqMsg.(*", g.QualifiedGoIdent(method.Input.GoIdent), ")")
-				g.P("\t\treturn i.server.", method.GoName, "(req, &", streamType, "{stream})")
-			} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-				// Client streaming
-				g.P("\t\t// Client streaming (zero-copy)")
-				g.P("\t\treturn i.server.", method.GoName, "(&", streamType, "{stream})")
-			} else {
-				// Bidi streaming
-				g.P("\t\t// Bidi streaming (zero-copy)")
-				g.P("\t\treturn i.server.", method.GoName, "(&", streamType, "{stream})")
-			}
-		}
-	}
-
-	g.P("\tdefault:")
-	g.P("\t\treturn fmt.Errorf(\"unknown streaming method: %s\", method)")
-	g.P("\t}")
-	g.P("}")
-	g.P()
-
-	// Generate stream wrappers for each streaming method
-	if hasStreamingMethods {
-		g.P("// =============================================================================")
-		g.P("// Stream Wrappers (zero-copy)")
-		g.P("// =============================================================================")
-		g.P()
-	}
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-				continue
-			}
-
-			streamType := fmt.Sprintf("ffi%s%sStream", service.GoName, method.GoName)
-
-			g.P("// ", streamType, " wraps ServerStream for zero-copy ", service.GoName, ".", method.GoName)
-			g.P("type ", streamType, " struct {")
-			g.P("\tsynurang.ServerStream")
-			g.P("}")
-			g.P()
-
-			// Add Context method
-			g.P("func (s *", streamType, ") Context() context.Context {")
-			g.P("\treturn s.ServerStream.Context()")
-			g.P("}")
-			g.P()
-
-			if method.Desc.IsStreamingServer() {
-				// Add Send method
-				g.P("func (s *", streamType, ") Send(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
-				g.P("\treturn s.ServerStream.SendMsg(m)")
-				g.P("}")
-				g.P()
-			}
-
-			if method.Desc.IsStreamingClient() {
-				// Add Recv method
-				g.P("func (s *", streamType, ") Recv() (*", g.QualifiedGoIdent(method.Input.GoIdent), ", error) {")
-				g.P("\tmsg, err := s.ServerStream.RecvMsgDirect()")
-				g.P("\tif err != nil {")
-				g.P("\t\treturn nil, err")
-				g.P("\t}")
-				g.P("\treturn msg.(*", g.QualifiedGoIdent(method.Input.GoIdent), "), nil")
-				g.P("}")
-				g.P()
-
-				if !method.Desc.IsStreamingServer() {
-					// Client streaming also needs SendAndClose
-					g.P("func (s *", streamType, ") SendAndClose(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
-					g.P("\treturn s.ServerStream.SendMsg(m)")
-					g.P("}")
-					g.P()
-				}
-			}
-
-			g.P("var _ ", service.GoName, "_", method.GoName, "Server = (*", streamType, ")(nil)")
-			g.P()
-		}
-	}
-
-	g.P("var _ synurang.Invoker = (*ffiInvoker)(nil)")
-	g.P()
-
-	// Generate NewFfiClientConn convenience function
-	g.P("// =============================================================================")
-	g.P("// FFI Client - convenience wrapper for synurang.FfiClientConn")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("func NewFfiClientConn(server FfiServer) grpc.ClientConnInterface {")
-	g.P("\treturn synurang.NewFfiClientConn(&ffiInvoker{server: server})")
-	g.P("}")
-	g.P()
-}
-
-// =============================================================================
-// Plugin Server Mode - Per-service interfaces and C exports
-// =============================================================================
-
-func generatePluginServerMode(g *protogen.GeneratedFile, file *protogen.File, serviceList map[string]bool) {
-	// Check if we have streaming methods
-	hasStreaming := false
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				hasStreaming = true
-				break
-			}
-		}
-		if hasStreaming {
-			break
-		}
-	}
-
-	// Add additional imports for streaming
-	if hasStreaming {
-		g.P("import (")
-		g.P("\t\"io\"")
-		g.P()
-		g.P("\t\"google.golang.org/grpc/metadata\"")
-		g.P(")")
-		g.P()
-	}
-
-	// Generate helper for non-blocking error send
-	g.P("// trySendErr sends error to channel non-blocking")
-	g.P("func trySendErr(ch chan<- error, err error) {")
-	g.P("\tselect {")
-	g.P("\tcase ch <- err:")
-	g.P("\tdefault:")
-	g.P("\t}")
-	g.P("}")
-	g.P()
-
-	// Generate per-service plugin interface
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-
-		interfaceName := service.GoName + "Plugin"
-
-		g.P("// ", interfaceName, " is the interface that plugin implementations must satisfy.")
-		g.P("// Only methods for this specific service are required.")
-		g.P("type ", interfaceName, " interface {")
-		for _, method := range service.Methods {
-			if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
-				// Server streaming: Method(req, stream) error
-				streamType := service.GoName + "_" + method.GoName + "Server"
-				g.P("\t", method.GoName, "(*", g.QualifiedGoIdent(method.Input.GoIdent), ", ", streamType, ") error")
-			} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-				// Client streaming: Method(stream) (*Resp, error)
-				streamType := service.GoName + "_" + method.GoName + "Server"
-				g.P("\t", method.GoName, "(", streamType, ") (*", g.QualifiedGoIdent(method.Output.GoIdent), ", error)")
-			} else if method.Desc.IsStreamingClient() && method.Desc.IsStreamingServer() {
-				// Bidi streaming: Method(stream) error
-				streamType := service.GoName + "_" + method.GoName + "Server"
-				g.P("\t", method.GoName, "(", streamType, ") error")
-			} else {
-				// Unary
-				g.P("\t", method.GoName, "(context.Context, *", g.QualifiedGoIdent(method.Input.GoIdent), ") (*", g.QualifiedGoIdent(method.Output.GoIdent), ", error)")
-			}
-		}
-		g.P("}")
-		g.P()
-
-		// Generate per-service global variable and registration
-		varName := "plugin" + service.GoName
-		g.P("var ", varName, " ", interfaceName)
-		g.P()
-
-		g.P("// Register", service.GoName, "Plugin sets the plugin implementation for ", service.GoName, ".")
-		g.P("// This must be called in the plugin's init() function.")
-		g.P("func Register", service.GoName, "Plugin(s ", interfaceName, ") {")
-		g.P("\t", varName, " = s")
-		g.P("}")
-		g.P()
-	}
-
-	// Generate per-service invoke function (internal) - unary methods only
-	// Streaming methods are handled by the stream handler
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-
-		varName := "plugin" + service.GoName
-		funcName := "invoke" + service.GoName
-
-		g.P("func ", funcName, "(ctx context.Context, method string, data []byte) ([]byte, error) {")
-		g.P("\tif ", varName, " == nil {")
-		g.P("\t\treturn nil, fmt.Errorf(\"plugin not registered for ", service.GoName, "\")")
-		g.P("\t}")
-		g.P("\tswitch method {")
-
-		for _, method := range service.Methods {
-			// Skip streaming methods - they're handled via the stream handler
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				continue
-			}
-
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			g.P("\tcase \"", methodName, "\":")
-			g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-			g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
-			g.P("\t\t\treturn nil, fmt.Errorf(\"failed to unmarshal request: %w\", err)")
-			g.P("\t\t}")
-			g.P("\t\tresp, err := ", varName, ".", method.GoName, "(ctx, req)")
-			g.P("\t\tif err != nil {")
-			g.P("\t\t\treturn nil, err")
-			g.P("\t\t}")
-			g.P("\t\treturn proto.Marshal(resp)")
-		}
-
-		g.P("\tdefault:")
-		g.P("\t\treturn nil, fmt.Errorf(\"unknown method: %s\", method)")
-		g.P("\t}")
-		g.P("}")
-		g.P()
-	}
-
-	g.P("// =============================================================================")
-	g.P("// C-Exported Functions")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("// Response format: [status:1][payload...]")
-	g.P("// status=0: success, payload=protobuf response")
-	g.P("// status=1: error, payload=error string")
-	g.P()
-
-	// Generate C-exported function for each service
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-
-		exportName := "Synurang_Invoke_" + service.GoName
-		funcName := "invoke" + service.GoName
-
-		g.P("//export ", exportName)
-		g.P("func ", exportName, "(method *C.char, data *C.char, dataLen C.int, respLen *C.int) *C.char {")
-		g.P("\tctx := context.Background()")
-		g.P("\tm := C.GoString(method)")
-		g.P()
-		g.P("\t// Handle nil data safely")
-		g.P("\tvar d []byte")
-		g.P("\tif data != nil && dataLen > 0 {")
-		g.P("\t\td = C.GoBytes(unsafe.Pointer(data), dataLen)")
-		g.P("\t}")
-		g.P()
-		g.P("\tres, err := ", funcName, "(ctx, m, d)")
-		g.P("\tif err != nil {")
-		g.P("\t\t// Return error with status byte = 1")
-		g.P("\t\terrBytes := []byte(err.Error())")
-		g.P("\t\tresult := make([]byte, 1+len(errBytes))")
-		g.P("\t\tresult[0] = 1 // error status")
-		g.P("\t\tcopy(result[1:], errBytes)")
-		g.P("\t\t*respLen = C.int(len(result))")
-		g.P("\t\treturn (*C.char)(C.CBytes(result))")
-		g.P("\t}")
-		g.P()
-		g.P("\t// Return success with status byte = 0")
-		g.P("\tresult := make([]byte, 1+len(res))")
-		g.P("\tresult[0] = 0 // success status")
-		g.P("\tcopy(result[1:], res)")
-		g.P("\t*respLen = C.int(len(result))")
-		g.P("\treturn (*C.char)(C.CBytes(result))")
-		g.P("}")
-		g.P()
-	}
-
-	if hasStreaming {
-		g.P("// =============================================================================")
-		g.P("// Streaming Support")
-		g.P("// =============================================================================")
-		g.P()
-
-		// Generate stream open for each service
-		for _, service := range file.Services {
-			if !shouldGenerateService(service.GoName, serviceList) {
-				continue
-			}
-
-			varName := "plugin" + service.GoName
-			openName := "Synurang_Stream_" + service.GoName + "_Open"
-
-			g.P("//export ", openName)
-			g.P("func ", openName, "(method *C.char) C.ulonglong {")
-			g.P("\tif ", varName, " == nil {")
-			g.P("\t\treturn 0")
-			g.P("\t}")
-			g.P()
-			g.P("\tm := C.GoString(method)")
-			// Use plugin.NewStream from pkg/plugin
-			g.P("\thandle, ps := plugin.NewStream(m)")
-			g.P()
-			g.P("\t// Start stream handler goroutine")
-			g.P("\tgo func() {")
-			g.P("\t\tdefer ps.CloseRecvCh()")
-			g.P("\t\tdefer ps.Cancel()")
-			g.P()
-			g.P("\t\t// Recover from panics in plugin methods")
-			g.P("\t\tdefer func() {")
-			g.P("\t\t\tif r := recover(); r != nil {")
-			g.P("\t\t\t\ttrySendErr(ps.ErrCh, fmt.Errorf(\"panic in plugin: %v\", r))")
-			g.P("\t\t\t}")
-			g.P("\t\t}()")
-			g.P()
-			g.P("\t\tswitch m {")
-
-			for _, method := range service.Methods {
-				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-					continue
-				}
-
-				methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-				g.P("\t\tcase \"", methodName, "\":")
-
-				streamWrapper := fmt.Sprintf("pluginStream%s%s", service.GoName, method.GoName)
-
-				if method.Desc.IsStreamingServer() && !method.Desc.IsStreamingClient() {
-					// Server streaming
-					g.P("\t\t\t// Server streaming - receive initial request, then send responses")
-					g.P("\t\t\tselect {")
-					g.P("\t\t\tcase data := <-ps.SendCh:")
-					g.P("\t\t\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-					g.P("\t\t\t\tif err := proto.Unmarshal(data, req); err != nil {")
-					g.P("\t\t\t\t\ttrySendErr(ps.ErrCh, err)")
-					g.P("\t\t\t\t\treturn")
-					g.P("\t\t\t\t}")
-					g.P("\t\t\t\tif err := ", varName, ".", method.GoName, "(req, &", streamWrapper, "{ps}); err != nil && err != io.EOF {")
-					g.P("\t\t\t\t\ttrySendErr(ps.ErrCh, err)")
-					g.P("\t\t\t\t}")
-					g.P("\t\t\tcase <-ps.Ctx.Done():")
-					g.P("\t\t\t\treturn")
-					g.P("\t\t\t}")
-				} else if method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-					// Client streaming
-					g.P("\t\t\t// Client streaming")
-					g.P("\t\t\tresp, err := ", varName, ".", method.GoName, "(&", streamWrapper, "{ps})")
-					g.P("\t\t\tif err != nil {")
-					g.P("\t\t\t\ttrySendErr(ps.ErrCh, err)")
-					g.P("\t\t\t\treturn")
-					g.P("\t\t\t}")
-					g.P("\t\t\tif data, err := proto.Marshal(resp); err != nil {")
-					g.P("\t\t\t\ttrySendErr(ps.ErrCh, err)")
-					g.P("\t\t\t} else {")
-					g.P("\t\t\t\tselect {")
-					g.P("\t\t\t\tcase ps.RecvCh <- data:")
-					g.P("\t\t\t\tcase <-ps.Ctx.Done():")
-					g.P("\t\t\t\t}")
-					g.P("\t\t\t}")
-				} else {
-					// Bidi streaming
-					g.P("\t\t\t// Bidi streaming")
-					g.P("\t\t\tif err := ", varName, ".", method.GoName, "(&", streamWrapper, "{ps}); err != nil && err != io.EOF {")
-					g.P("\t\t\t\ttrySendErr(ps.ErrCh, err)")
-					g.P("\t\t\t}")
-				}
-			}
-
-			g.P("\t\t}")
-			g.P("\t}()")
-			g.P()
-			g.P("\treturn C.ulonglong(handle)")
-			g.P("}")
-			g.P()
-		}
-
-		// Generate stream wrappers for each streaming method
-		for _, service := range file.Services {
-			if !shouldGenerateService(service.GoName, serviceList) {
-				continue
-			}
-			for _, method := range service.Methods {
-				if !method.Desc.IsStreamingClient() && !method.Desc.IsStreamingServer() {
-					continue
-				}
-
-				wrapperName := fmt.Sprintf("pluginStream%s%s", service.GoName, method.GoName)
-
-				g.P("type ", wrapperName, " struct {")
-				g.P("\tps *plugin.PluginStream")
-				g.P("}")
-				g.P()
-
-				// Context
-				g.P("func (s *", wrapperName, ") Context() context.Context {")
-				g.P("\treturn s.ps.Ctx")
-				g.P("}")
-				g.P()
-
-				if method.Desc.IsStreamingServer() {
-					// Send for server streaming
-					g.P("func (s *", wrapperName, ") Send(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
-					g.P("\tdata, err := proto.Marshal(m)")
-					g.P("\tif err != nil {")
-					g.P("\t\treturn err")
-					g.P("\t}")
-					g.P("\tselect {")
-					g.P("\tcase s.ps.RecvCh <- data:")
-					g.P("\t\treturn nil")
-					g.P("\tcase <-s.ps.Ctx.Done():")
-					g.P("\t\treturn s.ps.Ctx.Err()")
-					g.P("\t}")
-					g.P("}")
-					g.P()
-				}
-
-				if method.Desc.IsStreamingClient() {
-					// Recv for client streaming
-					g.P("func (s *", wrapperName, ") Recv() (*", g.QualifiedGoIdent(method.Input.GoIdent), ", error) {")
-					g.P("\tselect {")
-					g.P("\tcase data, ok := <-s.ps.SendCh:")
-					g.P("\t\tif !ok {")
-					g.P("\t\t\treturn nil, io.EOF")
-					g.P("\t\t}")
-					g.P("\t\treq := &", g.QualifiedGoIdent(method.Input.GoIdent), "{}")
-					g.P("\t\tif err := proto.Unmarshal(data, req); err != nil {")
-					g.P("\t\t\treturn nil, err")
-					g.P("\t\t}")
-					g.P("\t\treturn req, nil")
-					g.P("\tcase <-s.ps.Ctx.Done():")
-					g.P("\t\treturn nil, s.ps.Ctx.Err()")
-					g.P("\t}")
-					g.P("}")
-					g.P()
-
-					if !method.Desc.IsStreamingServer() {
-						// SendAndClose for client streaming only
-						g.P("func (s *", wrapperName, ") SendAndClose(m *", g.QualifiedGoIdent(method.Output.GoIdent), ") error {")
-						g.P("\tdata, err := proto.Marshal(m)")
-						g.P("\tif err != nil {")
-						g.P("\t\treturn err")
-						g.P("\t}")
-						g.P("\tselect {")
-						g.P("\tcase s.ps.RecvCh <- data:")
-						g.P("\t\treturn nil")
-						g.P("\tcase <-s.ps.Ctx.Done():")
-						g.P("\t\treturn s.ps.Ctx.Err()")
-						g.P("\t}")
-						g.P("}")
-						g.P()
-					}
-				}
-
-				// Stub methods for grpc.ServerStream compatibility
-				g.P("func (s *", wrapperName, ") SetHeader(metadata.MD) error { return nil }")
-				g.P("func (s *", wrapperName, ") SendHeader(metadata.MD) error { return nil }")
-				g.P("func (s *", wrapperName, ") SetTrailer(metadata.MD) {}")
-				g.P("func (s *", wrapperName, ") SendMsg(m any) error { return nil }")
-				g.P("func (s *", wrapperName, ") RecvMsg(m any) error { return nil }")
-				g.P()
-			}
-		}
-	}
-}
-
-// =============================================================================
-// Plugin Client Mode - Host-side loader and typed clients
-// =============================================================================
-
-func generatePluginClientMode(g *protogen.GeneratedFile, file *protogen.File, serviceList map[string]bool) {
-	g.P("// =============================================================================")
-	g.P("// Plugin Client Mode - Host-side Loader and Typed Clients")
-	g.P("// =============================================================================")
-	g.P()
-
-	// Add purego import hint
-	g.P("// This file provides typed clients for loading and calling plugin shared libraries.")
-	g.P("// It uses github.com/ebitengine/purego for cross-platform dynamic loading.")
-	g.P("// Alternatively, you can use CGO with dlopen/dlsym directly.")
-	g.P()
-
-	// Generate PluginError type
-	g.P("// PluginError represents an error returned from a plugin.")
-	g.P("type PluginError struct {")
-	g.P("\tMessage string")
-	g.P("}")
-	g.P()
-	g.P("func (e *PluginError) Error() string {")
-	g.P("\treturn e.Message")
-	g.P("}")
-	g.P()
-
-	// Generate per-service plugin client
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-
-		clientName := service.GoName + "PluginClient"
-		exportName := "Synurang_Invoke_" + service.GoName
-
-		g.P("// ", clientName, " wraps a loaded plugin shared library.")
-		g.P("type ", clientName, " struct {")
-		g.P("\tinvoke func(method *byte, data *byte, dataLen int32, respLen *int32) *byte")
-		g.P("\tfree   func(ptr *byte)")
-		g.P("}")
-		g.P()
-
-		g.P("// New", clientName, " creates a client from function pointers.")
-		g.P("// Use purego.RegisterLibFunc to obtain these from a loaded .so/.dll.")
-		g.P("//")
-		g.P("// Example with purego:")
-		g.P("//   lib, _ := purego.Dlopen(\"./plugin.so\", purego.RTLD_LAZY)")
-		g.P("//   var invoke func(*byte, *byte, int32, *int32) *byte")
-		g.P("//   var free func(*byte)")
-		g.P("//   purego.RegisterLibFunc(&invoke, lib, \"", exportName, "\")")
-		g.P("//   purego.RegisterLibFunc(&free, lib, \"Synurang_Free\")")
-		g.P("//   client := New", clientName, "(invoke, free)")
-		g.P("func New", clientName, "(invoke func(*byte, *byte, int32, *int32) *byte, free func(*byte)) *", clientName, " {")
-		g.P("\treturn &", clientName, "{invoke: invoke, free: free}")
-		g.P("}")
-		g.P()
-
-		// Generate helper method for calling
-		g.P("func (c *", clientName, ") call(method string, reqBytes []byte) ([]byte, error) {")
-		g.P("\tmethodBytes := append([]byte(method), 0) // null-terminated")
-		g.P("\tvar respLen int32")
-		g.P()
-		g.P("\tvar dataPtr *byte")
-		g.P("\tif len(reqBytes) > 0 {")
-		g.P("\t\tdataPtr = &reqBytes[0]")
-		g.P("\t}")
-		g.P()
-		g.P("\tresultPtr := c.invoke(&methodBytes[0], dataPtr, int32(len(reqBytes)), &respLen)")
-		g.P("\tif resultPtr == nil {")
-		g.P("\t\treturn nil, fmt.Errorf(\"plugin returned nil\")")
-		g.P("\t}")
-		g.P("\tdefer c.free(resultPtr)")
-		g.P()
-		g.P("\t// Copy result before freeing")
-		g.P("\tresult := make([]byte, respLen)")
-		g.P("\tfor i := int32(0); i < respLen; i++ {")
-		g.P("\t\tresult[i] = *(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(resultPtr)) + uintptr(i)))")
-		g.P("\t}")
-		g.P()
-		g.P("\t// Check status byte")
-		g.P("\tif len(result) == 0 {")
-		g.P("\t\treturn nil, fmt.Errorf(\"empty response from plugin\")")
-		g.P("\t}")
-		g.P("\tif result[0] == 1 {")
-		g.P("\t\treturn nil, &PluginError{Message: string(result[1:])}")
-		g.P("\t}")
-		g.P("\treturn result[1:], nil")
-		g.P("}")
-		g.P()
-
-		// Generate typed methods for each RPC
-		for _, method := range service.Methods {
-			if method.Desc.IsStreamingClient() || method.Desc.IsStreamingServer() {
-				// Skip streaming for now (would need more complex implementation)
-				g.P("// ", method.GoName, " - streaming not yet supported in plugin client mode")
-				g.P()
-				continue
-			}
-
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-
-			g.P("// ", method.GoName, " calls the ", method.GoName, " method on the plugin.")
-			g.P("func (c *", clientName, ") ", method.GoName, "(ctx context.Context, req *", g.QualifiedGoIdent(method.Input.GoIdent), ") (*", g.QualifiedGoIdent(method.Output.GoIdent), ", error) {")
-			g.P("\t_ = ctx // context not propagated to plugin (could add deadline)")
-			g.P("\treqBytes, err := proto.Marshal(req)")
-			g.P("\tif err != nil {")
-			g.P("\t\treturn nil, fmt.Errorf(\"failed to marshal request: %w\", err)")
-			g.P("\t}")
-			g.P()
-			g.P("\trespBytes, err := c.call(\"", methodName, "\", reqBytes)")
-			g.P("\tif err != nil {")
-			g.P("\t\treturn nil, err")
-			g.P("\t}")
-			g.P()
-			g.P("\tresp := &", g.QualifiedGoIdent(method.Output.GoIdent), "{}")
-			g.P("\tif err := proto.Unmarshal(respBytes, resp); err != nil {")
-			g.P("\t\treturn nil, fmt.Errorf(\"failed to unmarshal response: %w\", err)")
-			g.P("\t}")
-			g.P("\treturn resp, nil")
-			g.P("}")
-			g.P()
-		}
-	}
-}
-
-// =============================================================================
-// Dart Code Generation
-// =============================================================================
-
-func generateDartFile(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool, dartPackage string) {
-	filename := strings.TrimSuffix(file.Desc.Path(), ".proto") + "_ffi.pb.dart"
-	if idx := strings.LastIndex(filename, "/"); idx >= 0 {
-		filename = filename[idx+1:]
-	}
-	g := gen.NewGeneratedFile(filename, "")
-	g.P("// Code generated by protoc-gen-synurang-ffi. DO NOT EDIT.")
-	g.P()
-	g.P("import 'dart:async';")
-	g.P("import 'dart:typed_data';")
-	g.P("import 'package:synurang/synurang.dart' as synurang;")
-
-	// Import the corresponding pb.dart file
-	baseProto := filepath.Base(file.Desc.Path())
-	pbDart := strings.TrimSuffix(baseProto, ".proto") + ".pb.dart"
-	g.P("import '", pbDart, "';")
-
-	// Scan for external imports
-	imports := map[string]bool{}
-	addImport := func(path string) {
-		if path == file.Desc.Path() {
-			return
-		}
-		target := strings.TrimSuffix(path, ".proto") + ".pb.dart"
-		var imp string
-		if strings.HasPrefix(target, "google/protobuf/") {
-			imp = "package:protobuf/well_known_types/" + target
-		} else if dartPackage != "" {
-			// Use package import if dart_package is specified
-			imp = "package:" + dartPackage + "/" + target
-		} else {
-			// Use relative import
-			rel, err := filepath.Rel(filepath.Dir(filename), target)
-			if err != nil {
-				imp = target
-			} else {
-				imp = filepath.ToSlash(rel)
-			}
-		}
-		imports[imp] = true
-	}
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			addImport(method.Input.Desc.ParentFile().Path())
-			addImport(method.Output.Desc.ParentFile().Path())
-		}
-	}
-
-	for imp := range imports {
-		g.P("import '", imp, "';")
-	}
-
-	g.P()
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		g.P("class ", service.GoName, "Ffi {")
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-
-			isServerStreaming := method.Desc.IsStreamingServer()
-			isClientStreaming := method.Desc.IsStreamingClient()
-
-			inputType := method.Input.GoIdent.GoName
-			outputType := method.Output.GoIdent.GoName
-			methodNameStr := string(method.Desc.Name())
-
-			if !isServerStreaming && !isClientStreaming {
-				// Unary RPC: Future<T> Method(Request r)
-				g.P("  static Future<", outputType, "> ", methodNameStr, "(", inputType, " request) async {")
-				g.P("    final bytes = request.writeToBuffer();")
-				g.P(fmt.Sprintf("    final resultBytes = await synurang.invokeBackendAsync('%s', bytes);", methodName))
-				g.P("    return ", outputType, ".fromBuffer(resultBytes);")
-				g.P("  }")
-			} else if isServerStreaming && !isClientStreaming {
-				// Server streaming: Stream<T> Method(Request r)
-				g.P("  static Stream<", outputType, "> ", methodNameStr, "(", inputType, " request) {")
-				g.P("    final bytes = request.writeToBuffer();")
-				g.P(fmt.Sprintf("    return synurang.invokeBackendServerStream('%s', bytes)", methodName))
-				g.P("        .map((data) => ", outputType, ".fromBuffer(data));")
-				g.P("  }")
-			} else if isClientStreaming && !isServerStreaming {
-				// Client streaming: Future<T> Method(Stream<Request> r)
-				g.P("  static Future<", outputType, "> ", methodNameStr, "(Stream<", inputType, "> requests) async {")
-				g.P(fmt.Sprintf("    final resultBytes = await synurang.invokeBackendClientStream('%s',", methodName))
-				g.P("        requests.map((r) => r.writeToBuffer()));")
-				g.P("    return ", outputType, ".fromBuffer(resultBytes);")
-				g.P("  }")
-			} else {
-				// Bidi streaming: Stream<T> Method(Stream<Request> r)
-				g.P("  static Stream<", outputType, "> ", methodNameStr, "(Stream<", inputType, "> requests) {")
-				g.P(fmt.Sprintf("    return synurang.invokeBackendBidiStream('%s',", methodName))
-				g.P("        requests.map((r) => r.writeToBuffer()))")
-				g.P("        .map((data) => ", outputType, ".fromBuffer(data));")
-				g.P("  }")
-			}
-			g.P()
-		}
-		g.P("}")
-		g.P()
-	}
-}
-
-// =============================================================================
-// C++ Code Generation
-// =============================================================================
-
-func generateCppFile(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool) {
-	filename := strings.TrimSuffix(file.Desc.Path(), ".proto") + "_ffi.h"
-	if idx := strings.LastIndex(filename, "/"); idx >= 0 {
-		filename = filename[idx+1:]
-	}
-	g := gen.NewGeneratedFile(filename, "")
-	g.P("// Code generated by protoc-gen-synurang-ffi. DO NOT EDIT.")
-	g.P()
-
-	// Header guard
-	guardName := strings.ToUpper(strings.ReplaceAll(strings.TrimSuffix(filename, ".h"), ".", "_")) + "_H_"
-	g.P("#ifndef ", guardName)
-	g.P("#define ", guardName)
-	g.P()
-
-	g.P("#include <string>")
-	g.P("#include <functional>")
-	g.P("#include <memory>")
-	g.P()
-
-	// Import the corresponding pb.h file
-	baseProto := filepath.Base(file.Desc.Path())
-	pbHeader := strings.TrimSuffix(baseProto, ".proto") + ".pb.h"
-	g.P("#include \"", pbHeader, "\"")
-	g.P()
-
-	// Determine namespace from package
-	ns := strings.ReplaceAll(string(file.Desc.Package()), ".", "::")
-	if ns != "" {
-		g.P("namespace ", ns, " {")
-		g.P()
-	}
-
-	// Generate FfiServer interface (abstract class)
-	g.P("// =============================================================================")
-	g.P("// FFI Server Interface")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("class FfiServer {")
-	g.P("public:")
-	g.P("  virtual ~FfiServer() = default;")
-	g.P()
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		g.P("  // ", service.GoName, " methods")
-		for _, method := range service.Methods {
-			inputType := method.Input.GoIdent.GoName
-			outputType := method.Output.GoIdent.GoName
-			g.P("  virtual ", outputType, " ", method.GoName, "(const ", inputType, "& request) = 0;")
-		}
-		g.P()
-	}
-	g.P("};")
-	g.P()
-
-	// Generate Invoke function
-	g.P("// =============================================================================")
-	g.P("// FFI Dispatcher")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("inline std::string Invoke(FfiServer* server, const std::string& method, const std::string& data) {")
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			inputType := method.Input.GoIdent.GoName
-			outputType := method.Output.GoIdent.GoName
-
-			g.P("  if (method == \"", methodName, "\") {")
-			g.P("    ", inputType, " req;")
-			g.P("    if (!req.ParseFromString(data)) {")
-			g.P("      return \"\";  // Parse error")
-			g.P("    }")
-			g.P("    ", outputType, " resp = server->", method.GoName, "(req);")
-			g.P("    return resp.SerializeAsString();")
-			g.P("  }")
-		}
-	}
-
-	g.P("  return \"\";  // Unknown method")
-	g.P("}")
-	g.P()
-
-	// Generate FfiChannel class
-	g.P("// =============================================================================")
-	g.P("// FFI Client Connection - routes calls through FFI instead of network")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("class FfiChannel {")
-	g.P("public:")
-	g.P("  explicit FfiChannel(FfiServer* server) : server_(server) {}")
-	g.P()
-	g.P("  template<typename Request, typename Response>")
-	g.P("  bool Invoke(const std::string& method, const Request& request, Response* response) {")
-	g.P("    std::string data = request.SerializeAsString();")
-	if ns != "" {
-		g.P("    std::string result = ::" + ns + "::Invoke(server_, method, data);")
+	target := strings.TrimSuffix(path, ".proto") + ".pb.dart"
+	var imp string
+	if strings.HasPrefix(target, "google/protobuf/") {
+		imp = "package:protobuf/well_known_types/" + target
+	} else if dartPackage != "" {
+		imp = "package:" + dartPackage + "/" + target
 	} else {
-		g.P("    std::string result = Invoke(server_, method, data);")
+		imp = target
 	}
-	g.P("    if (result.empty()) {")
-	g.P("      return false;")
-	g.P("    }")
-	g.P("    return response->ParseFromString(result);")
-	g.P("  }")
-	g.P()
-	g.P("private:")
-	g.P("  FfiServer* server_;")
-	g.P("};")
-	g.P()
-
-	// Generate typed client classes for each service
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		g.P("// =============================================================================")
-		g.P("// ", service.GoName, " FFI Client")
-		g.P("// =============================================================================")
-		g.P()
-		g.P("class ", service.GoName, "FfiClient {")
-		g.P("public:")
-		g.P("  explicit ", service.GoName, "FfiClient(FfiChannel* conn) : conn_(conn) {}")
-		g.P("  explicit ", service.GoName, "FfiClient(FfiServer* server) : owned_conn_(std::make_unique<FfiChannel>(server)), conn_(owned_conn_.get()) {}")
-		g.P()
-
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			inputType := method.Input.GoIdent.GoName
-			outputType := method.Output.GoIdent.GoName
-
-			g.P("  bool ", method.GoName, "(const ", inputType, "& request, ", outputType, "* response) {")
-			g.P("    return conn_->Invoke(\"", methodName, "\", request, response);")
-			g.P("  }")
-			g.P()
-		}
-
-		g.P("private:")
-		g.P("  std::unique_ptr<FfiChannel> owned_conn_;")
-		g.P("  FfiChannel* conn_;")
-		g.P("};")
-		g.P()
-	}
-
-	if ns != "" {
-		g.P("} // namespace ", ns)
-	}
-	g.P()
-	g.P("#endif // ", guardName)
+	imports[imp] = true
 }
 
-// =============================================================================
-// Rust Code Generation
-// =============================================================================
-
-func generateRustFile(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool) {
-	filename := strings.TrimSuffix(file.Desc.Path(), ".proto") + "_ffi.rs"
-	if idx := strings.LastIndex(filename, "/"); idx >= 0 {
-		filename = filename[idx+1:]
+// goPackageAlias extracts the package alias from an import path
+// e.g., "google.golang.org/protobuf/types/known/emptypb" -> "emptypb"
+func goPackageAlias(importPath string) string {
+	// Get the last part of the import path
+	if idx := strings.LastIndex(importPath, "/"); idx >= 0 {
+		return importPath[idx+1:]
 	}
-	g := gen.NewGeneratedFile(filename, "")
-	g.P("// Code generated by protoc-gen-synurang-ffi. DO NOT EDIT.")
-	g.P()
-	g.P("use prost::Message;")
-	g.P("use std::sync::Arc;")
-	g.P()
-
-	// Determine module path from package
-	modPath := strings.ReplaceAll(string(file.Desc.Package()), ".", "_")
-
-	// Generate FfiServer trait
-	g.P("// =============================================================================")
-	g.P("// FFI Server Trait")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("pub trait FfiServer: Send + Sync {")
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			inputType := method.Input.GoIdent.GoName
-			outputType := method.Output.GoIdent.GoName
-			methodNameSnake := toSnakeCase(string(method.Desc.Name()))
-			g.P("    fn ", methodNameSnake, "(&self, request: ", inputType, ") -> Result<", outputType, ", String>;")
-		}
-	}
-	g.P("}")
-	g.P()
-
-	// Generate Invoke function
-	g.P("// =============================================================================")
-	g.P("// FFI Dispatcher")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("pub fn invoke<S: FfiServer>(server: &S, method: &str, data: &[u8]) -> Result<Vec<u8>, String> {")
-	g.P("    match method {")
-
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			inputType := method.Input.GoIdent.GoName
-			methodNameSnake := toSnakeCase(string(method.Desc.Name()))
-
-			g.P("        \"", methodName, "\" => {")
-			g.P("            let request = ", inputType, "::decode(data)")
-			g.P("                .map_err(|e| format!(\"failed to decode request: {}\", e))?;")
-			g.P("            let response = server.", methodNameSnake, "(request)?;")
-			g.P("            let mut buf = Vec::new();")
-			g.P("            response.encode(&mut buf)")
-			g.P("                .map_err(|e| format!(\"failed to encode response: {}\", e))?;")
-			g.P("            Ok(buf)")
-			g.P("        }")
-		}
-	}
-
-	g.P("        _ => Err(format!(\"unknown method: {}\", method)),")
-	g.P("    }")
-	g.P("}")
-	g.P()
-
-	// Generate FfiChannel struct
-	g.P("// =============================================================================")
-	g.P("// FFI Client Connection - routes calls through FFI instead of network")
-	g.P("// =============================================================================")
-	g.P()
-	g.P("pub struct FfiChannel<S: FfiServer> {")
-	g.P("    server: Arc<S>,")
-	g.P("}")
-	g.P()
-	g.P("impl<S: FfiServer> FfiChannel<S> {")
-	g.P("    pub fn new(server: Arc<S>) -> Self {")
-	g.P("        FfiChannel { server }")
-	g.P("    }")
-	g.P()
-	g.P("    pub fn invoke<Req: Message, Resp: Message + Default>(&self, method: &str, request: &Req) -> Result<Resp, String> {")
-	g.P("        let mut data = Vec::new();")
-	g.P("        request.encode(&mut data)")
-	g.P("            .map_err(|e| format!(\"failed to encode request: {}\", e))?;")
-	g.P("        let result = invoke(&*self.server, method, &data)?;")
-	g.P("        Resp::decode(result.as_slice())")
-	g.P("            .map_err(|e| format!(\"failed to decode response: {}\", e))")
-	g.P("    }")
-	g.P("}")
-	g.P()
-
-	// Generate typed client structs for each service
-	for _, service := range file.Services {
-		if !shouldGenerateService(service.GoName, serviceList) {
-			continue
-		}
-
-		g.P("// =============================================================================")
-		g.P("// ", service.GoName, " FFI Client")
-		g.P("// =============================================================================")
-		g.P()
-		g.P("pub struct ", service.GoName, "FfiClient<S: FfiServer> {")
-		g.P("    conn: FfiChannel<S>,")
-		g.P("}")
-		g.P()
-		g.P("impl<S: FfiServer> ", service.GoName, "FfiClient<S> {")
-		g.P("    pub fn new(server: Arc<S>) -> Self {")
-		g.P("        ", service.GoName, "FfiClient {")
-		g.P("            conn: FfiChannel::new(server),")
-		g.P("        }")
-		g.P("    }")
-		g.P()
-
-		for _, method := range service.Methods {
-			methodName := fmt.Sprintf("/%s.%s/%s", file.Desc.Package(), service.Desc.Name(), method.Desc.Name())
-			inputType := method.Input.GoIdent.GoName
-			outputType := method.Output.GoIdent.GoName
-			methodNameSnake := toSnakeCase(string(method.Desc.Name()))
-
-			g.P("    pub fn ", methodNameSnake, "(&self, request: &", inputType, ") -> Result<", outputType, ", String> {")
-			g.P("        self.conn.invoke(\"", methodName, "\", request)")
-			g.P("    }")
-			g.P()
-		}
-
-		g.P("}")
-		g.P()
-	}
-
-	// Module info comment
-	g.P("// Module: ", modPath)
-}
-
-// toSnakeCase converts CamelCase to snake_case
-func toSnakeCase(s string) string {
-	var result strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			result.WriteRune('_')
-		}
-		result.WriteRune(r)
-	}
-	return strings.ToLower(result.String())
+	return importPath
 }
