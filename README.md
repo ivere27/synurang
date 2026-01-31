@@ -476,7 +476,7 @@ Add `synurang` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  synurang: ^0.1.6
+  synurang: ^0.1.9
 ```
 
 Add `synurang` to your Go module:

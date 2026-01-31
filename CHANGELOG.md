@@ -1,3 +1,8 @@
+## 0.1.9
+
+*   In-process microservice (FFI + shared library).
+*   Apply template.
+
 ## 0.1.8
 
 *   Add runtime library and Go-to-Go FFI support.
