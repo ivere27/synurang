@@ -109,6 +109,8 @@ func init() {
 		"grpcStreamType":   grpcStreamType,
 		"ffiStreamType":    ffiStreamType,
 		"pluginStreamType": pluginStreamType,
+		"replace":          strings.ReplaceAll,
+		"upper":            strings.ToUpper,
 	}
 	var err error
 	templates, err = template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
@@ -151,10 +153,10 @@ func main() {
 				generateFromTemplate(gen, f, serviceList, "dart", *dartPackage)
 			}
 			if *lang == "cpp" {
-				generateFromTemplate(gen, f, serviceList, "cpp", "")
+				generateFromTemplate(gen, f, serviceList, "cpp", *mode)
 			}
 			if *lang == "rust" {
-				generateFromTemplate(gen, f, serviceList, "rust", "")
+				generateFromTemplate(gen, f, serviceList, "rust", *mode)
 			}
 		}
 		return nil
@@ -168,6 +170,30 @@ func main() {
 func generateFromTemplate(gen *protogen.Plugin, file *protogen.File, serviceList map[string]bool, lang, modeOrOpt string) {
 	data := buildFileData(gen, file, serviceList, lang, modeOrOpt)
 
+	// For C++ plugin_server mode, generate both header and implementation
+	if lang == "cpp" && modeOrOpt == "plugin_server" {
+		// Generate header
+		var headerBuf bytes.Buffer
+		if err := templates.ExecuteTemplate(&headerBuf, "cpp_plugin_server.h.tmpl", data); err != nil {
+			gen.Error(fmt.Errorf("template cpp_plugin_server.h.tmpl: %v", err))
+			return
+		}
+		headerFilename := outputFilenameWithMode(file, lang, modeOrOpt, ".h")
+		hg := gen.NewGeneratedFile(headerFilename, file.GoImportPath)
+		hg.P(headerBuf.String())
+
+		// Generate implementation
+		var implBuf bytes.Buffer
+		if err := templates.ExecuteTemplate(&implBuf, "cpp_plugin_server.cc.tmpl", data); err != nil {
+			gen.Error(fmt.Errorf("template cpp_plugin_server.cc.tmpl: %v", err))
+			return
+		}
+		implFilename := outputFilenameWithMode(file, lang, modeOrOpt, ".cc")
+		ig := gen.NewGeneratedFile(implFilename, file.GoImportPath)
+		ig.P(implBuf.String())
+		return
+	}
+
 	tmplName := selectTemplate(lang, modeOrOpt)
 	var buf bytes.Buffer
 	if err := templates.ExecuteTemplate(&buf, tmplName, data); err != nil {
@@ -175,7 +201,7 @@ func generateFromTemplate(gen *protogen.Plugin, file *protogen.File, serviceList
 		return
 	}
 
-	filename := outputFilename(file, lang)
+	filename := outputFilenameWithMode(file, lang, modeOrOpt, "")
 	g := gen.NewGeneratedFile(filename, file.GoImportPath)
 	g.P(buf.String())
 }
@@ -194,18 +220,43 @@ func selectTemplate(lang, modeOrOpt string) string {
 	case "dart":
 		return "dart.dart.tmpl"
 	case "cpp":
-		return "cpp.h.tmpl"
+		switch modeOrOpt {
+		case "plugin_server":
+			return "cpp_plugin_server.cc.tmpl"
+		default:
+			return "cpp.h.tmpl"
+		}
 	case "rust":
-		return "rust.rs.tmpl"
+		switch modeOrOpt {
+		case "plugin_server":
+			return "rust_plugin_server.rs.tmpl"
+		default:
+			return "rust.rs.tmpl"
+		}
 	}
 	return ""
 }
 
-func outputFilename(file *protogen.File, lang string) string {
+func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string {
 	base := strings.TrimSuffix(file.Desc.Path(), ".proto")
 	if idx := strings.LastIndex(base, "/"); idx >= 0 {
 		base = base[idx+1:]
 	}
+
+	if mode == "plugin_server" {
+		switch lang {
+		case "go":
+			return base + "_ffi_plugin.pb.go"
+		case "cpp":
+			if ext != "" {
+				return base + "_ffi_plugin" + ext
+			}
+			return base + "_ffi_plugin.cc"
+		case "rust":
+			return base + "_ffi_plugin.rs"
+		}
+	}
+
 	switch lang {
 	case "go":
 		return base + "_ffi.pb.go"
@@ -217,6 +268,11 @@ func outputFilename(file *protogen.File, lang string) string {
 		return base + "_ffi.rs"
 	}
 	return base + "_ffi"
+}
+
+// Kept for backward compatibility
+func outputFilename(file *protogen.File, lang string) string {
+	return outputFilenameWithMode(file, lang, "", "")
 }
 
 // =============================================================================

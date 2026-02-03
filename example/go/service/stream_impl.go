@@ -5,11 +5,15 @@ import (
 	"log"
 	"time"
 
+	"github.com/ivere27/synurang/example/go/logic"
 	pb "github.com/ivere27/synurang/example/pkg/api"
 	core_service "github.com/ivere27/synurang/pkg/service"
 
 	"google.golang.org/protobuf/proto"
 )
+
+// Shared logic instance for FFI streaming handlers
+var ffiLogic = logic.NewGreeterLogic("go")
 
 // HandleBarServerStream handles the BarServerStream logic via FFI
 func HandleBarServerStream(session *core_service.StreamSession, reqData []byte) {
@@ -27,20 +31,19 @@ func HandleBarServerStream(session *core_service.StreamSession, reqData []byte) 
 
 	log.Printf("FFI ServerStream: BarServerStream called with name=%s", req.Name)
 
-	// Use a fake stream that sends via FFI callback
-	languages := []string{"en", "ko", "ja", "es", "fr"}
-	for i, lang := range languages {
-		greeting := getGreeting(lang, req.Name) // Reuse getGreeting from greeter.go
+	// Use shared logic with callback
+	ffiLogic.BarServerStream(req.Name, func(message, from string, index, total int) bool {
 		resp := &pb.HelloResponse{
-			Message: fmt.Sprintf("[%d/5] %s", i+1, greeting),
-			From:    "go",
+			Message: message,
+			From:    from,
 		}
 		respBytes, _ := proto.Marshal(resp)
 		if err := session.SendFromStream(respBytes); err != nil {
-			return
+			return false
 		}
 		time.Sleep(100 * time.Millisecond)
-	}
+		return true
+	})
 	session.EndStream()
 }
 
@@ -55,10 +58,11 @@ func HandleBarClientStream(session *core_service.StreamSession) {
 		select {
 		case data, ok := <-session.DataChan:
 			if !ok {
-				// EOF - Client finished sending
+				// EOF - Client finished sending, use shared logic
+				msg, from := ffiLogic.BarClientStream(names)
 				resp := &pb.HelloResponse{
-					Message: fmt.Sprintf("Hello to all: %s!", joinNames(names)),
-					From:    "go",
+					Message: msg,
+					From:    from,
 				}
 				respBytes, _ := proto.Marshal(resp)
 				session.SendFromStream(respBytes)
@@ -107,12 +111,12 @@ func HandleBarBidiStream(session *core_service.StreamSession) {
 			}
 			log.Printf("FFI BidiStream: received name=%s", req.Name)
 
-			// Echo back immediately
-			greeting := getGreeting(req.Language, req.Name)
+			// Use shared logic for echo response
+			msg, from := ffiLogic.BarBidiStream(req.Name, req.Language)
 			resp := &pb.HelloResponse{
-				Message:   greeting,
-				From:      "go",
-				Timestamp: nil, // Add timestamp if needed but nil is fine for now
+				Message:   msg,
+				From:      from,
+				Timestamp: nil,
 			}
 			respBytes, _ := proto.Marshal(resp)
 			if err := session.SendFromStream(respBytes); err != nil {
@@ -123,15 +127,4 @@ func HandleBarBidiStream(session *core_service.StreamSession) {
 			return
 		}
 	}
-}
-
-func joinNames(names []string) string {
-	if len(names) == 0 {
-		return "(nobody)"
-	}
-	result := names[0]
-	for i := 1; i < len(names); i++ {
-		result += ", " + names[i]
-	}
-	return result
 }

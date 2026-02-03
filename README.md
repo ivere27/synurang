@@ -57,6 +57,7 @@ All four gRPC patterns work: unary, server streaming, client streaming, and bidi
 |-----------|-------------|----------|
 | **FFI (source)** | Compile Go into app | Embedded backend |
 | **FFI (plugin)** | Load `.so` at runtime | Proprietary / in-process microservices |
+| **Process Mode** | Parent-Child IPC | Sidecar processes, isolation, privileges |
 | **TCP/UDS** | Standard network gRPC | Debugging, distributed |
 
 All three run simultaneously on the same server.
@@ -70,6 +71,7 @@ All three run simultaneously on the same server.
 | Go | Go | Stable |
 | Dart/Flutter | Go | Stable |
 | Go | Plugin (.so) | Stable |
+| Go (parent) | Go/C++/Rust (child) | Stable |
 | Dart | C++ | Experimental |
 | Dart | Rust | Experimental |
 
@@ -171,6 +173,103 @@ All RPC types supported including streaming.
 
 ---
 
+## Process Mode (Parent-Child IPC)
+
+Run gRPC services in a separate child process with a secure, private IPC channel.
+
+> **Note**: Parent process is always the gRPC **client**, child process is the gRPC **server**. The child can be written in any language (Go, C++, Rust, etc.).
+
+- **Unix/Linux/macOS**: Uses `socketpair` (file descriptor inheritance).
+- **Windows**: Uses Named Pipes (`\\.\pipe\...`).
+
+**Parent Process (Go):**
+
+```go
+cmd := exec.Command("./child-process")
+conn, err := synurang.StartProcess(ctx, cmd)
+if err != nil {
+    log.Fatal(err)
+}
+defer conn.Close()
+
+client := pb.NewMyServiceClient(conn)
+resp, _ := client.DoSomething(ctx, req)
+```
+
+### Child Process Examples
+
+The parent is always Go. The child can be **any language** that supports gRPC.
+
+**Go Child:**
+
+```go
+ln, err := synurang.NewIPCListener()
+if err != nil {
+    log.Fatal(err)
+}
+
+s := grpc.NewServer()
+pb.RegisterMyServiceServer(s, &server{})
+s.Serve(ln)
+```
+
+**C++ Child:**
+
+```cpp
+#include <grpcpp/grpcpp.h>
+#include <cstdlib>
+
+int main() {
+    int fd = std::stoi(std::getenv("SYNURANG_IPC"));
+    
+    // Create channel from inherited fd
+    auto channel = grpc::CreateInsecureChannelFromFd("", fd);
+    
+    // Or for server side: create listener from fd
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("fd://" + std::to_string(fd), 
+                             grpc::InsecureServerCredentials());
+    builder.RegisterService(&service);
+    auto server = builder.BuildAndStart();
+    server->Wait();
+}
+```
+
+**Rust Child (tonic):**
+
+```rust
+use std::os::unix::io::FromRawFd;
+use tonic::transport::Server;
+
+#[tokio::main]
+async fn main() {
+    let fd: i32 = std::env::var("SYNURANG_IPC")
+        .unwrap().parse().unwrap();
+    
+    let listener = unsafe { 
+        std::os::unix::net::UnixListener::from_raw_fd(fd) 
+    };
+    let incoming = tokio_stream::wrappers::UnixListenerStream::new(
+        tokio::net::UnixListener::from_std(listener).unwrap()
+    );
+    
+    Server::builder()
+        .add_service(MyServiceServer::new(MyService::default()))
+        .serve_with_incoming(incoming)
+        .await
+        .unwrap();
+}
+```
+
+### Benefits
+
+- `StartProcess` returns a standard `*grpc.ClientConn`
+- `NewIPCListener` returns a standard `net.Listener`
+- Child process language is transparent to parent
+- No network configuration required
+
+---
+
 ## Memory Model
 
 | Direction | Zero-copy | Mechanism |
@@ -199,6 +298,9 @@ go install github.com/ivere27/synurang/cmd/protoc-gen-synurang-ffi@latest
 
 # For Dart
 dart pub global activate protoc_plugin
+
+# For C++ (Process Mode)
+sudo apt-get install protobuf-compiler-grpc
 ```
 
 ### Step 1: Define API
@@ -333,9 +435,9 @@ grpcurl -plaintext localhost:18000 api.Greeter/SayHello
 
 ## Experimental
 
-**C++**: `--synurang-ffi_opt=lang=cpp`. Unary only, streaming not implemented.
+**C++**: `--synurang-ffi_opt=lang=cpp`. Full support including all streaming types.
 
-**Rust**: `--synurang-ffi_opt=lang=rust`. Partial support.
+**Rust**: `--synurang-ffi_opt=lang=rust`. Full support including all streaming types.
 
 ---
 
@@ -384,6 +486,16 @@ synurang/
 │   ├── synurang.dart                 # Main entry point
 │   └── src/generated/                # Generated proto
 ├── example/                          # Working examples
+│   ├── go/                           # Go examples
+│   │   ├── service/                  # Shared service logic
+│   │   ├── process/                  # Process mode entry
+│   │   └── plugin/                   # Plugin mode entry
+│   ├── cpp/                          # C++ examples
+│   │   ├── service/                  # Shared service logic
+│   │   ├── process/                  # Process mode entry
+│   │   └── plugin/                   # Plugin mode entry
+│   └── rust/                         # Rust examples
+│       └── service/                  # Shared service logic
 └── test/                             # Test suites
 ```
 

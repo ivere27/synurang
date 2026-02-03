@@ -2,7 +2,8 @@
 //
 // This package enables "drop-in" replacement of standard gRPC clients with
 // FFI-based clients that route calls through in-process function calls instead
-// of network transport. It supports both unary and streaming RPC patterns.
+// of network transport. It also supports "Process Mode" for parent-child IPC
+// using socketpair (Unix) or Named Pipes (Windows).
 //
 // For Go-to-Go FFI, zero-copy mode is used - proto.Message pointers are passed
 // directly without serialization.
@@ -11,6 +12,9 @@
 //
 //	// Create FfiClientConn with your generated FfiServer
 //	conn := synurang.NewFfiClientConn(myFfiServer)
+//
+//	// OR: Start a child process with IPC
+//	conn, err := synurang.StartProcess(ctx, exec.Command("./child"))
 //
 //	// Use with standard gRPC generated clients
 //	client := pb.NewMyServiceClient(conn)

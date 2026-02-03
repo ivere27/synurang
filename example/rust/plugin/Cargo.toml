@@ -1,0 +1,15 @@
+[package]
+name = "synurang_rust_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+prost = "0.12"
+synurang_service = { path = "../service" }
+ctor = "0.2"
+lazy_static = "1.5"
+
+

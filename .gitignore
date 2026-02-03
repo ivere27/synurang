@@ -3,6 +3,15 @@
 #/lib/src/generated/
 #/pkg/api/*.pb.go
 
+/android/.gradle/
+/example/android/build/
+/example/rust/service/target/
+/example/rust/plugin/target/
+/example/rust/process/target/
+/example/cpp/plugin/build/
+/example/cpp/process/build/
+
+/plugin
 
 # test
 /protoc-gen-synurang-ffi

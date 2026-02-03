@@ -158,7 +158,9 @@ shared_android:
 	mv libsynurang-android-*.h libsynurang-android-*.so ./src/
 	@echo "Android build complete."
 
-run_android_release: shared_android
+# Android run target (MODE=release|debug, default: debug)
+MODE ?= debug
+run_android: shared_android
 	@echo "Linking shared libraries to example app..."
 	mkdir -p example/android/app/src/main/jniLibs/arm64-v8a
 	mkdir -p example/android/app/src/main/jniLibs/armeabi-v7a
@@ -168,21 +170,8 @@ run_android_release: shared_android
 	ln -sf $(CURRENT_DIR)/src/libsynurang-android-x86_64.so example/android/app/src/main/jniLibs/x86_64/libsynurang.so
 	@DEVICE_ID=$$(flutter devices | grep "android" | head -n 1 | awk -F "•" '{print $$2}' | xargs); \
 	if [ -z "$$DEVICE_ID" ]; then echo "No Android device found"; exit 1; fi; \
-	echo "Using Android device: $$DEVICE_ID"; \
-	cd example && flutter run -d $$DEVICE_ID --release
-
-run_android_debug: shared_android
-	@echo "Linking shared libraries to example app..."
-	mkdir -p example/android/app/src/main/jniLibs/arm64-v8a
-	mkdir -p example/android/app/src/main/jniLibs/armeabi-v7a
-	mkdir -p example/android/app/src/main/jniLibs/x86_64
-	ln -sf $(CURRENT_DIR)/src/libsynurang-android-arm64.so example/android/app/src/main/jniLibs/arm64-v8a/libsynurang.so
-	ln -sf $(CURRENT_DIR)/src/libsynurang-android-arm.so example/android/app/src/main/jniLibs/armeabi-v7a/libsynurang.so
-	ln -sf $(CURRENT_DIR)/src/libsynurang-android-x86_64.so example/android/app/src/main/jniLibs/x86_64/libsynurang.so
-	@DEVICE_ID=$$(flutter devices | grep "android" | head -n 1 | awk -F "•" '{print $$2}' | xargs); \
-	if [ -z "$$DEVICE_ID" ]; then echo "No Android device found"; exit 1; fi; \
-	echo "Using Android device: $$DEVICE_ID"; \
-	cd example && flutter run -d $$DEVICE_ID --debug
+	echo "Using Android device: $$DEVICE_ID (mode: $(MODE))"; \
+	cd example && flutter run -d $$DEVICE_ID --$(MODE)
 
 # Plugin Shared Library (for test/plugin)
 shared_plugin:
@@ -308,17 +297,7 @@ run_console_example: shared_linux shared_example_linux
 	flutter pub get
 	LD_LIBRARY_PATH=$(CURRENT_DIR)/src:$(CURRENT_DIR)/example/linux/lib:${LD_LIBRARY_PATH} dart run example/console_main.dart
 
-# Run console example with TCP (spawns separate Go server process)
-run_console_tcp: build_example_server
-	@echo "Running console example (TCP mode - bidirectional gRPC)..."
-	flutter pub get
-	dart run example/console_main.dart --mode=tcp --golang-port=18000 --flutter-port=10050 --server=$(CURRENT_DIR)/bin/synurang_example_server
-
-# Run console example with UDS (spawns separate Go server process)
-run_console_uds: build_example_server
-	@echo "Running console example (UDS mode - bidirectional gRPC)..."
-	flutter pub get
-	dart run example/console_main.dart --mode=uds --golang-socket=/tmp/synurang_go.sock --flutter-socket=/tmp/synurang_flutter.sock --server=$(CURRENT_DIR)/bin/synurang_example_server
+# NOTE: run_console_tcp and run_console_uds removed - use run_console_example with --mode=tcp|uds flag
 
 # Build standalone example server binary
 build_example_server:
@@ -326,6 +305,113 @@ build_example_server:
 	@mkdir -p bin
 	go build -o bin/synurang_example_server example/cmd/server/main.go
 	@echo "Built: bin/synurang_example_server"
+
+# Build process mode example (parent + child)
+build_process_example:
+	@echo "Building process mode example..."
+	@mkdir -p bin
+	go build -o bin/process_child ./example/go/process
+	go build -o bin/process_parent ./example/cmd/process_parent/main.go
+	@echo "Built: bin/process_parent, bin/process_child"
+
+# Run process mode example
+run_process_example: build_process_example
+	@echo "Running process mode example..."
+	./bin/process_parent --child=./bin/process_child
+
+# NOTE: build_process_go removed - use build_process_example or build_process_all
+
+# Build C++ process child
+build_process_cpp:
+	@echo "Building C++ process child..."
+	@mkdir -p example/cpp/process/build
+	cd example/cpp/process/build && cmake .. && make -j4
+	@mkdir -p bin
+	cp example/cpp/process/build/process_child bin/process_child_cpp
+	@echo "Built: bin/process_child_cpp"
+
+# Build Rust process child
+build_process_rust:
+	@echo "Building Rust process child..."
+	cd example/rust/process && cargo build --release
+	@mkdir -p bin
+	cp example/rust/process/target/release/process_child bin/process_child_rust
+	@echo "Built: bin/process_child_rust"
+
+# Build all process mode binaries
+build_process_all: build_process_go build_process_cpp build_process_rust
+	@echo "Built all process mode binaries"
+
+# Run multi-language process mode example
+run_process_multilang: build_process_example build_process_rust
+	@echo "Running multi-language process mode example..."
+	@echo "[Go Parent -> Go Child]"
+	./bin/process_parent --child=./bin/process_child
+
+	@echo "\n[Go Parent -> Rust Child]"
+	./bin/process_parent --child=./bin/process_child_rust
+
+# =============================================================================
+# Plugin Mode (FFI Shared Library) Examples
+# =============================================================================
+
+# Generate C++ plugin FFI code
+gen_plugin_cpp:
+	@echo "Generating C++ plugin FFI code..."
+	protoc -Iexample/api -Iapi \
+		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
+		--synurang-ffi_out=./example/cpp/plugin \
+		--synurang-ffi_opt=lang=cpp,mode=plugin_server,services=GoGreeterService \
+		example/api/example.proto
+	@echo "Generated: example/cpp/plugin/example_ffi_plugin.{h,cc}"
+
+# Build C++ plugin shared library
+build_plugin_cpp: gen_plugin_cpp
+	@echo "Building C++ plugin..."
+	@mkdir -p example/cpp/plugin/build
+	cd example/cpp/plugin/build && cmake .. && make -j4
+	@mkdir -p bin
+	cp example/cpp/plugin/build/libplugin.so bin/libplugin_cpp.so
+	@echo "Built: bin/libplugin_cpp.so"
+
+# Build Go plugin shared library
+build_plugin_go:
+	@echo "Building Go plugin..."
+	@mkdir -p bin
+	CGO_ENABLED=1 go build -buildmode=c-shared -o bin/libplugin_go.so ./example/go/plugin
+	@echo "Built: bin/libplugin_go.so"
+
+# Generate Rust plugin FFI code
+gen_plugin_rust:
+	@echo "Generating Rust plugin FFI code..."
+	protoc -Iexample/api -Iapi \
+		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
+		--synurang-ffi_out=./example/rust/plugin/src \
+		--synurang-ffi_opt=lang=rust,mode=plugin_server,services=GoGreeterService \
+		example/api/example.proto
+	@echo "Patching generated file to allow include! macro usage..."
+	@sed -i 's/#\!\[/\/\/ #\!\[/g' example/rust/plugin/src/example_ffi_plugin.rs
+	@echo "Generated: example/rust/plugin/src/example_ffi_plugin.rs"
+
+# Build Rust plugin shared library
+build_plugin_rust: gen_plugin_rust
+	@echo "Building Rust plugin..."
+	cd example/rust/plugin && cargo build --release
+	@mkdir -p bin
+	cp example/rust/plugin/target/release/*.so bin/libplugin_rust.so 2>/dev/null || \
+	cp example/rust/plugin/target/release/*.dylib bin/libplugin_rust.dylib 2>/dev/null || true
+	@echo "Built: bin/libplugin_rust.so"
+
+# NOTE: Individual test_plugin_{go,cpp,rust} removed - use test_plugin_all instead
+
+# Build all plugins
+build_plugin_all: build_plugin_go build_plugin_cpp build_plugin_rust
+	@echo "Built all plugins: bin/libplugin_{go,cpp,rust}.so"
+
+# Test all plugins together (loads Go, C++, Rust and tests all 4 gRPC types)
+test_plugin_all: build_plugin_all
+	@echo "Testing all plugins with all 4 gRPC types..."
+	go run ./test/plugin/multi/main.go
 
 # Run Flutter example
 run_flutter_example: shared_linux shared_example_linux ffigen
@@ -368,17 +454,7 @@ test_go_uds: build_example_server
 	rm -f /tmp/synurang_test.sock; \
 	exit $$EXIT_CODE
 
-# Test Flutter server via transport CLI (TCP)
-test_flutter_tcp:
-	@echo "⚠️  Ensure Flutter example is running (linux/android) and listening on port 10050"
-	@echo "Testing Flutter server via TCP..."
-	go run example/cmd/client/main.go --target=flutter --transport=tcp --addr=localhost:10050 --token=demo-token
-
-# Test Flutter server via transport CLI (UDS)
-test_flutter_uds:
-	@echo "⚠️  Ensure Flutter example is running (linux) and listening on /tmp/flutter_view.sock"
-	@echo "Testing Flutter server via UDS..."
-	go run example/cmd/client/main.go --target=flutter --transport=uds --socket=/tmp/flutter_view.sock --token=demo-token
+# NOTE: test_flutter_tcp and test_flutter_uds removed - use example/cmd/client directly
 
 # =============================================================================
 # Flutter Integration
@@ -411,27 +487,41 @@ help:
 	@echo "Synurang Makefile"
 	@echo ""
 	@echo "Build Targets:"
-	@echo "  all            - Build proto and Linux shared library"
-	@echo "  shared_linux   - Build Linux amd64 shared library"
-	@echo "  shared_android - Build Android ARM/ARM64/x86_64 shared libraries"
-	@echo "  shared_plugin  - Build plugin shared library (test/plugin/impl/plugin.so)"
-	@echo "  proto          - Generate Go and Dart proto code (includes test/plugin)"
+	@echo "  all               - Build proto and Linux shared library"
+	@echo "  shared_linux      - Build Linux amd64 shared library"
+	@echo "  shared_android    - Build Android ARM/ARM64/x86_64 shared libraries"
+	@echo "  proto             - Generate Go, Dart, and FFI proto code"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test           - Run all tests (Go + Dart + C++ + Rust + Plugin)"
-	@echo "  test_go        - Run Go tests only"
-	@echo "  test_dart      - Run Dart tests only"
-	@echo "  test_plugin    - Run plugin FFI tests (Go-to-Go via shared library)"
-	@echo "  test_plugin_race - Run plugin FFI tests with race detector"
-	@echo "  test_quick     - Run Go tests (no verbose)"
+	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Plugin)"
+	@echo "  test_go           - Run Go tests only"
+	@echo "  test_dart         - Run Dart tests only"
+	@echo "  test_plugin       - Run plugin FFI tests (test/plugin)"
+	@echo "  test_plugin_all   - Test all plugins (Go, C++, Rust)"
+	@echo "  test_cpp          - Run C++ tests (gen + FFI)"
+	@echo "  test_rust         - Run Rust tests (gen + FFI)"
+	@echo ""
+	@echo "Plugin Mode:"
+	@echo "  build_plugin_all  - Build all plugins (Go, C++, Rust)"
+	@echo "  build_plugin_go   - Build Go plugin"
+	@echo "  build_plugin_cpp  - Build C++ plugin"
+	@echo "  build_plugin_rust - Build Rust plugin"
+	@echo ""
+	@echo "Process Mode:"
+	@echo "  build_process_all     - Build all process mode binaries"
+	@echo "  run_process_example   - Run Go parent + Go child"
+	@echo "  run_process_multilang - Run Go parent with Go/Rust children"
 	@echo ""
 	@echo "Development:"
-	@echo "  run            - Run standalone Go server"
-	@echo "  run_example    - Run Dart example app"
-	@echo "  ffigen         - Generate FFI bindings"
-	@echo "  pub_get        - Get Flutter dependencies"
-	@echo "  clean          - Remove generated files"
+	@echo "  run               - Run standalone Go server"
+	@echo "  run_android       - Run on Android (MODE=release|debug)"
+	@echo "  run_flutter_example   - Run Flutter example (Linux)"
+	@echo "  run_console_example   - Run console example (FFI)"
+	@echo "  ffigen            - Generate FFI bindings"
+	@echo "  clean             - Remove generated files"
 	@echo ""
-	@echo "Example:"
-	@echo "  make shared_linux test_go run_example"
-	@echo "  make test_plugin  # Test plugin FFI"
+	@echo "Examples:"
+	@echo "  make test                    # Run all tests"
+	@echo "  make test_plugin_all         # Test Go/C++/Rust plugins"
+	@echo "  make run_android MODE=release"
+

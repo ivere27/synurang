@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 
@@ -147,8 +148,14 @@ func testContextTimeout(plugin *synurang.Plugin) {
 }
 
 func main() {
+	// Get plugin path from CLI or use default
+	pluginPath := "../impl/plugin.so"
+	if len(os.Args) > 1 {
+		pluginPath = os.Args[1]
+	}
+
 	// Load the plugin using synurang's PluginLoader
-	plugin, err := synurang.LoadPlugin("../impl/plugin.so")
+	plugin, err := synurang.LoadPlugin(pluginPath)
 	if err != nil {
 		log.Fatalf("Failed to load plugin: %v", err)
 	}
