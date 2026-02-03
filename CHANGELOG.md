@@ -1,3 +1,8 @@
+## 0.2.0
+
+*   **Process Mode**: Support for parent-child IPC via socketpair (Unix) and Named Pipes (Windows).
+*   **Multi-language Support**: Full support for C++ and Rust (including streaming) via FFI and Process Mode.
+
 ## 0.1.9
 
 *   In-process microservice (FFI + shared library).
