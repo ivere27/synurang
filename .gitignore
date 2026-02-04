@@ -10,6 +10,7 @@
 /example/rust/process/target/
 /example/cpp/plugin/build/
 /example/cpp/process/build/
+/crates/synurang-host/target/
 
 /plugin
 
@@ -18,6 +19,10 @@
 /test/cpp_ffi/ffi_channel_test
 /test/plugin/host/host
 /test/plugin/host/host_race
+/test/host/cpp/build/
+/test/host/rust/target/
+/test/host/rust/Cargo.lock
+/crates/synurang-host/Cargo.lock
 
 # Shared libraries
 *.so

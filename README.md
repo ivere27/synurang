@@ -1,17 +1,24 @@
 # Synurang
 
-> gRPC over FFI
+> gRPC over FFI and IPC
 
-FFI transport for gRPC. Implements `grpc.ClientConnInterface` — same client code works over FFI or network.
+FFI and IPC transport for gRPC. Implements `grpc.ClientConnInterface` — same client code works over FFI, IPC, or network.
 
 ```go
 // Network gRPC (the usual way)
 conn, _ := grpc.Dial("localhost:50051")
 
-// Synurang FFI (in-process, zero latency)
+// Synurang FFI - source (compiled-in backend)
 conn := synurang.NewFfiClientConn(server)
 
-// Same client code works for both!
+// Synurang FFI - plugin (loaded at runtime)
+plugin := synurang.LoadPlugin("./plugin.so")
+conn := synurang.NewPluginClientConn(plugin, "MyService")
+
+// Synurang IPC (child process)
+conn, _ := synurang.StartProcess(ctx, exec.Command("./child"))
+
+// Same client code works for all!
 client := pb.NewGreeterClient(conn)
 resp, _ := client.SayHello(ctx, &pb.HelloRequest{Name: "World"})
 ```
@@ -20,7 +27,9 @@ resp, _ := client.SayHello(ctx, &pb.HelloRequest{Name: "World"})
 
 - **Flutter + Go apps**: Compile Go as a shared library, call via FFI. No separate server process.
 - **In-process microservices**: Ship proprietary gRPC services as `.so` binaries. No network, no source exposure.
-- **Debugging**: Enable TCP/UDS alongside FFI. Use grpcurl or Postman while app runs via FFI.
+- **Sidecar processes**: Spawn isolated child processes with different privileges or crash isolation.
+- **Polyglot backends**: Parent in any language (Go/Dart/C++/Rust) spawns child in any language.
+- **Debugging**: Enable TCP/UDS alongside FFI/IPC. Use grpcurl or Postman while app runs.
 
 ## Quick start
 
@@ -60,20 +69,35 @@ All four gRPC patterns work: unary, server streaming, client streaming, and bidi
 | **Process Mode** | Parent-Child IPC | Sidecar processes, isolation, privileges |
 | **TCP/UDS** | Standard network gRPC | Debugging, distributed |
 
-All three run simultaneously on the same server.
+FFI and TCP/UDS run simultaneously on the same server.
 
 ---
 
 ## Language Support
 
-| Client | Server | Status |
-|--------|--------|--------|
-| Go | Go | Stable |
-| Dart/Flutter | Go | Stable |
-| Go | Plugin (.so) | Stable |
-| Go (parent) | Go/C++/Rust (child) | Stable |
-| Dart | C++ | Experimental |
-| Dart | Rust | Experimental |
+### Plugin Mode (FFI)
+
+Host loads plugin as `.so`/`.dll` via `dlopen`/`LoadLibrary`.
+
+| Host (Parent) | Plugin | Unix | Windows | Status |
+|---------------|--------|------|---------|--------|
+| Go | Go/C++/Rust | ✓ | Experimental | Stable |
+| Dart/Flutter | Go | ✓ | Experimental | Stable |
+| C++ | Go/C++/Rust | ✓ | Experimental | Experimental |
+| Rust | Go/C++/Rust | ✓ | Experimental | Experimental |
+
+### Process Mode (IPC)
+
+Parent spawns child process with gRPC over IPC.
+
+| Host (Parent) | Child | Unix | Windows | Status |
+|---------------|-------|------|---------|--------|
+| Go | Go/C++/Rust | socketpair | named pipes | Stable |
+| Dart | Go/C++/Rust | TCP loopback | TCP loopback | Stable |
+| C++ | Go/C++/Rust | socketpair | TCP loopback | Experimental |
+| Rust | Go/C++/Rust | socketpair | named pipes | Experimental |
+
+> **Note:** Dart uses TCP loopback on all platforms ([dart-lang/sdk#46196](https://github.com/dart-lang/sdk/issues/46196)). C++ uses TCP loopback on Windows only ([grpc/grpc#13447](https://github.com/grpc/grpc/issues/13447)). For TCP loopback, child must print `SYNURANG_PORT:<port>` to stdout.
 
 ---
 
@@ -179,8 +203,8 @@ Run gRPC services in a separate child process with a secure, private IPC channel
 
 > **Note**: Parent process is always the gRPC **client**, child process is the gRPC **server**. The child can be written in any language (Go, C++, Rust, etc.).
 
-- **Unix/Linux/macOS**: Uses `socketpair` (file descriptor inheritance).
-- **Windows**: Uses Named Pipes (`\\.\pipe\...`).
+- **Unix/Linux/macOS**: Uses `socketpair` (Go/C++/Rust) or TCP loopback (Dart).
+- **Windows**: Uses Named Pipes (Go/Rust) or TCP loopback (C++/Dart). See [Process Mode table](#process-mode-ipc).
 
 **Parent Process (Go):**
 
@@ -198,7 +222,7 @@ resp, _ := client.DoSomething(ctx, req)
 
 ### Child Process Examples
 
-The parent is always Go. The child can be **any language** that supports gRPC.
+Parent can be Go, Dart, C++, or Rust. Child can be **any language** that supports gRPC.
 
 **Go Child:**
 
@@ -213,49 +237,68 @@ pb.RegisterMyServiceServer(s, &server{})
 s.Serve(ln)
 ```
 
-**C++ Child:**
+**C++ Child (Unix - socketpair):**
 
 ```cpp
 #include <grpcpp/grpcpp.h>
+#include <grpcpp/server_posix.h>
 #include <cstdlib>
 
 int main() {
     int fd = std::stoi(std::getenv("SYNURANG_IPC"));
-    
-    // Create channel from inherited fd
-    auto channel = grpc::CreateInsecureChannelFromFd("", fd);
-    
-    // Or for server side: create listener from fd
+
     grpc::ServerBuilder builder;
-    builder.AddListeningPort("fd://" + std::to_string(fd), 
-                             grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
     auto server = builder.BuildAndStart();
+
+    // Add the already-connected socketpair fd to the server
+    grpc::AddInsecureChannelFromFd(server.get(), fd);
+
     server->Wait();
 }
 ```
 
-**Rust Child (tonic):**
+**C++ Child (Windows - TCP loopback):**
+
+```cpp
+#include <grpcpp/grpcpp.h>
+#include <iostream>
+
+int main() {
+    grpc::ServerBuilder builder;
+    int selected_port = 0;
+    builder.AddListeningPort("127.0.0.1:0",
+                             grpc::InsecureServerCredentials(),
+                             &selected_port);
+    builder.RegisterService(&service);
+    auto server = builder.BuildAndStart();
+
+    // Report port to parent (required for Windows)
+    std::cout << "SYNURANG_PORT:" << selected_port << std::endl;
+
+    server->Wait();
+}
+```
+
+**Rust Child (tonic - Unix socketpair):**
 
 ```rust
 use std::os::unix::io::FromRawFd;
 use tonic::transport::Server;
+use tokio::net::UnixStream;
 
 #[tokio::main]
 async fn main() {
-    let fd: i32 = std::env::var("SYNURANG_IPC")
-        .unwrap().parse().unwrap();
-    
-    let listener = unsafe { 
-        std::os::unix::net::UnixListener::from_raw_fd(fd) 
-    };
-    let incoming = tokio_stream::wrappers::UnixListenerStream::new(
-        tokio::net::UnixListener::from_std(listener).unwrap()
-    );
-    
+    let fd: i32 = std::env::var("SYNURANG_IPC").unwrap().parse().unwrap();
+
+    // socketpair gives us an already-connected stream, not a listener
+    let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+    std_stream.set_nonblocking(true).unwrap();
+    let stream = UnixStream::from_std(std_stream).unwrap();
+
     Server::builder()
         .add_service(MyServiceServer::new(MyService::default()))
-        .serve_with_incoming(incoming)
+        .serve_with_incoming(futures::stream::once(async { Ok::<_, std::io::Error>(stream) }))
         .await
         .unwrap();
 }
@@ -495,7 +538,9 @@ synurang/
 │   │   ├── process/                  # Process mode entry
 │   │   └── plugin/                   # Plugin mode entry
 │   └── rust/                         # Rust examples
-│       └── service/                  # Shared service logic
+│       ├── service/                  # Shared service logic
+│       ├── process/                  # Process mode entry
+│       └── plugin/                   # Plugin mode entry
 └── test/                             # Test suites
 ```
 

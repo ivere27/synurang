@@ -14,8 +14,10 @@ import (
 
 // GreeterServiceServer implements GoGreeterService for both plugin and process modes.
 // This serves as the core business logic shared across all transport modes.
+// It also implements the FfiServer interface for FFI-based dispatch.
 type GreeterServiceServer struct {
 	pb.UnimplementedGoGreeterServiceServer
+	pb.UnimplementedDartGreeterServiceServer
 	logic *logic.GreeterLogic
 	core  *core_service.CoreServiceServer
 }
@@ -111,4 +113,40 @@ func (s *GreeterServiceServer) GetGoroutines(ctx context.Context, req *pb.Gorout
 func getTransport(ctx context.Context) string {
 	// Simplified - can be extended to detect FFI vs gRPC
 	return "grpc"
+}
+
+// =============================================================================
+// FfiServer Internal Methods (stubs for FFI streaming fallback)
+// These are called when streaming RPCs are invoked via Invoke() path.
+// Actual streaming is handled by dedicated handlers in stream_handlers.go.
+// =============================================================================
+
+// BarServerStreamInternal handles server streaming as unary (for FFI fallback)
+func (s *GreeterServiceServer) BarServerStreamInternal(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
+	return s.Bar(ctx, req)
+}
+
+// BarClientStreamInternal handles client streaming as unary (for FFI fallback)
+func (s *GreeterServiceServer) BarClientStreamInternal(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
+	return s.Bar(ctx, req)
+}
+
+// BarBidiStreamInternal handles bidi streaming as unary (for FFI fallback)
+func (s *GreeterServiceServer) BarBidiStreamInternal(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
+	return s.Bar(ctx, req)
+}
+
+// FooServerStreamInternal handles Dart server streaming as unary (for FFI fallback)
+func (s *GreeterServiceServer) FooServerStreamInternal(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
+	return s.Bar(ctx, req)
+}
+
+// FooClientStreamInternal handles Dart client streaming as unary (for FFI fallback)
+func (s *GreeterServiceServer) FooClientStreamInternal(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
+	return s.Bar(ctx, req)
+}
+
+// FooBidiStreamInternal handles Dart bidi streaming as unary (for FFI fallback)
+func (s *GreeterServiceServer) FooBidiStreamInternal(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
+	return s.Bar(ctx, req)
 }

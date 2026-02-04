@@ -339,7 +339,7 @@ build_process_rust:
 	@echo "Built: bin/process_child_rust"
 
 # Build all process mode binaries
-build_process_all: build_process_go build_process_cpp build_process_rust
+build_process_all: build_process_example build_process_cpp build_process_rust
 	@echo "Built all process mode binaries"
 
 # Run multi-language process mode example
@@ -412,6 +412,44 @@ build_plugin_all: build_plugin_go build_plugin_cpp build_plugin_rust
 test_plugin_all: build_plugin_all
 	@echo "Testing all plugins with all 4 gRPC types..."
 	go run ./test/plugin/multi/main.go
+
+# =============================================================================
+# Host Mode (C++/Rust parent loading plugins)
+# =============================================================================
+
+# Build C++ host executable
+build_host_cpp:
+	@echo "Building C++ host..."
+	@mkdir -p test/host/cpp/build
+	cd test/host/cpp/build && cmake .. && make -j4
+	@echo "Built: bin/test_cpp_host"
+
+# Build Rust host executable
+build_host_rust:
+	@echo "Building Rust host..."
+	cd test/host/rust && cargo build --release
+	@mkdir -p bin
+	cp test/host/rust/target/release/test-rust-host bin/test_rust_host
+	@echo "Built: bin/test_rust_host"
+
+# Test Go host loading plugins (existing multi-plugin test)
+test_host_go: build_plugin_all
+	@echo "Testing Go host with all plugins..."
+	go run ./test/plugin/multi/main.go
+
+# Test C++ host loading plugins
+test_host_cpp: build_plugin_all build_host_cpp
+	@echo "Testing C++ host with all plugins..."
+	./bin/test_cpp_host
+
+# Test Rust host loading plugins
+test_host_rust: build_plugin_all build_host_rust
+	@echo "Testing Rust host with all plugins..."
+	./bin/test_rust_host
+
+# Test all hosts (Go, C++, Rust parents)
+test_host_all: test_host_go test_host_cpp test_host_rust
+	@echo "All host tests complete (Go, C++, Rust parents × Go, C++, Rust plugins)"
 
 # Run Flutter example
 run_flutter_example: shared_linux shared_example_linux ffigen
@@ -501,6 +539,14 @@ help:
 	@echo "  test_cpp          - Run C++ tests (gen + FFI)"
 	@echo "  test_rust         - Run Rust tests (gen + FFI)"
 	@echo ""
+	@echo "Host Mode (Polyglot Parents):"
+	@echo "  test_host_all     - Test all hosts (Go, C++, Rust parents)"
+	@echo "  test_host_go      - Test Go parent loading plugins"
+	@echo "  test_host_cpp     - Test C++ parent loading plugins"
+	@echo "  test_host_rust    - Test Rust parent loading plugins"
+	@echo "  build_host_cpp    - Build C++ host executable"
+	@echo "  build_host_rust   - Build Rust host executable"
+	@echo ""
 	@echo "Plugin Mode:"
 	@echo "  build_plugin_all  - Build all plugins (Go, C++, Rust)"
 	@echo "  build_plugin_go   - Build Go plugin"
@@ -523,5 +569,7 @@ help:
 	@echo "Examples:"
 	@echo "  make test                    # Run all tests"
 	@echo "  make test_plugin_all         # Test Go/C++/Rust plugins"
+	@echo "  make test_host_all           # Test all host combinations"
 	@echo "  make run_android MODE=release"
+
 
