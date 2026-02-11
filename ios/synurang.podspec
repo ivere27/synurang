@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'synurang'
-  s.version          = '0.2.0'
+  s.version          = '0.3.0'
   s.summary          = 'Flutter FFI + gRPC bridge for bidirectional Go/Dart communication'
   s.description      = <<-DESC
 Flutter FFI + gRPC bridge for bidirectional Go/Dart communication.

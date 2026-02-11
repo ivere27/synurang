@@ -1,3 +1,9 @@
+## 0.3.0
+
+*   **FFI without gRPC dependency**: FFI transport layer no longer requires gRPC as a dependency.
+*   **Android/Java support**: Added full support for Android and Java via JNI.
+*   **Process Mode improvements**: Enhanced process mode functionality.
+
 ## 0.2.0
 
 *   **Process Mode**: Support for parent-child IPC via socketpair (Unix) and Named Pipes (Windows).
