@@ -19,7 +19,7 @@ ANDROID_CC_ARM := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-l
 ANDROID_CC_ARM64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
 ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_host_java test_host_java run_android_java build_process_go_android
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_host_java test_host_java run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart build_ffi_cpp build_ffi_rust build_ffi_java
 
 # =============================================================================
 # Default Target
@@ -242,6 +242,64 @@ test_plugin_race: proto shared_plugin
 	go build -race -o test/plugin/host/host_race ./test/plugin/host/
 	cd test/plugin/host && ./host_race
 	@echo "Plugin FFI race tests complete."
+
+# =============================================================================
+# FFI API Tests (No gRPC — raw bytes, all 4 RPC types)
+# =============================================================================
+
+# Run all FFI API tests (Go, C++, Rust, Java, Dart)
+test_ffi: test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart
+	@echo ""
+	@echo "═══════════════════════════════════════════════════════════════"
+	@echo "  All FFI API tests passed (Go, C++, Rust, Java, Dart)"
+	@echo "═══════════════════════════════════════════════════════════════"
+
+# Build C++ FFI test
+build_ffi_cpp:
+	@mkdir -p test/ffi/cpp/build
+	cd test/ffi/cpp/build && cmake .. && make -j4
+
+# Build Rust FFI test
+build_ffi_rust:
+	cargo build --manifest-path test/ffi/rust/Cargo.toml
+
+# Build Java FFI test
+build_ffi_java: build_java
+	javac -cp java/build/libs/java.jar -d test/ffi/java test/ffi/java/FfiApiTest.java
+
+# Go FFI test
+test_ffi_go: build_plugin_go
+	@echo "Running Go FFI API test..."
+	go run ./test/ffi/go/
+	@echo ""
+
+# C++ FFI test
+test_ffi_cpp: build_plugin_go build_ffi_cpp
+	@echo "Running C++ FFI API test..."
+	./bin/test_ffi_cpp
+	@echo ""
+
+# Rust FFI test
+test_ffi_rust: build_plugin_go build_ffi_rust
+	@echo "Running Rust FFI API test..."
+	cargo run --manifest-path test/ffi/rust/Cargo.toml
+	@echo ""
+
+# Java FFI test
+test_ffi_java: build_plugin_go build_ffi_java
+	@echo "Running Java FFI API test..."
+	java -Djava.library.path=java/src/main/c/build \
+		-cp java/build/libs/java.jar:test/ffi/java \
+		FfiApiTest
+	@echo ""
+
+# Dart FFI test (uses example shared library for GoGreeterService)
+test_ffi_dart: shared_example_linux
+	@echo "Running Dart FFI API test..."
+	flutter pub get
+	LD_LIBRARY_PATH=$(CURRENT_DIR)/src:$(CURRENT_DIR)/example/linux/lib:${LD_LIBRARY_PATH} \
+		flutter test test/ffi/dart/ffi_api_test.dart
+	@echo ""
 
 # Go tests only (requires generated proto code)
 test_go: proto
@@ -641,6 +699,8 @@ help:
 	@echo ""
 	@echo "Test Targets:"
 	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Plugin)"
+	@echo "  test_ffi          - Run all FFI API tests (Go, C++, Rust, Java, Dart)"
+	@echo "  test_ffi_{go,cpp,rust,java,dart} - Run individual FFI API test"
 	@echo "  test_go           - Run Go tests only"
 	@echo "  test_dart         - Run Dart tests only"
 	@echo "  test_plugin       - Run plugin FFI tests (test/plugin)"

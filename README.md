@@ -591,6 +591,16 @@ synurang/
 
 ---
 
+## Low-Level FFI API (No gRPC Dependency)
+
+All 5 host languages can call plugins directly without any gRPC library — just raw protobuf bytes via `invoke()` / `openStream()`. See [`FFI-API.md`](FFI-API.md) for details.
+
+```bash
+make test_ffi   # Run all FFI API tests (Go, C++, Rust, Java, Dart)
+```
+
+---
+
 ## Related
 
 Engine for **Synura**, a content viewer app.

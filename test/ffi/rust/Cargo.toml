@@ -1,0 +1,8 @@
+[package]
+name = "test-ffi-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+synurang-host = { path = "../../../crates/synurang-host" }
+# No tonic, no prost — hand-crafted protobuf bytes

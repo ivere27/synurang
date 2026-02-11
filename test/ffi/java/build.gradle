@@ -1,0 +1,35 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+application {
+    mainClass = 'FfiApiTest'
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['.']
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Only the synurang host library — no gRPC, no protobuf
+    implementation files('../../../java/build/libs/java.jar')
+}
+
+tasks.named('run') {
+    systemProperty 'java.library.path', '../../../java/src/main/c/build'
+    workingDir = '../../../'
+}

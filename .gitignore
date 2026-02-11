@@ -19,6 +19,11 @@
 /example/cpp/process/build/
 /crates/synurang-host/target/
 
+/go
+/test/ffi/cpp/build/
+/test/ffi/rust/target/
+
+
 /plugin
 
 # test
@@ -36,6 +41,11 @@
 /java/build/
 /java/libs/
 /java/src/main/c/build/
+/java/.gradle/
+/test/ffi/java/.gradle/
+/test/ffi/java/*.class
+/test/host/java/.gradle/
+/test/host/java/bin/
 
 # Shared libraries
 *.so
