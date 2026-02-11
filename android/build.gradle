@@ -1,4 +1,4 @@
-group 'com.example.synurang'
+group 'io.github.ivere27.synurang'
 version '1.0-SNAPSHOT'
 
 buildscript {
@@ -22,6 +22,7 @@ rootProject.allprojects {
 apply plugin: 'com.android.library'
 
 android {
+    namespace 'io.github.ivere27.synurang'
     compileSdkVersion 33
 
     defaultConfig {

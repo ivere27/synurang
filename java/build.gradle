@@ -1,0 +1,20 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'io.github.ivere27'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+dependencies {
+    // No required dependencies - protobuf and grpc are provided by the consumer
+    compileOnly 'com.google.protobuf:protobuf-java:3.25.1'
+    compileOnly 'io.grpc:grpc-api:1.60.0'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'com.google.protobuf:protobuf-java:3.25.1'
+}

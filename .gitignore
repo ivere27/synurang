@@ -4,7 +4,14 @@
 #/pkg/api/*.pb.go
 
 /android/.gradle/
+/android/.cxx/
 /example/android/build/
+/example/java/android/.gradle/
+/example/java/android/app/.cxx/
+/example/java/android/app/build/
+/example/java/android/app/src/main/proto/
+/example/java/rust-plugin/Cargo.lock
+/example/java/rust-plugin/target/
 /example/rust/service/target/
 /example/rust/plugin/target/
 /example/rust/process/target/
@@ -20,9 +27,15 @@
 /test/plugin/host/host
 /test/plugin/host/host_race
 /test/host/cpp/build/
+/test/host/java/build/
 /test/host/rust/target/
 /test/host/rust/Cargo.lock
 /crates/synurang-host/Cargo.lock
+
+# Java build artifacts
+/java/build/
+/java/libs/
+/java/src/main/c/build/
 
 # Shared libraries
 *.so

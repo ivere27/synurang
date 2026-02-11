@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Synurang Java/Kotlin Demo"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:paddingBottom="16dp" />
+
+    <Button
+        android:id="@+id/btnUnary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Test Unary RPC" />
+
+    <Button
+        android:id="@+id/btnServerStream"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Test Server Streaming" />
+
+    <Button
+        android:id="@+id/btnClientStream"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Test Client Streaming" />
+
+    <Button
+        android:id="@+id/btnBidiStream"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Test Bidi Streaming" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#CCCCCC"
+        android:layout_marginTop="12dp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Process Mode (Go via socketpair)"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:paddingBottom="4dp" />
+
+    <Button
+        android:id="@+id/btnProcessUnary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Process: Unary RPC" />
+
+    <Button
+        android:id="@+id/btnProcessBidi"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Process: Bidi Streaming" />
+
+    <Button
+        android:id="@+id/btnMedia"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Open Media Example"
+        android:layout_marginTop="16dp" />
+
+    <ScrollView
+        android:id="@+id/scrollOutput"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="16dp">
+
+        <TextView
+            android:id="@+id/tvOutput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:text="Ready.\n" />
+    </ScrollView>
+</LinearLayout>

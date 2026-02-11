@@ -33,6 +33,11 @@ ELSEIF(CMAKE_SYSTEM_NAME MATCHES "Android")
     set_target_properties(synurang PROPERTIES
       IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/libsynurang-android-x86_64.so"
     )
+  elseif(${ANDROID_ABI} STREQUAL "x86")
+    add_library(synurang SHARED IMPORTED GLOBAL)
+    set_target_properties(synurang PROPERTIES
+      IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/libsynurang-android-x86.so"
+    )
   else()
     message(FATAL_ERROR "Unsupported Android ABI: ${ANDROID_ABI}")
   endif()

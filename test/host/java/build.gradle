@@ -1,0 +1,37 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+application {
+    mainClass = 'JavaHostTest'
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['.']
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation files('../../../java/build/libs/java.jar')
+    implementation 'io.grpc:grpc-api:1.60.0'
+    implementation 'io.grpc:grpc-stub:1.60.0'
+}
+
+tasks.named('run') {
+    // Point to the JNI native library and working directory
+    systemProperty 'java.library.path', '../../../java/src/main/c/build'
+    workingDir = '../../../'
+}

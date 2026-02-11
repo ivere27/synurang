@@ -26,9 +26,10 @@ resp, _ := client.SayHello(ctx, &pb.HelloRequest{Name: "World"})
 ## Use Cases
 
 - **Flutter + Go apps**: Compile Go as a shared library, call via FFI. No separate server process.
+- **Android + native plugins**: Load Go/C++/Rust plugins via JNI. Write `.proto`, never touch JNI again.
 - **In-process microservices**: Ship proprietary gRPC services as `.so` binaries. No network, no source exposure.
 - **Sidecar processes**: Spawn isolated child processes with different privileges or crash isolation.
-- **Polyglot backends**: Parent in any language (Go/Dart/C++/Rust) spawns child in any language.
+- **Polyglot backends**: Parent in any language (Go/Dart/C++/Rust/Java) spawns child in any language.
 - **Debugging**: Enable TCP/UDS alongside FFI/IPC. Use grpcurl or Postman while app runs.
 
 ## Quick start
@@ -85,6 +86,7 @@ Host loads plugin as `.so`/`.dll` via `dlopen`/`LoadLibrary`.
 | Dart/Flutter | Go | ✓ | Experimental | Stable |
 | C++ | Go/C++/Rust | ✓ | Experimental | Experimental |
 | Rust | Go/C++/Rust | ✓ | Experimental | Experimental |
+| Java/Android | Go/C++/Rust | ✓ | — | Experimental |
 
 ### Process Mode (IPC)
 
@@ -96,8 +98,9 @@ Parent spawns child process with gRPC over IPC.
 | Dart | Go/C++/Rust | TCP loopback | TCP loopback | Stable |
 | C++ | Go/C++/Rust | socketpair | TCP loopback | Experimental |
 | Rust | Go/C++/Rust | socketpair | named pipes | Experimental |
+| Java/Android | Go/C++/Rust | socketpair | TCP loopback | Experimental |
 
-> **Note:** Dart uses TCP loopback on all platforms ([dart-lang/sdk#46196](https://github.com/dart-lang/sdk/issues/46196)). C++ uses TCP loopback on Windows only ([grpc/grpc#13447](https://github.com/grpc/grpc/issues/13447)). For TCP loopback, child must print `SYNURANG_PORT:<port>` to stdout.
+> **Note:** Java/Android uses socketpair on Unix (requires grpc-okhttp on classpath), TCP loopback otherwise. Dart uses TCP loopback on all platforms ([dart-lang/sdk#46196](https://github.com/dart-lang/sdk/issues/46196)). C++ uses TCP loopback on Windows only ([grpc/grpc#13447](https://github.com/grpc/grpc/issues/13447)). For TCP loopback, child must print `SYNURANG_PORT:<port>` to stdout.
 
 ---
 
@@ -203,8 +206,8 @@ Run gRPC services in a separate child process with a secure, private IPC channel
 
 > **Note**: Parent process is always the gRPC **client**, child process is the gRPC **server**. The child can be written in any language (Go, C++, Rust, etc.).
 
-- **Unix/Linux/macOS**: Uses `socketpair` (Go/C++/Rust) or TCP loopback (Dart).
-- **Windows**: Uses Named Pipes (Go/Rust) or TCP loopback (C++/Dart). See [Process Mode table](#process-mode-ipc).
+- **Unix/Linux/macOS/Android**: Uses `socketpair` (Go/C++/Rust/Java) or TCP loopback (Dart).
+- **Windows**: Uses Named Pipes (Go/Rust) or TCP loopback (C++/Dart/Java). See [Process Mode table](#process-mode-ipc).
 
 **Parent Process (Go):**
 
@@ -375,6 +378,7 @@ protoc -Iapi --dart_out=grpc:lib/src/generated service.proto
 # Synurang FFI bindings
 protoc -Iapi --synurang-ffi_out=./pkg/api --synurang-ffi_opt=lang=go service.proto
 protoc -Iapi --synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart service.proto
+protoc -Iapi --synurang-ffi_out=./java/src --synurang-ffi_opt=lang=java,java_package=com.example.api service.proto
 ```
 
 ### Step 3: Implement Server
@@ -482,6 +486,8 @@ grpcurl -plaintext localhost:18000 api.Greeter/SayHello
 
 **Rust**: `--synurang-ffi_opt=lang=rust`. Full support including all streaming types.
 
+**Java/Android**: `--synurang-ffi_opt=lang=java`. Full support including all streaming types via JNI.
+
 ---
 
 ## API Reference
@@ -510,6 +516,39 @@ plugin, _ := synurang.LoadPlugin("./plugin.so")
 conn := synurang.NewPluginClientConn(plugin, "MyService")
 ```
 
+### Java/Android
+
+```java
+// Plugin mode — drop-in grpc-java Channel (recommended)
+PluginHost plugin = PluginHost.load("./libplugin.so");
+Channel channel = SynurangChannel.create(plugin, "MyService");
+
+// Standard protoc-gen-grpc-java stubs — zero custom codegen
+MyServiceGrpc.MyServiceBlockingStub stub = MyServiceGrpc.newBlockingStub(channel);
+HelloReply reply = stub.sayHello(request);  // goes through FFI, not TCP
+
+// Process mode — socketpair IPC on Unix, TCP loopback fallback on Windows
+ProcessHost proc = ProcessHost.start("./child-process");
+ManagedChannel channel = (ManagedChannel) proc.channel();  // socketpair, no TCP
+
+// Low-level API (when you don't want grpc-java dependency)
+byte[] resp = plugin.invoke("MyService", "/pkg.MyService/Method", requestBytes);
+PluginStream stream = plugin.openStream("MyService", "/pkg.MyService/StreamMethod");
+
+plugin.close();
+```
+
+### Android Example
+The Kotlin demo in `example/java/android/` showcases:
+- **Go Backend**: Standard gRPC services running as a plugin or child process.
+- **Rust Media Pipeline**: Zero-copy YUV frame processing via FFI.
+- **Native IPC**: High-performance `socketpair` transport (no TCP overhead).
+
+To run the demo:
+```bash
+make run_android_java
+```
+
 ---
 
 ## Project Structure
@@ -528,6 +567,9 @@ synurang/
 ├── lib/                              # Dart package
 │   ├── synurang.dart                 # Main entry point
 │   └── src/generated/                # Generated proto
+├── java/                             # Java host library
+│   ├── src/main/java/                # PluginHost, PluginStream, etc.
+│   └── src/main/c/                   # JNI native layer
 ├── example/                          # Working examples
 │   ├── go/                           # Go examples
 │   │   ├── service/                  # Shared service logic
@@ -537,10 +579,13 @@ synurang/
 │   │   ├── service/                  # Shared service logic
 │   │   ├── process/                  # Process mode entry
 │   │   └── plugin/                   # Plugin mode entry
-│   └── rust/                         # Rust examples
-│       ├── service/                  # Shared service logic
-│       ├── process/                  # Process mode entry
-│       └── plugin/                   # Plugin mode entry
+│   ├── rust/                         # Rust examples
+│   │   ├── service/                  # Shared service logic
+│   │   ├── process/                  # Process mode entry
+│   │   └── plugin/                   # Plugin mode entry
+│   └── java/                         # Java/Android examples
+│       ├── android/                  # Kotlin Android app
+│       └── rust-plugin/              # Rust media plugin
 └── test/                             # Test suites
 ```
 

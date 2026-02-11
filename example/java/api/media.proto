@@ -1,0 +1,35 @@
+syntax = "proto3";
+package media.v1;
+
+option go_package = "github.com/ivere27/synurang/example/java/api";
+option java_package = "com.example.synurang.demo.api";
+
+service MediaProcessor {
+  // Bidirectional: send camera frames, receive processing results
+  rpc ProcessFrames(stream FrameRef) returns (stream FrameResult);
+
+  // Bidirectional: send audio chunks, receive processed audio
+  rpc ProcessAudio(stream AudioChunk) returns (stream AudioChunk);
+}
+
+message FrameRef {
+  int64 handle = 1;         // native pointer to Y plane buffer (zero-copy read/write)
+  int32 width = 2;
+  int32 height = 3;
+  int32 format = 4;
+  int64 timestamp_ns = 5;
+  int32 data_size = 6;      // size of Y plane buffer in bytes
+  int32 row_stride = 7;     // bytes per row (may be > width due to padding)
+}
+
+message FrameResult {
+  bool release = 1;
+  int32 rss_mb = 2;          // resident memory in MB (from /proc/self/status)
+  float cpu_percent = 3;     // CPU usage % since last update (from /proc/self/stat)
+  float rust_fps = 4;        // frames per second measured on Rust side
+}
+
+message AudioChunk {
+  bytes data = 1;           // PCM audio bytes
+  int32 sample_rate = 2;
+}

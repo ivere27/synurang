@@ -19,7 +19,7 @@ ANDROID_CC_ARM := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-l
 ANDROID_CC_ARM64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
 ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_host_java test_host_java run_android_java build_process_go_android
 
 # =============================================================================
 # Default Target
@@ -447,9 +447,118 @@ test_host_rust: build_plugin_all build_host_rust
 	@echo "Testing Rust host with all plugins..."
 	./bin/test_rust_host
 
-# Test all hosts (Go, C++, Rust parents)
-test_host_all: test_host_go test_host_cpp test_host_rust
-	@echo "All host tests complete (Go, C++, Rust parents × Go, C++, Rust plugins)"
+# Build JNI native library
+build_jni:
+	@echo "Building JNI native library..."
+	@mkdir -p java/src/main/c/build
+	cd java/src/main/c/build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j4
+	@echo "Built: java/src/main/c/build/libsynurang_jni.so"
+
+# Download grpc-java jars for compilation (cached)
+GRPC_VERSION := 1.60.0
+GRPC_JARS := java/libs
+$(GRPC_JARS)/.downloaded:
+	@mkdir -p $(GRPC_JARS)
+	curl -sL -o $(GRPC_JARS)/grpc-api-$(GRPC_VERSION).jar \
+		https://repo1.maven.org/maven2/io/grpc/grpc-api/$(GRPC_VERSION)/grpc-api-$(GRPC_VERSION).jar
+	curl -sL -o $(GRPC_JARS)/grpc-context-$(GRPC_VERSION).jar \
+		https://repo1.maven.org/maven2/io/grpc/grpc-context/$(GRPC_VERSION)/grpc-context-$(GRPC_VERSION).jar
+	curl -sL -o $(GRPC_JARS)/jsr305-3.0.2.jar \
+		https://repo1.maven.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar
+	curl -sL -o $(GRPC_JARS)/error_prone_annotations-2.23.0.jar \
+		https://repo1.maven.org/maven2/com/google/errorprone/error_prone_annotations/2.23.0/error_prone_annotations-2.23.0.jar
+	curl -sL -o $(GRPC_JARS)/guava-32.0.1-android.jar \
+		https://repo1.maven.org/maven2/com/google/guava/guava/32.0.1-android/guava-32.0.1-android.jar
+	curl -sL -o $(GRPC_JARS)/failureaccess-1.0.1.jar \
+		https://repo1.maven.org/maven2/com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.jar
+	curl -sL -o $(GRPC_JARS)/grpc-stub-$(GRPC_VERSION).jar \
+		https://repo1.maven.org/maven2/io/grpc/grpc-stub/$(GRPC_VERSION)/grpc-stub-$(GRPC_VERSION).jar
+	@touch $@
+
+download_grpc_jars: $(GRPC_JARS)/.downloaded
+
+# Compile Java host library
+build_java: build_jni download_grpc_jars
+	@echo "Compiling Java host library..."
+	@mkdir -p java/build/classes java/build/libs
+	javac -cp 'java/libs/*' -d java/build/classes java/src/main/java/io/github/ivere27/synurang/*.java
+	cd java/build/classes && jar cf ../libs/java.jar io/
+	@echo "Built: java/build/classes/ java/build/libs/java.jar"
+
+# Build Java host test executable
+build_host_java: build_java
+	@echo "Building Java host test..."
+	@mkdir -p test/host/java/build
+	javac -cp 'java/build/classes:java/libs/*' -d test/host/java/build test/host/java/JavaHostTest.java
+	@echo "Built: test/host/java/build/"
+
+# Test Java host loading plugins
+test_host_java: build_plugin_all build_host_java
+	@echo "Testing Java host with all plugins..."
+	java -Djava.library.path=java/src/main/c/build -cp 'java/build/classes:java/libs/*:test/host/java/build' JavaHostTest
+
+# Test all hosts (Go, C++, Rust, Java parents)
+test_host_all: test_host_go test_host_cpp test_host_rust test_host_java
+	@echo "All host tests complete (Go, C++, Rust, Java parents × Go, C++, Rust plugins)"
+
+# Build Go plugin for Android (for Java/Kotlin example app)
+build_plugin_go_android:
+	@echo "Building Go plugin for Android..."
+	@mkdir -p example/java/android/app/src/main/jniLibs/arm64-v8a
+	@mkdir -p example/java/android/app/src/main/jniLibs/armeabi-v7a
+	GOARCH=arm64 GOOS=android CGO_ENABLED=1 CC=$(ANDROID_CC_ARM64) \
+		go build -trimpath -ldflags "-s -w" \
+		-buildmode=c-shared -o example/java/android/app/src/main/jniLibs/arm64-v8a/libplugin_go.so \
+		./example/go/plugin & \
+	GOARCH=arm GOOS=android GOARM=7 CGO_ENABLED=1 CC=$(ANDROID_CC_ARM) \
+		go build -trimpath -ldflags "-s -w" \
+		-buildmode=c-shared -o example/java/android/app/src/main/jniLibs/armeabi-v7a/libplugin_go.so \
+		./example/go/plugin & \
+	wait
+	@echo "Built Go plugin for Android ABIs"
+
+# Build Go process binary for Android (socketpair IPC mode)
+# Named libprocess_go.so so Android extracts it from APK into nativeLibraryDir
+build_process_go_android:
+	@echo "Building Go process binary for Android..."
+	@mkdir -p example/java/android/app/src/main/jniLibs/arm64-v8a
+	@mkdir -p example/java/android/app/src/main/jniLibs/armeabi-v7a
+	GOARCH=arm64 GOOS=android CGO_ENABLED=1 CC=$(ANDROID_CC_ARM64) \
+		go build -trimpath -ldflags "-s -w -extldflags '-Wl,-z,max-page-size=16384'" \
+		-o example/java/android/app/src/main/jniLibs/arm64-v8a/libprocess_go.so \
+		./example/go/process & \
+	GOARCH=arm GOOS=android GOARM=7 CGO_ENABLED=1 CC=$(ANDROID_CC_ARM) \
+		go build -trimpath -ldflags "-s -w" \
+		-o example/java/android/app/src/main/jniLibs/armeabi-v7a/libprocess_go.so \
+		./example/go/process & \
+	wait
+	@echo "Built Go process binary for Android ABIs"
+
+# Build Rust media plugin for Android
+build_plugin_media_android:
+	@echo "Building Rust media plugin for Android..."
+	cd example/java/rust-plugin && \
+		cargo ndk -t arm64-v8a -t armeabi-v7a \
+		-o ../android/app/src/main/jniLibs -- build --release
+	mv example/java/android/app/src/main/jniLibs/arm64-v8a/libsynurang_media_plugin.so \
+		example/java/android/app/src/main/jniLibs/arm64-v8a/libplugin_media.so
+	mv example/java/android/app/src/main/jniLibs/armeabi-v7a/libsynurang_media_plugin.so \
+		example/java/android/app/src/main/jniLibs/armeabi-v7a/libplugin_media.so
+	@echo "Built Rust media plugin for Android ABIs"
+
+# Run Android Java/Kotlin example app
+ANDROID_HOME ?= $(HOME)/Android/Sdk
+ANDROID_NDK_HOME ?= $(NDK_HOME)
+export ANDROID_HOME
+export ANDROID_NDK_HOME
+run_android_java: build_java build_plugin_go_android build_process_go_android build_plugin_media_android
+	@DEVICE_ID=$$(adb devices | grep -v "List" | grep "device$$" | head -n 1 | awk '{print $$1}'); \
+	if [ -z "$$DEVICE_ID" ]; then echo "No Android device found"; exit 1; fi; \
+	echo "Using Android device: $$DEVICE_ID"; \
+	cd example/java/android && ./gradlew installDebug && \
+	adb -s $$DEVICE_ID shell am start -n com.example.synurang.demo/.MainActivity && \
+	sleep 1 && \
+	adb -s $$DEVICE_ID logcat --pid=$$(adb -s $$DEVICE_ID shell pidof com.example.synurang.demo)
 
 # Run Flutter example
 run_flutter_example: shared_linux shared_example_linux ffigen
@@ -540,12 +649,14 @@ help:
 	@echo "  test_rust         - Run Rust tests (gen + FFI)"
 	@echo ""
 	@echo "Host Mode (Polyglot Parents):"
-	@echo "  test_host_all     - Test all hosts (Go, C++, Rust parents)"
+	@echo "  test_host_all     - Test all hosts (Go, C++, Rust, Java parents)"
 	@echo "  test_host_go      - Test Go parent loading plugins"
 	@echo "  test_host_cpp     - Test C++ parent loading plugins"
 	@echo "  test_host_rust    - Test Rust parent loading plugins"
+	@echo "  test_host_java    - Test Java parent loading plugins"
 	@echo "  build_host_cpp    - Build C++ host executable"
 	@echo "  build_host_rust   - Build Rust host executable"
+	@echo "  build_host_java   - Build Java host (JNI + library + test)"
 	@echo ""
 	@echo "Plugin Mode:"
 	@echo "  build_plugin_all  - Build all plugins (Go, C++, Rust)"
@@ -560,7 +671,8 @@ help:
 	@echo ""
 	@echo "Development:"
 	@echo "  run               - Run standalone Go server"
-	@echo "  run_android       - Run on Android (MODE=release|debug)"
+	@echo "  run_android       - Run Flutter on Android (MODE=release|debug)"
+	@echo "  run_android_java  - Run Java/Kotlin example on Android"
 	@echo "  run_flutter_example   - Run Flutter example (Linux)"
 	@echo "  run_console_example   - Run console example (FFI)"
 	@echo "  ffigen            - Generate FFI bindings"
@@ -570,6 +682,8 @@ help:
 	@echo "  make test                    # Run all tests"
 	@echo "  make test_plugin_all         # Test Go/C++/Rust plugins"
 	@echo "  make test_host_all           # Test all host combinations"
-	@echo "  make run_android MODE=release"
+	@echo "  make run_android MODE=release  # Flutter app"
+	@echo "  make run_android_java          # Java/Kotlin app"
+	@echo "  make test_host_java            # Java host test (desktop)"
 
 

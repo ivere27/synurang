@@ -29,6 +29,7 @@ type FileData struct {
 	Services      []ServiceData
 	HasStreaming  bool
 	DartPackage   string
+	JavaPackage   string
 	// For imports
 	ExternalImports []string
 	GoImports       []GoImport
@@ -125,9 +126,10 @@ func init() {
 
 func main() {
 	var flags flag.FlagSet
-	lang := flags.String("lang", "", "language to generate (go, dart, cpp, or rust)")
+	lang := flags.String("lang", "", "language to generate (go, dart, cpp, rust, or java)")
 	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client")
 	dartPackage := flags.String("dart_package", "", "Dart package name for imports")
+	javaPackage := flags.String("java_package", "", "Java package name for generated classes")
 	services := flags.String("services", "", "comma-separated list of services to generate")
 
 	protogen.Options{
@@ -157,6 +159,9 @@ func main() {
 			}
 			if *lang == "rust" {
 				generateFromTemplate(gen, f, serviceList, "rust", *mode)
+			}
+			if *lang == "java" {
+				generateFromTemplate(gen, f, serviceList, "java", *javaPackage)
 			}
 		}
 		return nil
@@ -233,6 +238,8 @@ func selectTemplate(lang, modeOrOpt string) string {
 		default:
 			return "rust.rs.tmpl"
 		}
+	case "java":
+		return "java.java.tmpl"
 	}
 	return ""
 }
@@ -266,6 +273,8 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 		return base + "_ffi.h"
 	case "rust":
 		return base + "_ffi.rs"
+	case "java":
+		return base + "_ffi.java"
 	}
 	return base + "_ffi"
 }
@@ -298,6 +307,13 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 		data.CppGuardName = strings.ToUpper(strings.ReplaceAll(guardBase, ".", "_")) + "_H_"
 	case "rust":
 		data.RustModPath = strings.ReplaceAll(data.Package, ".", "_")
+	case "java":
+		if modeOrOpt != "" {
+			data.JavaPackage = modeOrOpt
+		} else {
+			// Derive from proto package, converting to Java convention
+			data.JavaPackage = strings.ReplaceAll(data.Package, "-", "_")
+		}
 	}
 
 	// Track Go imports for external packages
