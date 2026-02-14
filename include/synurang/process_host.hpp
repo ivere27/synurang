@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include <cstdint>
 
 #ifdef _WIN32
@@ -67,7 +68,8 @@ private:
     ProcessHost() = default;
 
     std::shared_ptr<grpc::Channel> channel_;
-    
+    mutable std::mutex pid_mu_;
+
 #ifdef _WIN32
     HANDLE process_handle_ = nullptr;
     HANDLE stdout_handle_ = nullptr;  // For reading child's port output

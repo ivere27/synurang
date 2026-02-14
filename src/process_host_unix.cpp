@@ -69,21 +69,13 @@ std::shared_ptr<ProcessHost> ProcessHost::start(
     // Parent process
     close(child_fd);
 
-    // Set non-blocking (required by gRPC)
+    // Ensure blocking mode (some gRPC versions prefer it for the initial handshake on FDs)
     int flags = fcntl(parent_fd, F_GETFL, 0);
-    fcntl(parent_fd, F_SETFL, flags | O_NONBLOCK);
+    fcntl(parent_fd, F_SETFL, flags & ~O_NONBLOCK);
 
     // Create gRPC channel from file descriptor
     // gRPC takes ownership of the fd
     auto channel = grpc::CreateInsecureChannelFromFd("", parent_fd);
-
-    // Wait for channel to be ready (with timeout)
-    auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(30);
-    if (!channel->WaitForConnected(deadline)) {
-        kill(pid, SIGTERM);
-        waitpid(pid, nullptr, 0);
-        throw std::runtime_error("Child process did not start gRPC server within timeout");
-    }
 
     auto host = std::shared_ptr<ProcessHost>(new ProcessHost());
     host->channel_ = channel;
@@ -100,14 +92,27 @@ ProcessHost::~ProcessHost() {
 }
 
 void ProcessHost::terminate() {
-    if (pid_ > 0 && is_running()) {
+    std::lock_guard<std::mutex> lock(pid_mu_);
+    if (pid_ > 0) {
         kill(pid_, SIGTERM);
-        waitpid(pid_, nullptr, 0);
+        // Try to clean up, but don't hang indefinitely if child is stuck
+        int status;
+        for (int i = 0; i < 5; i++) {
+            if (waitpid(pid_, &status, WNOHANG) > 0) {
+                pid_ = -1;
+                return;
+            }
+            usleep(10000); // 10ms
+        }
+        // Force kill if still running
+        kill(pid_, SIGKILL);
+        waitpid(pid_, &status, 0);
         pid_ = -1;
     }
 }
 
 int ProcessHost::wait() {
+    std::lock_guard<std::mutex> lock(pid_mu_);
     if (pid_ <= 0) {
         return -1;
     }
@@ -118,6 +123,7 @@ int ProcessHost::wait() {
 }
 
 bool ProcessHost::is_running() const {
+    std::lock_guard<std::mutex> lock(pid_mu_);
     if (pid_ <= 0) {
         return false;
     }

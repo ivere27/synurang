@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <map>
+#include <atomic>
 
 namespace synurang {
 
@@ -110,7 +111,7 @@ private:
     // Holds reference to state to keep library loaded
     std::shared_ptr<PluginState> state_;
     uint64_t handle_ = 0;
-    bool closed_ = false;
+    std::atomic<bool> closed_{false};
     
     PluginStream(std::shared_ptr<PluginState> state, uint64_t handle);
     

@@ -32,11 +32,21 @@ std::string extract_message(const std::vector<uint8_t>& data) {
     if (data.size() < 2 || data[0] != 0x0a) {
         return "<parse error>";
     }
-    size_t len = data[1];
-    if (data.size() < 2 + len) {
+    // Decode protobuf varint length
+    size_t len = 0;
+    size_t offset = 1;
+    unsigned shift = 0;
+    while (offset < data.size()) {
+        uint8_t b = data[offset++];
+        len |= static_cast<size_t>(b & 0x7f) << shift;
+        if ((b & 0x80) == 0) break;
+        shift += 7;
+        if (shift >= 35) return "<varint overflow>";
+    }
+    if (data.size() < offset + len) {
         return "<truncated>";
     }
-    return std::string(data.begin() + 2, data.begin() + 2 + len);
+    return std::string(data.begin() + offset, data.begin() + offset + len);
 }
 
 void test_plugin(const std::string& path, const std::string& name) {

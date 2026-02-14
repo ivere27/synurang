@@ -57,11 +57,26 @@ fn extract_message(data: &[u8]) -> String {
     if data.len() < 2 || data[0] != 0x0a {
         return "<parse error>".to_string();
     }
-    let len = data[1] as usize;
-    if data.len() < 2 + len {
+    // Decode protobuf varint length
+    let mut len: usize = 0;
+    let mut offset: usize = 1;
+    let mut shift: u32 = 0;
+    while offset < data.len() {
+        let b = data[offset];
+        offset += 1;
+        len |= ((b & 0x7f) as usize) << shift;
+        if b & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift >= 35 {
+            return "<varint overflow>".to_string();
+        }
+    }
+    if data.len() < offset + len {
         return "<truncated>".to_string();
     }
-    String::from_utf8_lossy(&data[2..2 + len]).to_string()
+    String::from_utf8_lossy(&data[offset..offset + len]).to_string()
 }
 
 fn test_unary(plugin: &synurang_host::PluginHost) {

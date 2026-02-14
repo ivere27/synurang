@@ -123,7 +123,24 @@ func (c *PluginClientConn) NewStream(ctx context.Context, desc *grpc.StreamDesc,
 		return nil, err
 	}
 
-	return &pluginClientStream{ctx: ctx, stream: stream}, nil
+	cs := &pluginClientStream{
+		ctx:    ctx,
+		desc:   desc,
+		stream: stream,
+		done:   make(chan struct{}),
+	}
+
+	// Ensure canceled contexts always close native stream resources,
+	// even if caller drops the stream without another Send/Recv.
+	go func() {
+		select {
+		case <-ctx.Done():
+			cs.closeStream()
+		case <-cs.done:
+		}
+	}()
+
+	return cs, nil
 }
 
 var _ grpc.ClientConnInterface = (*PluginClientConn)(nil)
@@ -131,7 +148,10 @@ var _ grpc.ClientConnInterface = (*PluginClientConn)(nil)
 // pluginClientStream implements grpc.ClientStream for plugin streaming.
 type pluginClientStream struct {
 	ctx    context.Context
+	desc   *grpc.StreamDesc
 	stream *PluginStream
+	done   chan struct{}
+	once   sync.Once
 }
 
 func (s *pluginClientStream) Header() (metadata.MD, error) { return nil, nil }
@@ -160,7 +180,7 @@ func (s *pluginClientStream) SendMsg(m any) error {
 		return struct{}{}, s.stream.Send(data)
 	})
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		s.stream.Close()
+		s.closeStream()
 	}
 	return err
 }
@@ -175,12 +195,31 @@ func (s *pluginClientStream) RecvMsg(m any) error {
 		return s.stream.Recv()
 	})
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		s.stream.Close()
+		s.closeStream()
 	}
 	if err != nil {
+		s.closeStream()
 		return err
 	}
-	return proto.Unmarshal(data, msg)
+	if err := proto.Unmarshal(data, msg); err != nil {
+		s.closeStream()
+		return err
+	}
+
+	// Client-streaming RPCs return exactly one response.
+	// Close the underlying plugin stream immediately to avoid
+	// leaking native stream handlers/threads.
+	if s.desc != nil && !s.desc.ServerStreams {
+		s.closeStream()
+	}
+	return nil
+}
+
+func (s *pluginClientStream) closeStream() {
+	s.stream.Close()
+	s.once.Do(func() {
+		close(s.done)
+	})
 }
 
 var _ grpc.ClientStream = (*pluginClientStream)(nil)

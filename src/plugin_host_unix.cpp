@@ -9,6 +9,9 @@
 #include <dlfcn.h>
 #include <cstring>
 
+#include <condition_variable>
+#include <atomic>
+
 namespace synurang {
 
 // FFI function signatures
@@ -38,9 +41,17 @@ struct PluginState {
     std::unique_ptr<StreamFuncs> stream_funcs;
     bool closed = false;
 
+    // Active execution tracking
+    std::atomic<int> active_calls{0};
+    std::condition_variable cv;
+
     PluginState(void* h, FreeFunc f) : handle(h), free_ptr(f) {}
 
     ~PluginState() {
+        // Wait for all active FFI calls to finish
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [this] { return active_calls == 0; });
+        
         if (handle) {
             dlclose(handle);
         }
@@ -48,6 +59,18 @@ struct PluginState {
 
     void* lookup(const char* name) {
         return dlsym(handle, name);
+    }
+};
+
+// RAII helper for active call tracking
+struct ScopedCall {
+    std::shared_ptr<PluginState> state;
+    ScopedCall(std::shared_ptr<PluginState> s) : state(s) {
+        state->active_calls++;
+    }
+    ~ScopedCall() {
+        state->active_calls--;
+        state->cv.notify_all();
     }
 };
 
@@ -114,7 +137,11 @@ std::vector<uint8_t> PluginHost::invoke(
     }
 
     int resp_len = 0;
-    char* resp = invoke_fn(method_buf.data(), data_ptr, static_cast<int>(data.size()), &resp_len);
+    char* resp;
+    {
+        ScopedCall call(state_);
+        resp = invoke_fn(method_buf.data(), data_ptr, static_cast<int>(data.size()), &resp_len);
+    }
 
     if (!resp) throw PluginError("Plugin returned null");
 
@@ -175,7 +202,11 @@ std::unique_ptr<PluginStream> PluginHost::open_stream(
     std::vector<char> method_buf(method.begin(), method.end());
     method_buf.push_back('\0');
 
-    uint64_t handle = open_fn(method_buf.data());
+    uint64_t handle;
+    {
+        ScopedCall call(state_);
+        handle = open_fn(method_buf.data());
+    }
     if (handle == 0) throw PluginError("Failed to open stream");
 
     return std::unique_ptr<PluginStream>(new PluginStream(state_, handle));
@@ -191,7 +222,7 @@ PluginStream::~PluginStream() {
 }
 
 void PluginStream::send(const std::vector<uint8_t>& data) {
-    if (closed_ || !state_) throw PluginClosedError();
+    if (closed_.load(std::memory_order_acquire) || !state_) throw PluginClosedError();
     
     StreamSendFunc send_fn = nullptr;
     {
@@ -205,12 +236,16 @@ void PluginStream::send(const std::vector<uint8_t>& data) {
         data_ptr = reinterpret_cast<char*>(const_cast<uint8_t*>(data.data()));
     }
 
-    int result = send_fn(handle_, data_ptr, static_cast<int>(data.size()));
+    int result;
+    {
+        ScopedCall call(state_);
+        result = send_fn(handle_, data_ptr, static_cast<int>(data.size()));
+    }
     if (result != 0) throw PluginError("Stream send failed: " + std::to_string(result));
 }
 
 std::vector<uint8_t> PluginStream::recv(bool& eof) {
-    if (closed_ || !state_) throw PluginClosedError();
+    if (closed_.load(std::memory_order_acquire) || !state_) throw PluginClosedError();
 
     StreamRecvFunc recv_fn = nullptr;
     FreeFunc free_fn = state_->free_ptr;
@@ -222,7 +257,11 @@ std::vector<uint8_t> PluginStream::recv(bool& eof) {
 
     int resp_len = 0;
     int status = 0;
-    char* resp = recv_fn(handle_, &resp_len, &status);
+    char* resp;
+    {
+        ScopedCall call(state_);
+        resp = recv_fn(handle_, &resp_len, &status);
+    }
 
     eof = false;
     if (status == 1) {
@@ -253,27 +292,32 @@ std::vector<uint8_t> PluginStream::recv(bool& eof) {
 }
 
 void PluginStream::close_send() {
-    if (closed_ || !state_) return;
+    if (closed_.load(std::memory_order_acquire) || !state_) return;
     
     StreamCloseSendFunc fn = nullptr;
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (state_->stream_funcs) fn = state_->stream_funcs->close_send;
     }
-    if (fn) fn(handle_);
+    if (fn) {
+        ScopedCall call(state_);
+        fn(handle_);
+    }
 }
 
 void PluginStream::close() {
-    if (closed_) return;
-    closed_ = true;
-    
+    if (closed_.exchange(true, std::memory_order_acq_rel)) return;
+
     if (state_) {
         StreamCloseFunc fn = nullptr;
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             if (state_->stream_funcs) fn = state_->stream_funcs->close;
         }
-        if (fn) fn(handle_);
+        if (fn) {
+            ScopedCall call(state_);
+            fn(handle_);
+        }
     }
     // We keep state_ reference until destruction
 }

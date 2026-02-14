@@ -208,7 +208,10 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
                 plugin->BarServerStream(req, &wrapper);
             }
             // Signal EOF after streaming completes
-            ctx_ptr->closed = true;
+            {
+                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
+                ctx_ptr->closed = true;
+            }
             ctx_ptr->recv_cv.notify_all();
             return;
         }
@@ -217,7 +220,10 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             auto resp = plugin->BarClientStream(&wrapper);
             wrapper.Send(resp);
             // Signal EOF after response sent
-            ctx_ptr->closed = true;
+            {
+                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
+                ctx_ptr->closed = true;
+            }
             ctx_ptr->recv_cv.notify_all();
             return;
         }
@@ -225,7 +231,10 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             StreamWrapper<HelloRequest, HelloResponse> wrapper(ctx_ptr);
             plugin->BarBidiStream(&wrapper);
             // Signal EOF after bidi streaming completes
-            ctx_ptr->closed = true;
+            {
+                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
+                ctx_ptr->closed = true;
+            }
             ctx_ptr->recv_cv.notify_all();
             return;
         }
@@ -234,7 +243,10 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             auto resp = plugin->UploadFile(&wrapper);
             wrapper.Send(resp);
             // Signal EOF after response sent
-            ctx_ptr->closed = true;
+            {
+                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
+                ctx_ptr->closed = true;
+            }
             ctx_ptr->recv_cv.notify_all();
             return;
         }
@@ -256,7 +268,10 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
                 plugin->DownloadFile(req, &wrapper);
             }
             // Signal EOF after streaming completes
-            ctx_ptr->closed = true;
+            {
+                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
+                ctx_ptr->closed = true;
+            }
             ctx_ptr->recv_cv.notify_all();
             return;
         }
@@ -264,7 +279,10 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             StreamWrapper<FileChunk, FileChunk> wrapper(ctx_ptr);
             plugin->BidiFile(&wrapper);
             // Signal EOF after bidi streaming completes
-            ctx_ptr->closed = true;
+            {
+                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
+                ctx_ptr->closed = true;
+            }
             ctx_ptr->recv_cv.notify_all();
             return;
         }
@@ -331,8 +349,11 @@ void Synurang_Stream_CloseSend(uint64_t handle) {
     using namespace example::v1;
     auto* ctx = get_stream(handle);
     if (!ctx) return;
-    
-    ctx->send_closed = true;
+
+    {
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        ctx->send_closed = true;
+    }
     ctx->send_cv.notify_all();
 }
 
@@ -347,11 +368,14 @@ void Synurang_Stream_Close(uint64_t handle) {
         ctx = std::move(it->second);
         g_streams.erase(it);
     }
-    
-    ctx->closed = true;
+
+    {
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        ctx->closed = true;
+    }
     ctx->send_cv.notify_all();
     ctx->recv_cv.notify_all();
-    
+
     if (ctx->handler_thread.joinable()) {
         ctx->handler_thread.join();
     }

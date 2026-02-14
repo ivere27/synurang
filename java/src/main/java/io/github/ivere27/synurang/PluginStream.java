@@ -14,7 +14,7 @@ public class PluginStream implements AutoCloseable {
     private final PluginHost host;
     private final long handle;
     private final PluginHost.StreamFuncs funcs;
-    private volatile boolean closed = false;
+    private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     PluginStream(PluginHost host, long handle, PluginHost.StreamFuncs funcs) {
         this.host = host;
@@ -29,7 +29,7 @@ public class PluginStream implements AutoCloseable {
      * @throws PluginError on send failure
      */
     public void send(byte[] data) throws PluginError {
-        if (closed) throw new PluginError.ClosedError();
+        if (closed.get()) throw new PluginError.ClosedError();
 
         int result = SynurangJni.nativeStreamSend(funcs.send, handle, data);
         if (result != 0) {
@@ -46,7 +46,7 @@ public class PluginStream implements AutoCloseable {
      * @throws PluginError on error
      */
     public byte[] recv() throws PluginError {
-        if (closed) throw new PluginError.ClosedError();
+        if (closed.get()) throw new PluginError.ClosedError();
 
         byte[] result = SynurangJni.nativeStreamRecv(funcs.recv, host.getFreePtr(), handle);
 
@@ -75,18 +75,17 @@ public class PluginStream implements AutoCloseable {
      * The stream can still receive data after this.
      */
     public void closeSend() {
-        if (!closed) {
+        if (!closed.get()) {
             SynurangJni.nativeStreamCloseSend(funcs.closeSend, handle);
         }
     }
 
     /**
-     * Close the stream completely.
+     * Close the stream completely. Thread-safe via CAS.
      */
     @Override
     public void close() {
-        if (!closed) {
-            closed = true;
+        if (closed.compareAndSet(false, true)) {
             SynurangJni.nativeStreamClose(funcs.close, handle);
         }
     }

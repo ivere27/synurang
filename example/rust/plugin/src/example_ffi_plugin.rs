@@ -57,8 +57,16 @@ impl StreamContext {
     }
     
     fn close(&self) {
-        self.closed.store(true, Ordering::SeqCst);
+        // Hold send_queue lock to prevent lost wakeup on send_cv
+        {
+            let _guard = self.send_queue.lock();
+            self.closed.store(true, Ordering::SeqCst);
+        }
         self.send_cv.notify_all();
+        // Hold recv_queue lock to prevent lost wakeup on recv_cv
+        {
+            let _guard = self.recv_queue.lock();
+        }
         self.recv_cv.notify_all();
     }
     
@@ -505,8 +513,11 @@ pub extern "C" fn Synurang_Stream_Recv(
 #[no_mangle]
 pub extern "C" fn Synurang_Stream_CloseSend(handle: u64) {
     if let Some(ctx) = get_stream(handle) {
-        ctx.send_closed.store(true, Ordering::SeqCst);
-        ctx.send_cv.notify_all();  // Wake up any waiting receivers
+        {
+            let _guard = ctx.send_queue.lock();
+            ctx.send_closed.store(true, Ordering::SeqCst);
+        }
+        ctx.send_cv.notify_all();
     }
 }
 

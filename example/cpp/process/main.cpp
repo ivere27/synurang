@@ -3,9 +3,14 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/server_builder.h>
+#include <grpcpp/server_posix.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "example.grpc.pb.h"
 #include "../service/greeter_service.h"
@@ -51,6 +56,10 @@ public:
 };
 
 int main(int argc, char** argv) {
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN);
+#endif
+
     const char* fd_str = std::getenv("SYNURANG_IPC");
     if (!fd_str) {
         std::cerr << "SYNURANG_IPC environment variable not set" << std::endl;
@@ -58,12 +67,17 @@ int main(int argc, char** argv) {
     }
 
     int fd = std::stoi(fd_str);
+    
+    // Ensure blocking mode for gRPC server start
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags != -1) {
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    }
+
     std::cerr << "C++ process child: starting gRPC server on fd " << fd << std::endl;
 
     GreeterServiceImpl service;
     ServerBuilder builder;
-    std::string server_address = "fd:" + std::to_string(fd);
-    builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
 
     std::unique_ptr<Server> server(builder.BuildAndStart());
@@ -72,7 +86,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cerr << "C++ process child: serving..." << std::endl;
+    // Add the connected FD to the server
+    grpc::AddInsecureChannelFromFd(server.get(), fd);
+
+    std::cerr << "C++ process child: serving on fd " << fd << "..." << std::endl;
     server->Wait();
     return 0;
 }

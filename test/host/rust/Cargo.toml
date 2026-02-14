@@ -5,3 +5,16 @@ edition = "2021"
 
 [dependencies]
 synurang-host = { path = "../../../crates/synurang-host" }
+libc = "0.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-stream = "0.1"
+tonic = "0.12"
+bytes = "1"
+
+[[bin]]
+name = "brute-rust-host"
+path = "src/brute.rs"
+
+[[bin]]
+name = "brute-process-rust-host"
+path = "src/brute_process.rs"
