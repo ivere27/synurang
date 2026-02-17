@@ -29,7 +29,7 @@ resp, _ := client.SayHello(ctx, &pb.HelloRequest{Name: "World"})
 - **Android + native plugins**: Load Go/C++/Rust plugins via JNI. Write `.proto`, never touch JNI again.
 - **In-process microservices**: Ship proprietary gRPC services as `.so` binaries. No network, no source exposure.
 - **Sidecar processes**: Spawn isolated child processes with different privileges or crash isolation.
-- **Polyglot backends**: Parent in any language (Go/Dart/C++/Rust/Java) spawns child in any language.
+- **Polyglot backends**: Parent in any language (Go/Dart/C++/Rust/Java/C#) spawns child in any language.
 - **Debugging**: Enable TCP/UDS alongside FFI/IPC. Use grpcurl or Postman while app runs.
 
 ## Quick start
@@ -87,6 +87,7 @@ Host loads plugin as `.so`/`.dll` via `dlopen`/`LoadLibrary`.
 | C++ | Go/C++/Rust | ✓ | Experimental | Experimental |
 | Rust | Go/C++/Rust | ✓ | Experimental | Experimental |
 | Java/Android | Go/C++/Rust | ✓ | — | Experimental |
+| C# (.NET) | Go/C++/Rust | ✓ | ✓ | Experimental |
 
 ### Process Mode (IPC)
 
@@ -99,8 +100,9 @@ Parent spawns child process with gRPC over IPC.
 | C++ | Go/C++/Rust | socketpair | TCP loopback | Experimental |
 | Rust | Go/C++/Rust | socketpair | named pipes | Experimental |
 | Java/Android | Go/C++/Rust | socketpair | TCP loopback | Experimental |
+| C# (.NET) | Go/C++/Rust | socketpair | named pipes | Experimental |
 
-> **Note:** Java/Android uses socketpair on Unix (requires grpc-okhttp on classpath), TCP loopback otherwise. Dart uses TCP loopback on all platforms ([dart-lang/sdk#46196](https://github.com/dart-lang/sdk/issues/46196)). C++ uses TCP loopback on Windows only ([grpc/grpc#13447](https://github.com/grpc/grpc/issues/13447)). For TCP loopback, child must print `SYNURANG_PORT:<port>` to stdout.
+> **Note:** Java/Android uses socketpair on Unix (requires grpc-okhttp on classpath), TCP loopback otherwise. C# uses socketpair on Unix (with TCP loopback fallback), named pipes on Windows (with TCP loopback fallback). Dart uses TCP loopback on all platforms ([dart-lang/sdk#46196](https://github.com/dart-lang/sdk/issues/46196)). C++ uses TCP loopback on Windows only ([grpc/grpc#13447](https://github.com/grpc/grpc/issues/13447)). For TCP loopback, child must print `SYNURANG_PORT:<port>` to stdout. For named pipes, child must print `SYNURANG_PIPE:<pipename>` to stdout.
 
 ---
 
@@ -225,7 +227,7 @@ resp, _ := client.DoSomething(ctx, req)
 
 ### Child Process Examples
 
-Parent can be Go, Dart, C++, or Rust. Child can be **any language** that supports gRPC.
+Parent can be Go, Dart, C++, Rust, Java, or C#. Child can be **any language** that supports gRPC.
 
 **Go Child:**
 
@@ -379,6 +381,7 @@ protoc -Iapi --dart_out=grpc:lib/src/generated service.proto
 protoc -Iapi --synurang-ffi_out=./pkg/api --synurang-ffi_opt=lang=go service.proto
 protoc -Iapi --synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart service.proto
 protoc -Iapi --synurang-ffi_out=./java/src --synurang-ffi_opt=lang=java,java_package=com.example.api service.proto
+protoc -Iapi --synurang-ffi_out=./csharp/src --synurang-ffi_opt=lang=csharp,csharp_namespace=Example.Api service.proto
 ```
 
 ### Step 3: Implement Server
@@ -488,6 +491,20 @@ grpcurl -plaintext localhost:18000 api.Greeter/SayHello
 
 **Java/Android**: `--synurang-ffi_opt=lang=java`. Full support including all streaming types via JNI.
 
+**C# (.NET Framework 4.0+ / .NET Core 3.1+)**: `--synurang-ffi_opt=lang=csharp`. Full support including all streaming types. Pure managed interop — no native bridge required.
+
+#### C# .NET Version Compatibility
+
+| Target | Plugin (FFI) | CallInvoker (gRPC) | Process (TCP) | Process (named pipe) | Process (socketpair) |
+|--------|-------------|-------------------|---------------|---------------------|---------------------|
+| .NET Framework 4.0+ | Full | — | — | — | — |
+| .NET Core 3.1 | Full | Full | Full | — | — |
+| .NET 5.0+ | Full | Full | Full | Full (Windows) | Full (Unix) |
+
+- **.NET Framework 4.0** — Plugin/FFI mode only. Uses `kernel32!LoadLibrary/GetProcAddress` for native loading. Windows XP compatible.
+- **.NET Core 3.1** — Full plugin + gRPC support. Uses `NativeLibrary` for native loading. TCP loopback on all platforms.
+- **.NET 5.0+** — All features. Named pipes on Windows via `SocketsHttpHandler.ConnectCallback`. Socketpair on Unix.
+
 ---
 
 ## API Reference
@@ -538,6 +555,26 @@ PluginStream stream = plugin.openStream("MyService", "/pkg.MyService/StreamMetho
 plugin.close();
 ```
 
+### C# (.NET)
+
+```csharp
+// Plugin mode — drop-in gRPC CallInvoker (recommended)
+using var plugin = PluginHost.Load("./libplugin.so");
+var invoker = new SynurangCallInvoker(plugin, "MyService");
+
+// Standard protoc-gen-grpc-csharp stubs — zero custom codegen
+var client = new MyService.MyServiceClient(invoker);
+var reply = client.SayHello(request);  // goes through FFI, not TCP
+
+// Process mode — socketpair IPC on Unix, TCP loopback on Windows
+using var proc = ProcessHost.Start("./child-process");
+var channel = proc.Channel;  // GrpcChannel over socketpair
+
+// Low-level API (when you don't want grpc-dotnet dependency)
+byte[] resp = plugin.Invoke("MyService", "/pkg.MyService/Method", requestBytes);
+using var stream = plugin.OpenStream("MyService", "/pkg.MyService/StreamMethod");
+```
+
 ### Android Example
 The Kotlin demo in `example/java/android/` showcases:
 - **Go Backend**: Standard gRPC services running as a plugin or child process.
@@ -570,6 +607,8 @@ synurang/
 ├── java/                             # Java host library
 │   ├── src/main/java/                # PluginHost, PluginStream, etc.
 │   └── src/main/c/                   # JNI native layer
+├── csharp/                           # C# host library (pure managed)
+│   └── Synurang/                     # PluginHost, SynurangCallInvoker, ProcessHost
 ├── example/                          # Working examples
 │   ├── go/                           # Go examples
 │   │   ├── service/                  # Shared service logic
@@ -593,10 +632,10 @@ synurang/
 
 ## Low-Level FFI API (No gRPC Dependency)
 
-All 5 host languages can call plugins directly without any gRPC library — just raw protobuf bytes via `invoke()` / `openStream()`. See [`FFI-API.md`](FFI-API.md) for details.
+All 6 host languages can call plugins directly without any gRPC library — just raw protobuf bytes via `invoke()` / `openStream()`. See [`FFI-API.md`](FFI-API.md) for details.
 
 ```bash
-make test_ffi   # Run all FFI API tests (Go, C++, Rust, Java, Dart)
+make test_ffi   # Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)
 ```
 
 ---

@@ -38,6 +38,7 @@ type FileData struct {
 	CppNamespace    string
 	CppGuardName    string
 	RustModPath     string
+	CSharpNamespace string
 }
 
 type GoImport struct {
@@ -126,10 +127,11 @@ func init() {
 
 func main() {
 	var flags flag.FlagSet
-	lang := flags.String("lang", "", "language to generate (go, dart, cpp, rust, or java)")
+	lang := flags.String("lang", "", "language to generate (go, dart, cpp, rust, java, or csharp)")
 	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client")
 	dartPackage := flags.String("dart_package", "", "Dart package name for imports")
 	javaPackage := flags.String("java_package", "", "Java package name for generated classes")
+	csharpNamespace := flags.String("csharp_namespace", "", "C# namespace for generated classes")
 	services := flags.String("services", "", "comma-separated list of services to generate")
 
 	protogen.Options{
@@ -162,6 +164,9 @@ func main() {
 			}
 			if *lang == "java" {
 				generateFromTemplate(gen, f, serviceList, "java", *javaPackage)
+			}
+			if *lang == "csharp" {
+				generateFromTemplate(gen, f, serviceList, "csharp", *csharpNamespace)
 			}
 		}
 		return nil
@@ -240,6 +245,8 @@ func selectTemplate(lang, modeOrOpt string) string {
 		}
 	case "java":
 		return "java.java.tmpl"
+	case "csharp":
+		return "csharp.cs.tmpl"
 	}
 	return ""
 }
@@ -275,6 +282,8 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 		return base + "_ffi.rs"
 	case "java":
 		return base + "_ffi.java"
+	case "csharp":
+		return base + "_ffi.cs"
 	}
 	return base + "_ffi"
 }
@@ -313,6 +322,19 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 		} else {
 			// Derive from proto package, converting to Java convention
 			data.JavaPackage = strings.ReplaceAll(data.Package, "-", "_")
+		}
+	case "csharp":
+		if modeOrOpt != "" {
+			data.CSharpNamespace = modeOrOpt
+		} else {
+			// Derive from proto package: example.v1 -> Example.V1
+			parts := strings.Split(data.Package, ".")
+			for i, part := range parts {
+				if len(part) > 0 {
+					parts[i] = strings.ToUpper(part[:1]) + part[1:]
+				}
+			}
+			data.CSharpNamespace = strings.Join(parts, ".")
 		}
 	}
 

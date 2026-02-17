@@ -25,7 +25,7 @@ ANDROID_CC_ARM := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-l
 ANDROID_CC_ARM64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
 ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java test_host_java run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java build_process_tcp_child test_bruteforce download_grpc_jars
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars
 
 # =============================================================================
 # Default Target
@@ -196,8 +196,8 @@ build_plugin_host:
 # Tests
 # =============================================================================
 
-# Run all tests (Go + Dart + C++ + Rust + Plugin)
-test: test_go test_dart test_cpp test_rust test_plugin
+# Run all tests (Go + Dart + C++ + Rust + C# + Plugin)
+test: test_go test_dart test_cpp test_rust test_csharp test_plugin
 	@echo "All tests complete."
 
 # C++ Tests (Generation + FFI)
@@ -233,8 +233,27 @@ test_rust_ffi:
 	@echo "Running Rust FFI Integration tests..."
 	cd test/rust_ffi && cargo build --release
 	flutter pub get
-	LD_LIBRARY_PATH=$(CURRENT_DIR)/test/rust_ffi/target/release:${LD_LIBRARY_PATH} dart test test/rust_ffi/rust_integration_test.dart
+	LD_LIBRARY_PATH=$(CURRENT_DIR)/target/release:${LD_LIBRARY_PATH} dart test test/rust_ffi/rust_integration_test.dart
 	@echo "Rust FFI Integration tests complete."
+
+# C# Tests (Generation + FFI)
+test_csharp: test_csharp_gen test_csharp_ffi
+	@echo "All C# tests complete."
+
+# C# Gen tests
+test_csharp_gen:
+	@echo "Running C# Generation tests..."
+	./test/test_csharp_gen.sh
+	@echo "C# Generation tests complete."
+
+# C# FFI API test (same style as other test/ffi/* targets)
+test_csharp_ffi: build_plugin_go build_csharp
+	@echo "Running C# FFI API test..."
+	dotnet run --project test/host/csharp/ -- --ffi-only
+	@echo "C# FFI API test complete."
+
+# C# FFI API test (alias)
+test_ffi_csharp: test_csharp_ffi
 
 # Plugin FFI tests (Go-to-Go via shared library)
 test_plugin: proto shared_plugin build_plugin_host
@@ -253,10 +272,10 @@ test_plugin_race: proto shared_plugin
 # FFI API Tests (No gRPC — raw bytes, all 4 RPC types)
 # =============================================================================
 
-# Run all FFI API tests (Go, C++, Rust, Java, Dart)
-test_ffi: test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart
+# Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)
+test_ffi: test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_ffi_csharp
 	@echo "\n═══════════════════════════════════════════════════════════════"
-	@echo "  All FFI API tests passed (Go, C++, Rust, Java, Dart)"
+	@echo "  All FFI API tests passed (Go, C++, Rust, Java, Dart, C#)"
 	@echo "═══════════════════════════════════════════════════════════════\n"
 
 # Go FFI test
@@ -345,15 +364,15 @@ test_bruteforce_process_go: build_process_all
 test_bruteforce_go: test_bruteforce_process_go
 
 # Build all brute-force hosts
-build_brute_all: build_plugin_all build_process_all build_host_java_brute build_garbage_child
+build_brute_all: build_plugin_all build_process_all build_host_java_brute build_host_csharp_brute build_garbage_child
 	@echo "Building C++ brute-force hosts..."
 	@mkdir -p test/host/cpp/build
 	cd test/host/cpp/build && cmake .. -DENABLE_PROCESS_BRUTE=ON && make -j4 brute_cpp_host brute_cpp_process_host
 	@echo "Building Rust brute-force hosts..."
 	cd test/host/rust && cargo build --release --bin brute-rust-host --bin brute-process-rust-host
 	@mkdir -p bin
-	install test/host/rust/target/release/brute-rust-host bin/brute_rust_host
-	install test/host/rust/target/release/brute-process-rust-host bin/brute_rust_process_host
+	install target/release/brute-rust-host bin/brute_rust_host
+	install target/release/brute-process-rust-host bin/brute_rust_process_host
 	@echo "Brute-force build complete."
 
 # Build garbage child fuzzer
@@ -415,10 +434,25 @@ test_bruteforce_hybrid_java: build_plugin_all build_host_java_brute $(if $(filte
 
 test_bruteforce_java: test_bruteforce_hybrid_java
 
+# Build C# host brute-force test
+build_host_csharp_brute: build_csharp
+	@echo "Building C# host brute-force test..."
+	dotnet build test/host/csharp-brute/
+	@echo "Built: test/host/csharp-brute/"
+
+# Run C# host brute-force (supports BRUTE_MODE=all|ffi)
+# .NET runtime thread pool/epoll uses more FDs than native runtimes; override threshold.
+test_bruteforce_hybrid_csharp: build_plugin_all build_host_csharp_brute $(if $(filter all,$(BRUTE_MODE)),build_process_tcp_child)
+	@echo "Running C# hybrid brute-force (mode: $(BRUTE_MODE))..."
+	$(BRUTE_ENV) SYNURANG_BRUTE_MAX_FD_DELTA=128 SYNURANG_BRUTE_MODE=$(BRUTE_MODE) \
+		dotnet run --project test/host/csharp-brute/ --no-build
+
+test_bruteforce_csharp: test_bruteforce_hybrid_csharp
+
 # Run all brute-force tests (all modes × all languages)
 .PHONY: test_bruteforce test_bruteforce_process_go test_bruteforce_process_cpp test_bruteforce_process_rust \
         test_bruteforce_plugin_go test_bruteforce_plugin_cpp test_bruteforce_plugin_rust \
-        test_bruteforce_hybrid_dart test_bruteforce_hybrid_java
+        test_bruteforce_hybrid_dart test_bruteforce_hybrid_java test_bruteforce_hybrid_csharp
 test_bruteforce:
 	@$(MAKE) test_bruteforce_process_go
 	@$(MAKE) test_bruteforce_process_cpp
@@ -428,6 +462,7 @@ test_bruteforce:
 	@$(MAKE) test_bruteforce_plugin_rust
 	@$(MAKE) test_bruteforce_hybrid_dart
 	@$(MAKE) test_bruteforce_hybrid_java
+	@$(MAKE) test_bruteforce_hybrid_csharp
 	@echo "All brute-force tests complete."
 
 test_bruteforce_host: test_bruteforce
@@ -495,7 +530,7 @@ build_process_rust:
 	@echo "Building Rust process child..."
 	cd example/rust/process && cargo build --release
 	@mkdir -p bin
-	install example/rust/process/target/release/process_child bin/process_child_rust
+	install target/release/process_child bin/process_child_rust
 	@echo "Built: bin/process_child_rust"
 
 # Build all process mode binaries
@@ -562,8 +597,8 @@ build_plugin_rust: gen_plugin_rust
 	@echo "Building Rust plugin..."
 	cd example/rust/plugin && cargo build --release
 	@mkdir -p bin
-	cp example/rust/plugin/target/release/*.so bin/libplugin_rust.so 2>/dev/null || \
-	cp example/rust/plugin/target/release/*.dylib bin/libplugin_rust.dylib 2>/dev/null || true
+	cp target/release/libsynurang_rust_plugin.so bin/libplugin_rust.so 2>/dev/null || \
+	cp target/release/libsynurang_rust_plugin.dylib bin/libplugin_rust.dylib 2>/dev/null || true
 	@echo "Built: bin/libplugin_rust.so"
 
 # NOTE: Individual test_plugin_{go,cpp,rust} removed - use test_plugin_all instead
@@ -572,18 +607,17 @@ build_plugin_rust: gen_plugin_rust
 build_plugin_all: build_plugin_go build_plugin_cpp build_plugin_rust
 	@echo "Built all plugins: bin/libplugin_{go,cpp,rust}.so"
 
-# Test all plugins together (loads Go, C++, Rust and tests all 4 gRPC types)
-test_plugin_all: build_plugin_all
-	@echo "Testing all plugins with all 4 gRPC types..."
-	go run ./test/plugin/multi/main.go
+# Test all plugins together (loads Go, C++, Rust plugins × all host languages)
+test_plugin_all: test_host_all
+	@echo "All plugin tests complete (Go, C++, Rust plugins × Go, C++, Rust, Java, C# hosts)."
 
 # =============================================================================
 # Host Mode (C++/Rust/Java parents loading plugins)
 # =============================================================================
 
-# Test all hosts (Go, C++, Rust, Java parents)
-test_host_all: test_host_go test_host_cpp test_host_rust test_host_java
-	@echo "All host tests complete (Go, C++, Rust, Java parents × Go, C++, Rust plugins)"
+# Test all hosts (Go, C++, Rust, Java, C# parents)
+test_host_all: test_host_go test_host_cpp test_host_rust test_host_java test_host_csharp
+	@echo "All host tests complete (Go, C++, Rust, Java, C# parents × Go, C++, Rust plugins)"
 
 # Go host loading plugins (uses Go's native gRPC server test)
 test_host_go: build_plugin_all
@@ -602,7 +636,7 @@ test_host_rust: build_plugin_all
 	@echo "Testing Rust host..."
 	cd test/host/rust && cargo build --release
 	@mkdir -p bin
-	cp test/host/rust/target/release/test-rust-host bin/test_rust_host
+	cp target/release/test-rust-host bin/test_rust_host
 	./bin/test_rust_host
 
 # Java host loading plugins
@@ -611,6 +645,16 @@ test_host_java: build_plugin_all build_java
 	@mkdir -p test/host/java/build
 	javac -cp 'java/build/classes:java/libs/*' -d test/host/java/build test/host/java/JavaHostTest.java
 	java -Djava.library.path=java/src/main/c/build -cp 'java/build/classes:java/libs/*:test/host/java/build' JavaHostTest
+
+# C# host loading plugins
+build_csharp:
+	@echo "Building C# host library..."
+	dotnet build csharp/Synurang/
+
+test_host_csharp: build_plugin_all build_csharp
+	@echo "Testing C# host..."
+	dotnet build test/host/csharp/
+	dotnet run --project test/host/csharp/
 
 # Build JNI native library
 build_jni:
@@ -801,15 +845,16 @@ help:
 	@echo "  proto             - Generate Go, Dart, and FFI proto code"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Plugin)"
-	@echo "  test_ffi          - Run all FFI API tests (Go, C++, Rust, Java, Dart)"
-	@echo "  test_ffi_{go,cpp,rust,java,dart} - Run individual FFI API test"
+	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + C# + Plugin)"
+	@echo "  test_ffi          - Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)"
+	@echo "  test_ffi_{go,cpp,rust,java,dart,csharp} - Run individual FFI API test"
 	@echo "  test_go           - Run Go tests only"
 	@echo "  test_dart         - Run Dart tests only"
 	@echo "  test_plugin       - Run plugin FFI tests (test/plugin)"
-	@echo "  test_plugin_all   - Test all plugins (Go, C++, Rust)"
+	@echo "  test_plugin_all   - Test all plugins × all hosts (Go,C++,Rust × Go,C++,Rust,Java,C#)"
 	@echo "  test_cpp          - Run C++ tests (gen + FFI)"
 	@echo "  test_rust         - Run Rust tests (gen + FFI)"
+	@echo "  test_csharp       - Run C# tests (gen + FFI API)"
 	@echo "  test_bruteforce_process_go   - Go host managing Go/C++/Rust children"
 	@echo "  test_bruteforce_process_cpp  - C++ host managing Go/C++/Rust children"
 	@echo "  test_bruteforce_process_rust - Rust host managing Go/C++/Rust children"
@@ -818,14 +863,16 @@ help:
 	@echo "  test_bruteforce_plugin_rust  - Rust app loading Synurang library"
 	@echo "  test_bruteforce_dart         - Dart hybrid test (Plugin + TCP Process)"
 	@echo "  test_bruteforce_java         - Java hybrid test (Plugin + TCP Process)"
+	@echo "  test_bruteforce_csharp       - C# hybrid test (Plugin + TCP Process)"
 	@echo "  test_bruteforce              - Run all brute-force tests above"
 	@echo ""
 	@echo "Host Mode (Polyglot Parents):"
-	@echo "  test_host_all     - Test all hosts (Go, C++, Rust, Java parents)"
+	@echo "  test_host_all     - Test all hosts (Go, C++, Rust, Java, C# parents)"
 	@echo "  test_host_go      - Test Go parent loading plugins"
 	@echo "  test_host_cpp     - Test C++ parent loading plugins"
 	@echo "  test_host_rust    - Test Rust parent loading plugins"
 	@echo "  test_host_java    - Test Java parent loading plugins"
+	@echo "  test_host_csharp  - Test C# parent loading plugins"
 	@echo ""
 	@echo "Plugin Mode:"
 	@echo "  build_plugin_all  - Build all plugins (Go, C++, Rust)"
@@ -852,8 +899,9 @@ help:
 	@echo "  make test                    # Run all tests"
 	@echo "  make test_bruteforce         # Run all stress tests (multi-hour)"
 	@echo "  make test_bruteforce_process_go # 10m randomized stress/leak check"
-	@echo "  make test_plugin_all         # Test Go/C++/Rust plugins"
-	@echo "  make test_host_all           # Test all host combinations"
+	@echo "  make test_plugin_all         # Test Go/C++/Rust plugins × all hosts"
+	@echo "  make test_host_all           # Test all host combinations (Go,C++,Rust,Java,C#)"
+	@echo "  make test_host_csharp        # C# host test"
 	@echo "  make run_android MODE=release  # Flutter app"
 	@echo "  make run_android_java          # Java/Kotlin app"
 	@echo "  make test_host_java            # Java host test (desktop)"

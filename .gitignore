@@ -10,21 +10,20 @@
 /example/java/android/app/.cxx/
 /example/java/android/app/build/
 /example/java/android/app/src/main/proto/
+/target/
 /example/java/rust-plugin/Cargo.lock
-/example/java/rust-plugin/target/
-/example/rust/service/target/
-/example/rust/plugin/target/
-/example/rust/process/target/
 /example/cpp/plugin/build/
 /example/cpp/process/build/
-/crates/synurang-host/target/
 
 /go
 /test/ffi/cpp/build/
-/test/ffi/rust/target/
-
-
 /plugin
+
+
+# .NET build artifacts
+*.pdb
+**/bin/Debug/
+**/obj/
 
 # test
 /protoc-gen-synurang-ffi
@@ -33,7 +32,6 @@
 /test/plugin/host/host_race
 /test/host/cpp/build/
 /test/host/java/build/
-/test/host/rust/target/
 /test/host/rust/Cargo.lock
 /crates/synurang-host/Cargo.lock
 
