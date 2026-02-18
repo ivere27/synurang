@@ -68,6 +68,157 @@ export 'package:protobuf/well_known_types/google/protobuf/struct.pb.dart';
 export 'package:protobuf/well_known_types/google/protobuf/wrappers.pb.dart';
 
 // =============================================================================
+// Plugin ABI Native Function Types
+// =============================================================================
+
+typedef _PluginInvokeNative = Pointer<Char> Function(
+    Pointer<Char> method, Pointer<Char> data, Int32 dataLen,
+    Pointer<Int32> respLen);
+typedef _PluginInvokeDart = Pointer<Char> Function(
+    Pointer<Char> method, Pointer<Char> data, int dataLen,
+    Pointer<Int32> respLen);
+
+typedef _PluginFreeNative = Void Function(Pointer<Void> ptr);
+typedef _PluginFreeDart = void Function(Pointer<Void> ptr);
+
+typedef _PluginStreamOpenNative = Uint64 Function(Pointer<Char> method);
+typedef _PluginStreamOpenDart = int Function(Pointer<Char> method);
+
+typedef _PluginStreamSendNative = Int32 Function(
+    Uint64 handle, Pointer<Char> data, Int32 dataLen);
+typedef _PluginStreamSendDart = int Function(
+    int handle, Pointer<Char> data, int dataLen);
+
+typedef _PluginStreamRecvNative = Pointer<Char> Function(
+    Uint64 handle, Pointer<Int32> respLen, Pointer<Int32> status);
+typedef _PluginStreamRecvDart = Pointer<Char> Function(
+    int handle, Pointer<Int32> respLen, Pointer<Int32> status);
+
+typedef _PluginStreamCloseSendNative = Void Function(Uint64 handle);
+typedef _PluginStreamCloseSendDart = void Function(int handle);
+
+typedef _PluginStreamCloseNative = Void Function(Uint64 handle);
+typedef _PluginStreamCloseDart = void Function(int handle);
+
+// =============================================================================
+// Plugin Registry (Multi-Plugin Support)
+// =============================================================================
+
+bool _usePluginMode = false;
+
+class _PluginRegistration {
+  final String libraryPath;
+  final List<String> serviceNames;
+  const _PluginRegistration(this.libraryPath, this.serviceNames);
+}
+
+final List<_PluginRegistration> _pluginRegistrations = [];
+
+/// Main-isolate plugin entry (holds finalizer + quick stream functions)
+class _MainPluginEntry {
+  final DynamicLibrary library;
+  final NativeFinalizer finalizer;
+  final _PluginFreeDart freeFunc;
+  final Map<String, _PluginInvokeDart> _invokers = {};
+  _PluginStreamSendDart? _streamSend;
+  _PluginStreamCloseSendDart? _streamCloseSend;
+  _PluginStreamCloseDart? _streamClose;
+  bool _streamFuncsLoaded = false;
+
+  _MainPluginEntry(this.library, this.freeFunc, this.finalizer);
+
+  _PluginInvokeDart getInvoker(String serviceName) {
+    return _invokers.putIfAbsent(serviceName, () {
+      return library.lookupFunction<_PluginInvokeNative, _PluginInvokeDart>(
+          'Synurang_Invoke_$serviceName');
+    });
+  }
+
+  void ensureStreamFuncs() {
+    if (_streamFuncsLoaded) return;
+    _streamSend = library
+        .lookupFunction<_PluginStreamSendNative, _PluginStreamSendDart>(
+            'Synurang_Stream_Send');
+    _streamCloseSend = library.lookupFunction<_PluginStreamCloseSendNative,
+        _PluginStreamCloseSendDart>('Synurang_Stream_CloseSend');
+    _streamClose = library
+        .lookupFunction<_PluginStreamCloseNative, _PluginStreamCloseDart>(
+            'Synurang_Stream_Close');
+    _streamFuncsLoaded = true;
+  }
+}
+
+final List<_MainPluginEntry> _mainPlugins = [];
+final Map<String, int> _serviceToPluginIndex = {};
+
+/// Worker-local plugin entry
+class _WorkerPluginEntry {
+  final DynamicLibrary library;
+  final _PluginFreeDart freeFunc;
+  _PluginStreamRecvDart? streamRecv;
+  _PluginStreamSendDart? streamSend;
+  _PluginStreamCloseSendDart? streamCloseSend;
+  _PluginStreamCloseDart? streamClose;
+  bool _streamFuncsLoaded = false;
+
+  _WorkerPluginEntry(this.library, this.freeFunc);
+
+  void ensureStreamFuncs() {
+    if (_streamFuncsLoaded) return;
+    streamSend = library
+        .lookupFunction<_PluginStreamSendNative, _PluginStreamSendDart>(
+            'Synurang_Stream_Send');
+    streamRecv = library
+        .lookupFunction<_PluginStreamRecvNative, _PluginStreamRecvDart>(
+            'Synurang_Stream_Recv');
+    streamCloseSend = library.lookupFunction<_PluginStreamCloseSendNative,
+        _PluginStreamCloseSendDart>('Synurang_Stream_CloseSend');
+    streamClose = library
+        .lookupFunction<_PluginStreamCloseNative, _PluginStreamCloseDart>(
+            'Synurang_Stream_Close');
+    _streamFuncsLoaded = true;
+  }
+}
+
+class _WorkerServiceEntry {
+  final _WorkerPluginEntry plugin;
+  final int pluginIndex;
+  final _PluginInvokeDart invoke;
+  final String serviceName;
+  _PluginStreamOpenDart? _streamOpen;
+
+  _WorkerServiceEntry(
+      this.plugin, this.pluginIndex, this.invoke, this.serviceName);
+
+  _PluginStreamOpenDart getStreamOpen() {
+    _streamOpen ??= plugin.library
+        .lookupFunction<_PluginStreamOpenNative, _PluginStreamOpenDart>(
+            'Synurang_Stream_${serviceName}_Open');
+    return _streamOpen!;
+  }
+}
+
+final List<_WorkerPluginEntry> _workerPlugins = [];
+final Map<String, _WorkerServiceEntry> _workerServices = {};
+
+// Plugin stream state (main isolate only)
+final Map<int, _PluginStreamState> _pluginActiveStreams = {};
+int _nextDartStreamId = 1;
+
+class _PluginStreamState {
+  final StreamController<Uint8List> controller;
+  final int pluginIndex;
+  int handle = 0;
+  _PluginStreamState(this.controller, this.pluginIndex);
+}
+
+String _extractServiceName(String method) {
+  // "/pkg.Service/Method" → "Service"
+  final fullService = method.substring(1, method.lastIndexOf('/'));
+  return fullService.substring(fullService.lastIndexOf('.') + 1);
+}
+
+// =============================================================================
 // FfiError - Structured error with gRPC status code
 // =============================================================================
 
@@ -233,6 +384,60 @@ class _StreamIdResponse {
   const _StreamIdResponse(this.id, this.streamId);
 }
 
+// Plugin invoke response (carries pluginIndex for per-plugin finalizer)
+class _PluginInvokeResponse {
+  final int id;
+  final int address;
+  final int len;
+  final int pluginIndex;
+  const _PluginInvokeResponse(this.id, this.address, this.len, this.pluginIndex);
+}
+
+// Plugin stream requests
+class _PluginServerStreamRequest {
+  final int id;
+  final int dartStreamId;
+  final String method;
+  final Uint8List data;
+  const _PluginServerStreamRequest(
+      this.id, this.dartStreamId, this.method, this.data);
+}
+
+class _PluginClientStreamRequest {
+  final int id;
+  final int dartStreamId;
+  final String method;
+  const _PluginClientStreamRequest(this.id, this.dartStreamId, this.method);
+}
+
+class _PluginBidiStreamRequest {
+  final int id;
+  final int dartStreamId;
+  final String method;
+  const _PluginBidiStreamRequest(this.id, this.dartStreamId, this.method);
+}
+
+// Worker → Main stream messages
+class _PluginStreamData {
+  final int dartStreamId;
+  final int address;
+  final int len;
+  final int pluginIndex;
+  const _PluginStreamData(
+      this.dartStreamId, this.address, this.len, this.pluginIndex);
+}
+
+class _PluginStreamEnd {
+  final int dartStreamId;
+  const _PluginStreamEnd(this.dartStreamId);
+}
+
+class _PluginStreamError {
+  final int dartStreamId;
+  final Object error;
+  const _PluginStreamError(this.dartStreamId, this.error);
+}
+
 // =============================================================================
 // Public API
 // =============================================================================
@@ -252,6 +457,36 @@ String ensureLibraryLoaded() {
 
 /// Reset library state for app restart scenarios.
 void resetCoreState() {
+  _CoreIsolateManager.instance.reset();
+}
+
+/// Register a plugin .so for the given service names.
+///
+/// Each service name maps to per-service C ABI symbols:
+///   `Synurang_Invoke_<ServiceName>` and `Synurang_Stream_<ServiceName>_Open`
+/// Plus shared symbols: `Synurang_Free`, `Synurang_Stream_Send/Recv/CloseSend/Close`.
+///
+/// Call this before any FFI calls. Multiple plugins can be registered.
+void registerPlugin(String libraryPath, List<String> serviceNames) {
+  _usePluginMode = true;
+  final reg = _PluginRegistration(libraryPath, serviceNames);
+  _pluginRegistrations.add(reg);
+
+  // Load on main isolate for finalizer + quick stream functions
+  final lib = DynamicLibrary.open(libraryPath);
+  final freePtr =
+      lib.lookup<NativeFunction<_PluginFreeNative>>('Synurang_Free');
+  final freeFunc = freePtr.asFunction<_PluginFreeDart>();
+  final finalizer = NativeFinalizer(freePtr);
+
+  final pluginIndex = _mainPlugins.length;
+  _mainPlugins.add(_MainPluginEntry(lib, freeFunc, finalizer));
+
+  for (final svc in serviceNames) {
+    _serviceToPluginIndex[svc] = pluginIndex;
+  }
+
+  // Reset isolate pool so workers pick up new plugins
   _CoreIsolateManager.instance.reset();
 }
 
@@ -295,9 +530,10 @@ Future<int> stopGrpcServerAsync() async {
       .sendRequest<int>((id) => _StopRequest(id));
 }
 
-/// Invoke a Go backend method via FFI.
+/// Invoke a backend method via FFI.
 ///
-/// Optional parameters (zero-overhead when not used):
+/// Routes through plugin registry in plugin mode, or Go backend in Go mode.
+/// Optional parameters (zero-overhead when not used, Go mode only):
 /// - [metadata]: Request metadata (e.g., auth tokens)
 /// - [timeout]: Per-call timeout (deadline enforcement in Go)
 Future<Uint8List> invokeBackendAsync(
@@ -306,13 +542,13 @@ Future<Uint8List> invokeBackendAsync(
   Map<String, String>? metadata,
   Duration? timeout,
 }) async {
-  // Fast path: no metadata or timeout
-  if (metadata == null && timeout == null) {
+  // Plugin mode: always uses _InvokeBackendRequest (worker handles dispatch)
+  if (_usePluginMode || (metadata == null && timeout == null)) {
     return _CoreIsolateManager.instance.sendRequest<Uint8List>(
         (id) => _InvokeBackendRequest(id, method, data));
   }
 
-  // Encode metadata as key=value\n format
+  // Go mode with metadata/timeout
   final metaBuffer = StringBuffer();
   if (timeout != null) {
     metaBuffer.write('__timeout_ms=${timeout.inMilliseconds}\n');
@@ -427,8 +663,13 @@ FFIServerStreamResult invokeBackendServerStreamWithTrailers(
   return result;
 }
 
-/// Server streaming: Go sends multiple responses (simple API without trailers).
+/// Server streaming: backend sends multiple responses (simple API without trailers).
 Stream<Uint8List> invokeBackendServerStream(String method, Uint8List data) {
+  if (_usePluginMode) {
+    return _pluginServerStream(method, data);
+  }
+
+  // Go mode
   _ensureStreamCallbackRegistered();
   final controller = StreamController<Uint8List>();
 
@@ -458,16 +699,55 @@ Stream<Uint8List> invokeBackendServerStream(String method, Uint8List data) {
   return controller.stream;
 }
 
-/// Client streaming: Dart sends multiple requests, Go returns single response
-///
-/// Note: Stream initialization is performed on a helper isolate to avoid
-/// blocking the main UI thread.
+/// Plugin-mode server streaming (pull-based recv loop on worker isolate).
+Stream<Uint8List> _pluginServerStream(String method, Uint8List data) {
+  final dartStreamId = _nextDartStreamId++;
+  final svcName = _extractServiceName(method);
+  final pluginIndex = _serviceToPluginIndex[svcName]!;
+  final controller = StreamController<Uint8List>();
+
+  _pluginActiveStreams[dartStreamId] =
+      _PluginStreamState(controller, pluginIndex);
+
+  _CoreIsolateManager.instance
+      .sendRequest<int>((id) =>
+          _PluginServerStreamRequest(id, dartStreamId, method, data))
+      .then((int handle) {
+    if (handle == 0) {
+      controller.addError(Exception('Failed to start server stream'));
+      controller.close();
+      _pluginActiveStreams.remove(dartStreamId);
+      return;
+    }
+
+    _pluginActiveStreams[dartStreamId]!.handle = handle;
+
+    controller.onCancel = () {
+      _pluginActiveStreams.remove(dartStreamId);
+      final plugin = _mainPlugins[pluginIndex];
+      plugin.ensureStreamFuncs();
+      plugin._streamClose!(handle);
+    };
+  }).catchError((Object error) {
+    controller.addError(error);
+    controller.close();
+    _pluginActiveStreams.remove(dartStreamId);
+  });
+
+  return controller.stream;
+}
+
+/// Client streaming: Dart sends multiple requests, backend returns single response
 Future<Uint8List> invokeBackendClientStream(
     String method, Stream<Uint8List> dataStream) async {
+  if (_usePluginMode) {
+    return _pluginClientStream(method, dataStream);
+  }
+
+  // Go mode
   _ensureStreamCallbackRegistered();
   final completer = Completer<Uint8List>();
 
-  // Start the client stream on helper isolate (non-blocking)
   final int streamId = await _CoreIsolateManager.instance
       .sendRequest<int>((id) => _ClientStreamRequest(id, method));
 
@@ -475,55 +755,97 @@ Future<Uint8List> invokeBackendClientStream(
     throw Exception('Failed to start client stream');
   }
 
-  // Register for response on main isolate
   final controller = StreamController<Uint8List>();
   _activeStreams[streamId] = controller;
 
-  // Listen for the final response
   controller.stream.listen(
     (data) {
-      if (!completer.isCompleted) {
-        completer.complete(data);
-      }
+      if (!completer.isCompleted) completer.complete(data);
     },
     onError: (e) {
-      if (!completer.isCompleted) {
-        completer.completeError(e);
-      }
+      if (!completer.isCompleted) completer.completeError(e);
     },
     onDone: () {
       _activeStreams.remove(streamId);
     },
   );
 
-  // Send all data from the input stream
   await for (final data in dataStream) {
     final dataPtr = calloc<Uint8>(data.length);
-    final dataList = dataPtr.asTypedList(data.length);
-    dataList.setAll(0, data);
-    // Quick FFI call - acceptable on main thread
+    dataPtr.asTypedList(data.length).setAll(0, data);
     _ffi.SendStreamData(streamId, dataPtr.cast(), data.length);
     calloc.free(dataPtr);
   }
 
-  // Signal end of client stream INPUT
-  // Quick FFI call - acceptable on main thread
   _ffi.CloseStreamInput(streamId);
+  return completer.future;
+}
 
+/// Plugin-mode client streaming.
+/// Worker runs recv loop; main sends data via quick FFI calls.
+Future<Uint8List> _pluginClientStream(
+    String method, Stream<Uint8List> dataStream) async {
+  final dartStreamId = _nextDartStreamId++;
+  final svcName = _extractServiceName(method);
+  final pluginIndex = _serviceToPluginIndex[svcName]!;
+
+  final completer = Completer<Uint8List>();
+  final controller = StreamController<Uint8List>();
+  _pluginActiveStreams[dartStreamId] =
+      _PluginStreamState(controller, pluginIndex);
+
+  controller.stream.listen(
+    (data) {
+      if (!completer.isCompleted) completer.complete(data);
+    },
+    onError: (e) {
+      if (!completer.isCompleted) completer.completeError(e);
+    },
+    onDone: () {
+      _pluginActiveStreams.remove(dartStreamId);
+      if (!completer.isCompleted) {
+        completer.completeError(Exception('stream ended without response'));
+      }
+    },
+  );
+
+  // Open stream on worker (worker enters recv loop)
+  final int handle = await _CoreIsolateManager.instance
+      .sendRequest<int>(
+          (id) => _PluginClientStreamRequest(id, dartStreamId, method));
+
+  if (handle == 0) {
+    _pluginActiveStreams.remove(dartStreamId);
+    throw Exception('Failed to start client stream');
+  }
+  _pluginActiveStreams[dartStreamId]!.handle = handle;
+
+  // Send data from main isolate (quick non-blocking FFI calls)
+  final plugin = _mainPlugins[pluginIndex];
+  plugin.ensureStreamFuncs();
+
+  await for (final data in dataStream) {
+    final dataPtr = calloc<Uint8>(data.length);
+    dataPtr.asTypedList(data.length).setAll(0, data);
+    plugin._streamSend!(handle, dataPtr.cast(), data.length);
+    calloc.free(dataPtr);
+  }
+
+  plugin._streamCloseSend!(handle);
   return completer.future;
 }
 
 /// Bidirectional streaming: Both sides stream
-///
-/// Note: Stream initialization is performed on a helper isolate to avoid
-/// blocking the main UI thread. Stream data callbacks still run on the main
-/// isolate via NativeCallable.listener.
 Stream<Uint8List> invokeBackendBidiStream(
     String method, Stream<Uint8List> dataStream) {
+  if (_usePluginMode) {
+    return _pluginBidiStream(method, dataStream);
+  }
+
+  // Go mode
   _ensureStreamCallbackRegistered();
   final controller = StreamController<Uint8List>();
 
-  // Start the bidi stream on helper isolate (non-blocking)
   _CoreIsolateManager.instance
       .sendRequest<int>((id) => _BidiStreamRequest(id, method))
       .then((int streamId) {
@@ -533,21 +855,14 @@ Stream<Uint8List> invokeBackendBidiStream(
       return;
     }
 
-    // Register the stream controller on main isolate
     _activeStreams[streamId] = controller;
 
-    // Handle cleanup
     controller.onCancel = () {
       _activeStreams.remove(streamId);
-      // Quick FFI call - acceptable on main thread
       _ffi.CloseStream(streamId);
     };
 
-    // Signal to Go that we're ready to receive data
-    // Quick FFI call - acceptable on main thread
     _ffi.StreamReady(streamId);
-
-    // Send data in the background
     _sendBidiStreamData(streamId, dataStream, controller);
   }).catchError((Object error) {
     controller.addError(error);
@@ -563,15 +878,74 @@ Future<void> _sendBidiStreamData(int streamId, Stream<Uint8List> dataStream,
     await for (final data in dataStream) {
       if (controller.isClosed) break;
       final dataPtr = calloc<Uint8>(data.length);
-      final dataList = dataPtr.asTypedList(data.length);
-      dataList.setAll(0, data);
-      // Quick FFI call - acceptable on main thread
+      dataPtr.asTypedList(data.length).setAll(0, data);
       _ffi.SendStreamData(streamId, dataPtr.cast(), data.length);
       calloc.free(dataPtr);
     }
-    // Signal end of input stream
-    // Quick FFI call - acceptable on main thread
     _ffi.CloseStreamInput(streamId);
+  } catch (e) {
+    if (!controller.isClosed) {
+      controller.addError(e);
+    }
+  }
+}
+
+/// Plugin-mode bidi streaming.
+/// Worker runs recv loop; main sends data via quick FFI calls.
+Stream<Uint8List> _pluginBidiStream(
+    String method, Stream<Uint8List> dataStream) {
+  final dartStreamId = _nextDartStreamId++;
+  final svcName = _extractServiceName(method);
+  final pluginIndex = _serviceToPluginIndex[svcName]!;
+  final controller = StreamController<Uint8List>();
+
+  _pluginActiveStreams[dartStreamId] =
+      _PluginStreamState(controller, pluginIndex);
+
+  _CoreIsolateManager.instance
+      .sendRequest<int>(
+          (id) => _PluginBidiStreamRequest(id, dartStreamId, method))
+      .then((int handle) {
+    if (handle == 0) {
+      controller.addError(Exception('Failed to start bidi stream'));
+      controller.close();
+      _pluginActiveStreams.remove(dartStreamId);
+      return;
+    }
+    _pluginActiveStreams[dartStreamId]!.handle = handle;
+
+    controller.onCancel = () {
+      _pluginActiveStreams.remove(dartStreamId);
+      final plugin = _mainPlugins[pluginIndex];
+      plugin.ensureStreamFuncs();
+      plugin._streamClose!(handle);
+    };
+
+    // Send data in the background
+    _sendPluginBidiData(handle, pluginIndex, dataStream, controller);
+  }).catchError((Object error) {
+    controller.addError(error);
+    controller.close();
+    _pluginActiveStreams.remove(dartStreamId);
+  });
+
+  return controller.stream;
+}
+
+Future<void> _sendPluginBidiData(int handle, int pluginIndex,
+    Stream<Uint8List> dataStream, StreamController controller) async {
+  final plugin = _mainPlugins[pluginIndex];
+  plugin.ensureStreamFuncs();
+
+  try {
+    await for (final data in dataStream) {
+      if (controller.isClosed) break;
+      final dataPtr = calloc<Uint8>(data.length);
+      dataPtr.asTypedList(data.length).setAll(0, data);
+      plugin._streamSend!(handle, dataPtr.cast(), data.length);
+      calloc.free(dataPtr);
+    }
+    plugin._streamCloseSend!(handle);
   } catch (e) {
     if (!controller.isClosed) {
       controller.addError(e);
@@ -802,8 +1176,11 @@ class _CoreIsolateManager {
   }
 
   Future<void> _createWorkerPool() async {
-    // Ensure library is loaded on main isolate first to resolve path
-    final resolvedPath = ensureLibraryLoaded();
+    String? resolvedPath;
+    if (!_usePluginMode) {
+      // Go mode: ensure library is loaded on main isolate first to resolve path
+      resolvedPath = ensureLibraryLoaded();
+    }
 
     _mainReceivePort = ReceivePort();
     final sendPortCompleter = <Completer<SendPort>>[];
@@ -825,7 +1202,14 @@ class _CoreIsolateManager {
       futures.add(Isolate.spawn(
         _workerEntryPoint,
         _WorkerInitMessage(
-            i, _mainReceivePort!.sendPort, _libraryName, resolvedPath),
+          workerIndex: i,
+          mainSendPort: _mainReceivePort!.sendPort,
+          libraryName: _libraryName,
+          libraryPath: resolvedPath,
+          usePluginMode: _usePluginMode,
+          pluginRegistrations:
+              _usePluginMode ? _pluginRegistrations : const [],
+        ),
       ));
     }
 
@@ -850,6 +1234,32 @@ class _CoreIsolateManager {
       _completeZeroCopy(data.id, data.address, data.len);
       return;
     }
+    // Plugin invoke response (per-plugin finalizer)
+    if (data is _PluginInvokeResponse) {
+      _completePluginZeroCopy(
+          data.id, data.address, data.len, data.pluginIndex);
+      return;
+    }
+    // Plugin stream data (routed directly to StreamController)
+    if (data is _PluginStreamData) {
+      _handlePluginStreamDataMsg(data);
+      return;
+    }
+    if (data is _PluginStreamEnd) {
+      final info = _pluginActiveStreams.remove(data.dartStreamId);
+      info?.controller.close();
+      return;
+    }
+    if (data is _PluginStreamError) {
+      final info = _pluginActiveStreams.remove(data.dartStreamId);
+      if (info != null) {
+        info.controller.addError(data.error is String
+            ? FfiError(data.error as String, 0)
+            : data.error);
+        info.controller.close();
+      }
+      return;
+    }
     // Cache Responses
     if (data is _CacheGetResponse) {
       _completeZeroCopy(data.id, data.address, data.len, allowNull: true);
@@ -870,7 +1280,8 @@ class _CoreIsolateManager {
       completer?.completeError(data.error);
       return;
     }
-    throw UnsupportedError('Unsupported message type: ${data.runtimeType}');
+    developer.log(
+        'Synurang: unsupported response type: ${data.runtimeType}');
   }
 
   void _completeRequest<T>(int id, T result) {
@@ -917,6 +1328,79 @@ class _CoreIsolateManager {
     _payloadExpando[result] = payload;
     return result;
   }
+
+  /// Complete a plugin invoke response with per-plugin finalizer.
+  /// Response format: [status:1byte][payload...] where status 0=success, 1=error.
+  void _completePluginZeroCopy(
+      int id, int address, int totalLen, int pluginIndex) {
+    _updateWorkerStats(id);
+    final completer = _requests.remove(id) as Completer<Uint8List>?;
+    if (completer == null) return;
+
+    if (address == 0 || totalLen <= 0) {
+      completer.complete(Uint8List(0));
+      return;
+    }
+
+    final ptr = Pointer<Void>.fromAddress(address);
+    final allBytes = ptr.cast<Uint8>();
+    final status = allBytes.value; // byte 0
+    final plugin = _mainPlugins[pluginIndex];
+
+    if (status == 1) {
+      // Error
+      final errorBytes = allBytes.elementAt(1).asTypedList(totalLen - 1);
+      final errorMsg = utf8.decode(errorBytes);
+      plugin.freeFunc(ptr);
+      completer.completeError(FfiError(errorMsg, 0));
+      return;
+    }
+
+    // Success: zero-copy payload (skip status byte)
+    final payload = allBytes.elementAt(1).asTypedList(totalLen - 1);
+    final nativePayload = _NativePayload();
+    plugin.finalizer.attach(nativePayload, ptr.cast(),
+        detach: nativePayload, externalSize: totalLen);
+    _payloadExpando[payload] = nativePayload;
+    completer.complete(payload);
+  }
+
+  /// Handle plugin stream data message (route to StreamController).
+  void _handlePluginStreamDataMsg(_PluginStreamData data) {
+    final info = _pluginActiveStreams[data.dartStreamId];
+    if (info == null) {
+      // Stream already cancelled — free the pointer
+      if (data.address != 0) {
+        _mainPlugins[data.pluginIndex]
+            .freeFunc(Pointer<Void>.fromAddress(data.address));
+      }
+      return;
+    }
+
+    if (data.address == 0 || data.len <= 0) return;
+
+    final ptr = Pointer<Void>.fromAddress(data.address);
+    final allBytes = ptr.cast<Uint8>();
+    final status = allBytes.value;
+    final plugin = _mainPlugins[info.pluginIndex];
+
+    if (status == 1) {
+      // Error in stream data
+      final errorBytes = allBytes.elementAt(1).asTypedList(data.len - 1);
+      final errorMsg = utf8.decode(errorBytes);
+      plugin.freeFunc(ptr);
+      info.controller.addError(FfiError(errorMsg, 0));
+      return;
+    }
+
+    // Success: zero-copy payload (skip status byte)
+    final payload = allBytes.elementAt(1).asTypedList(data.len - 1);
+    final nativePayload = _NativePayload();
+    plugin.finalizer.attach(nativePayload, ptr.cast(),
+        detach: nativePayload, externalSize: data.len);
+    _payloadExpando[payload] = nativePayload;
+    info.controller.add(payload);
+  }
 }
 
 /// Worker init message including worker index and resolved library path
@@ -925,15 +1409,28 @@ class _WorkerInitMessage {
   final SendPort mainSendPort;
   final String libraryName;
   final String? libraryPath;
-  _WorkerInitMessage(
-      this.workerIndex, this.mainSendPort, this.libraryName, this.libraryPath);
+  final bool usePluginMode;
+  final List<_PluginRegistration> pluginRegistrations;
+
+  _WorkerInitMessage({
+    required this.workerIndex,
+    required this.mainSendPort,
+    required this.libraryName,
+    this.libraryPath,
+    this.usePluginMode = false,
+    this.pluginRegistrations = const [],
+  });
 }
 
 /// Worker isolate entry point
 void _workerEntryPoint(_WorkerInitMessage msg) {
-  // Configure with the resolved library path from main isolate
-  configureSynurang(
-      libraryName: msg.libraryName, libraryPath: msg.libraryPath);
+  if (msg.usePluginMode) {
+    _initWorkerPlugins(msg.pluginRegistrations);
+  } else {
+    // Go mode: configure with the resolved library path from main isolate
+    configureSynurang(
+        libraryName: msg.libraryName, libraryPath: msg.libraryPath);
+  }
 
   final receivePort = ReceivePort();
   receivePort.listen((dynamic data) {
@@ -944,11 +1441,40 @@ void _workerEntryPoint(_WorkerInitMessage msg) {
   msg.mainSendPort.send((msg.workerIndex, receivePort.sendPort));
 }
 
+/// Initialize worker-local plugin state from registrations.
+void _initWorkerPlugins(List<_PluginRegistration> registrations) {
+  _usePluginMode = true;
+  for (int i = 0; i < registrations.length; i++) {
+    final reg = registrations[i];
+    final lib = DynamicLibrary.open(reg.libraryPath);
+    final freeFunc =
+        lib.lookupFunction<_PluginFreeNative, _PluginFreeDart>(
+            'Synurang_Free');
+    final workerPlugin = _WorkerPluginEntry(lib, freeFunc);
+    _workerPlugins.add(workerPlugin);
+
+    for (final svc in reg.serviceNames) {
+      final invoke =
+          lib.lookupFunction<_PluginInvokeNative, _PluginInvokeDart>(
+              'Synurang_Invoke_$svc');
+      _workerServices[svc] =
+          _WorkerServiceEntry(workerPlugin, i, invoke, svc);
+    }
+  }
+}
+
 // =============================================================================
 // Isolate Message Handler
 // =============================================================================
 
 void _handleIsolateMessage(dynamic data, SendPort sendPort) {
+  // Plugin-mode handlers
+  if (_usePluginMode) {
+    _handlePluginIsolateMessage(data, sendPort);
+    return;
+  }
+
+  // Go-mode handlers below
   if (data is _StartRequest) {
     final Pointer<CoreArgument> cArg = calloc<CoreArgument>();
     cArg.ref.storagePath = data.storagePath.toNativeUtf8().cast<Char>();
@@ -1189,11 +1715,212 @@ void _handleIsolateMessage(dynamic data, SendPort sendPort) {
 }
 
 // =============================================================================
-// Direct FFI Helpers
+// Plugin-Mode Isolate Message Handler
 // =============================================================================
 
+_WorkerServiceEntry? _resolveWorkerService(String method) {
+  final svcName = _extractServiceName(method);
+  return _workerServices[svcName];
+}
+
+void _handlePluginIsolateMessage(dynamic data, SendPort sendPort) {
+  if (data is _InvokeBackendRequest) {
+    try {
+      final service = _resolveWorkerService(data.method);
+      if (service == null) {
+        sendPort.send(_ErrorResponse(
+            data.id,
+            FfiError(
+                'service not found: ${_extractServiceName(data.method)}', 0)));
+        return;
+      }
+
+      final methodPtr = data.method.toNativeUtf8().cast<Char>();
+      final dataPtr = calloc<Uint8>(data.data.length);
+      dataPtr.asTypedList(data.data.length).setAll(0, data.data);
+      final respLenPtr = calloc<Int32>();
+
+      final resultPtr = service.invoke(
+          methodPtr, dataPtr.cast<Char>(), data.data.length, respLenPtr);
+      final respLen = respLenPtr.value;
+
+      calloc.free(methodPtr);
+      calloc.free(dataPtr);
+      calloc.free(respLenPtr);
+
+      if (resultPtr == nullptr || respLen <= 0) {
+        sendPort.send(
+            _ErrorResponse(data.id, FfiError('null response from plugin', 0)));
+        return;
+      }
+
+      // Check status byte on worker to handle errors without zero-copy
+      final status = resultPtr.cast<Uint8>().value;
+      if (status == 1) {
+        final errorBytes =
+            resultPtr.cast<Uint8>().elementAt(1).asTypedList(respLen - 1);
+        final errorMsg = utf8.decode(errorBytes);
+        service.plugin.freeFunc(resultPtr.cast<Void>());
+        sendPort.send(_ErrorResponse(data.id, FfiError(errorMsg, 0)));
+        return;
+      }
+
+      // Success: send pointer for zero-copy on main isolate
+      sendPort.send(_PluginInvokeResponse(
+          data.id, resultPtr.cast<Void>().address, respLen,
+          service.pluginIndex));
+    } catch (e) {
+      sendPort.send(_ErrorResponse(data.id, e));
+    }
+    return;
+  }
+
+  if (data is _PluginServerStreamRequest) {
+    try {
+      final service = _resolveWorkerService(data.method);
+      if (service == null) {
+        sendPort.send(_StreamIdResponse(data.id, 0));
+        return;
+      }
+
+      service.plugin.ensureStreamFuncs();
+      final methodPtr = data.method.toNativeUtf8().cast<Char>();
+      final handle = service.getStreamOpen()(methodPtr);
+      calloc.free(methodPtr);
+
+      if (handle == 0) {
+        sendPort.send(_StreamIdResponse(data.id, 0));
+        return;
+      }
+
+      // Send initial request data to the stream
+      final dataPtr = calloc<Uint8>(data.data.length);
+      dataPtr.asTypedList(data.data.length).setAll(0, data.data);
+      service.plugin.streamSend!(handle, dataPtr.cast<Char>(), data.data.length);
+      calloc.free(dataPtr);
+
+      // Complete the sendRequest with the handle
+      sendPort.send(_StreamIdResponse(data.id, handle));
+
+      // Enter blocking recv loop (this blocks the worker for the stream duration)
+      _pluginStreamRecvLoop(
+          data.dartStreamId, handle, service, sendPort);
+    } catch (e) {
+      sendPort.send(_ErrorResponse(data.id, e));
+    }
+    return;
+  }
+
+  if (data is _PluginClientStreamRequest) {
+    try {
+      final service = _resolveWorkerService(data.method);
+      if (service == null) {
+        sendPort.send(_StreamIdResponse(data.id, 0));
+        return;
+      }
+
+      service.plugin.ensureStreamFuncs();
+      final methodPtr = data.method.toNativeUtf8().cast<Char>();
+      final handle = service.getStreamOpen()(methodPtr);
+      calloc.free(methodPtr);
+
+      if (handle == 0) {
+        sendPort.send(_StreamIdResponse(data.id, 0));
+        return;
+      }
+
+      // Complete the sendRequest with the handle
+      sendPort.send(_StreamIdResponse(data.id, handle));
+
+      // Enter blocking recv loop
+      _pluginStreamRecvLoop(
+          data.dartStreamId, handle, service, sendPort);
+    } catch (e) {
+      sendPort.send(_ErrorResponse(data.id, e));
+    }
+    return;
+  }
+
+  if (data is _PluginBidiStreamRequest) {
+    try {
+      final service = _resolveWorkerService(data.method);
+      if (service == null) {
+        sendPort.send(_StreamIdResponse(data.id, 0));
+        return;
+      }
+
+      service.plugin.ensureStreamFuncs();
+      final methodPtr = data.method.toNativeUtf8().cast<Char>();
+      final handle = service.getStreamOpen()(methodPtr);
+      calloc.free(methodPtr);
+
+      if (handle == 0) {
+        sendPort.send(_StreamIdResponse(data.id, 0));
+        return;
+      }
+
+      // Complete the sendRequest with the handle
+      sendPort.send(_StreamIdResponse(data.id, handle));
+
+      // Enter blocking recv loop
+      _pluginStreamRecvLoop(
+          data.dartStreamId, handle, service, sendPort);
+    } catch (e) {
+      sendPort.send(_ErrorResponse(data.id, e));
+    }
+    return;
+  }
+
+  developer.log(
+      'Synurang plugin worker: unsupported message type: ${data.runtimeType}');
+}
+
+/// Blocking recv loop for plugin streams. Runs on a worker isolate.
+/// Sends _PluginStreamData/_PluginStreamEnd/_PluginStreamError to main.
+void _pluginStreamRecvLoop(int dartStreamId, int handle,
+    _WorkerServiceEntry service, SendPort sendPort) {
+  final respLenPtr = calloc<Int32>();
+  final statusPtr = calloc<Int32>();
+
+  try {
+    while (true) {
+      final dataPtr =
+          service.plugin.streamRecv!(handle, respLenPtr, statusPtr);
+      final status = statusPtr.value;
+      final respLen = respLenPtr.value;
+
+      if (status == 1) {
+        // EOF
+        sendPort.send(_PluginStreamEnd(dartStreamId));
+        break;
+      }
+      if (status >= 2) {
+        // Error
+        String errorMsg = 'stream error (status $status)';
+        if (dataPtr != nullptr && respLen > 0) {
+          errorMsg =
+              dataPtr.cast<Utf8>().toDartString(length: respLen);
+          service.plugin.freeFunc(dataPtr.cast<Void>());
+        }
+        sendPort.send(_PluginStreamError(dartStreamId, errorMsg));
+        break;
+      }
+
+      // Data (status == 0)
+      if (dataPtr == nullptr || respLen <= 0) continue;
+
+      // Send pointer address + len to main for zero-copy
+      sendPort.send(_PluginStreamData(dartStreamId,
+          dataPtr.cast<Void>().address, respLen, service.pluginIndex));
+    }
+  } finally {
+    calloc.free(respLenPtr);
+    calloc.free(statusPtr);
+  }
+}
+
 // =============================================================================
-// Direct FFI Helpers
+// Direct FFI Helpers (Go Mode)
 // =============================================================================
 
 String _libraryName = 'synurang';
@@ -1295,8 +2022,13 @@ FfiData _invokeBackendWithMetaRaw(
   return ffiData;
 }
 
-/// Invoke Go backend synchronously (for main thread use)
+/// Invoke backend synchronously (for main thread use)
 Uint8List invokeBackend(String method, Uint8List data) {
+  if (_usePluginMode) {
+    return _invokePluginSync(method, data);
+  }
+
+  // Go mode
   final ffiData = _invokeBackendRaw(method, data);
   if (ffiData.data == nullptr) {
     return Uint8List(0);
@@ -1323,6 +2055,49 @@ Uint8List invokeBackend(String method, Uint8List data) {
       detach: payload, externalSize: ffiData.len);
   _payloadExpando[result] = payload;
   return result;
+}
+
+/// Plugin-mode synchronous invoke on main isolate.
+Uint8List _invokePluginSync(String method, Uint8List data) {
+  final svcName = _extractServiceName(method);
+  final pluginIndex = _serviceToPluginIndex[svcName]!;
+  final plugin = _mainPlugins[pluginIndex];
+  final invoker = plugin.getInvoker(svcName);
+
+  final methodPtr = method.toNativeUtf8().cast<Char>();
+  final dataPtr = calloc<Uint8>(data.length);
+  dataPtr.asTypedList(data.length).setAll(0, data);
+  final respLenPtr = calloc<Int32>();
+
+  final resultPtr =
+      invoker(methodPtr, dataPtr.cast<Char>(), data.length, respLenPtr);
+  final respLen = respLenPtr.value;
+
+  calloc.free(methodPtr);
+  calloc.free(dataPtr);
+  calloc.free(respLenPtr);
+
+  if (resultPtr == nullptr || respLen <= 0) {
+    return Uint8List(0);
+  }
+
+  final status = resultPtr.cast<Uint8>().value;
+
+  if (status == 1) {
+    final errorBytes =
+        resultPtr.cast<Uint8>().elementAt(1).asTypedList(respLen - 1);
+    final errorMsg = utf8.decode(errorBytes);
+    plugin.freeFunc(resultPtr.cast<Void>());
+    throw FfiError(errorMsg, 0);
+  }
+
+  // Zero-copy success response (skip status byte)
+  final payload = resultPtr.cast<Uint8>().elementAt(1).asTypedList(respLen - 1);
+  final nativePayload = _NativePayload();
+  plugin.finalizer.attach(nativePayload, resultPtr.cast(),
+      detach: nativePayload, externalSize: respLen);
+  _payloadExpando[payload] = nativePayload;
+  return payload;
 }
 
 // Marker class for keeping pointers alive

@@ -1,3 +1,6 @@
+@Timeout(Duration(minutes: 12))
+library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
