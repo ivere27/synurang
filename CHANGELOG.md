@@ -1,3 +1,8 @@
+## 0.4.0
+
+*   **C# support**: Added full support for C# via pure managed interop (NativeLibrary + Marshal).
+*   **Pull-based C ABI**: Dart plugin host with pull-based C ABI support for streaming.
+
 ## 0.3.0
 
 *   **FFI without gRPC dependency**: FFI transport layer no longer requires gRPC as a dependency.
