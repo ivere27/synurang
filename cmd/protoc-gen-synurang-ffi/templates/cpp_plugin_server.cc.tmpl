@@ -144,11 +144,7 @@ char* Synurang_Invoke_{{$svc.GoName}}(const char* method, const char* data, int 
 {{- range $m := .Methods}}
 {{- if $m.IsUnary}}
     if (method_str == "{{$m.FullMethodName}}") {
-{{- if $.CppNamespace}}
-        {{$.CppNamespace}}::{{$m.InputType}} req;
-{{- else}}
-        {{$m.InputType}} req;
-{{- end}}
+        {{$m.InputCppType}} req;
         if (req.ParseFromString(input)) {
             auto resp = plugin->{{$m.GoName}}(req);
             success = resp.SerializeToString(&output);
@@ -210,9 +206,9 @@ uint64_t Synurang_Stream_{{$svc.GoName}}_Open(const char* method) {
             ctx_ptr->send_queue.pop();
             lock.unlock();
             
-            {{$m.InputType}} req;
+            {{$m.InputCppType}} req;
             if (req.ParseFromString(data)) {
-                StreamWrapper<{{$m.InputType}}, {{$m.OutputType}}> wrapper(ctx_ptr);
+                StreamWrapper<{{$m.InputCppType}}, {{$m.OutputCppType}}> wrapper(ctx_ptr);
                 plugin->{{$m.GoName}}(req, &wrapper);
             }
             // Signal EOF after streaming completes
@@ -225,7 +221,7 @@ uint64_t Synurang_Stream_{{$svc.GoName}}_Open(const char* method) {
         }
 {{- else if $m.IsClientStreaming}}
         if (method_str == "{{$m.FullMethodName}}") {
-            StreamWrapper<{{$m.InputType}}, {{$m.OutputType}}> wrapper(ctx_ptr);
+            StreamWrapper<{{$m.InputCppType}}, {{$m.OutputCppType}}> wrapper(ctx_ptr);
             auto resp = plugin->{{$m.GoName}}(&wrapper);
             wrapper.Send(resp);
             // Signal EOF after response sent
@@ -238,7 +234,7 @@ uint64_t Synurang_Stream_{{$svc.GoName}}_Open(const char* method) {
         }
 {{- else if $m.IsBidiStreaming}}
         if (method_str == "{{$m.FullMethodName}}") {
-            StreamWrapper<{{$m.InputType}}, {{$m.OutputType}}> wrapper(ctx_ptr);
+            StreamWrapper<{{$m.InputCppType}}, {{$m.OutputCppType}}> wrapper(ctx_ptr);
             plugin->{{$m.GoName}}(&wrapper);
             // Signal EOF after bidi streaming completes
             {

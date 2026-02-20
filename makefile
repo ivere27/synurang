@@ -17,6 +17,11 @@ BRUTE_WORKERS ?= 16
 BRUTE_MAX_G_DELTA ?= 64
 BRUTE_MAX_FD_DELTA ?= 48
 BRUTE_MAX_RSS_MB_DELTA ?= 256
+BRUTE_GO_TEST_TIMEOUT ?= 40m
+JAVA_BUILD_DIR ?= build/java
+JAVA_CLASSES_DIR := $(JAVA_BUILD_DIR)/classes
+JAVA_LIB_DIR := $(JAVA_BUILD_DIR)/libs
+JAVA_JAR := $(JAVA_LIB_DIR)/java.jar
 
 # Android NDK paths
 NDK_HOME ?= $(HOME)/android-ndk-r23c
@@ -25,7 +30,7 @@ ANDROID_CC_ARM := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-l
 ANDROID_CC_ARM64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
 ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen
 
 # =============================================================================
 # Default Target
@@ -65,18 +70,18 @@ proto: build_plugin
 	protoc -Iapi -I/usr/include \
 		--go_out=./pkg/api --go_opt=paths=source_relative \
 		--go-grpc_out=./pkg/api --go-grpc_opt=paths=source_relative \
-		core.proto
+		core.proto cache.proto
 	protoc -Iapi -I/usr/include \
 		--dart_out=grpc:lib/src/generated \
-		core.proto
+		core.proto cache.proto
 	protoc -Iapi -I/usr/include \
 		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
 		--synurang-ffi_out=./pkg/api --synurang-ffi_opt=lang=go \
-		core.proto
+		core.proto cache.proto
 	protoc -Iapi -I/usr/include \
 		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
 		--synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart \
-		core.proto
+		core.proto cache.proto
 
 	@echo "Generating example proto code..."
 	mkdir -p example/pkg/api
@@ -85,10 +90,10 @@ proto: build_plugin
 		--go_out=./example/pkg/api --go_opt=paths=source_relative \
 		--go-grpc_out=./example/pkg/api --go-grpc_opt=paths=source_relative \
 		example.proto
-	# Generate core.proto for example Dart (needed for cross-proto imports)
+	# Generate core.proto + cache.proto for example Dart (needed for cross-proto imports)
 	protoc -Iapi -I/usr/include \
 		--dart_out=grpc:example/lib/src/generated \
-		core.proto
+		core.proto cache.proto
 	protoc -Iexample/api -Iapi -I/usr/include \
 		--dart_out=grpc:example/lib/src/generated \
 		example.proto
@@ -196,8 +201,8 @@ build_plugin_host:
 # Tests
 # =============================================================================
 
-# Run all tests (Go + Dart + C++ + Rust + C# + Plugin)
-test: test_go test_dart test_cpp test_rust test_csharp test_plugin
+# Run all tests (Go + Dart + C++ + Rust + Native/WASM + C# + Plugin)
+test: test_go test_dart test_cpp test_rust test_native_wasm_gen test_csharp test_plugin
 	@echo "All tests complete."
 
 # C++ Tests (Generation + FFI)
@@ -227,6 +232,12 @@ test_rust_gen:
 	@echo "Running Rust Generation tests..."
 	./test/test_rust_gen.sh
 	@echo "Rust Generation tests complete."
+
+# Native/WASM codegen tests
+test_native_wasm_gen:
+	@echo "Running Native/WASM generation tests..."
+	./test/test_native_wasm_gen.sh
+	@echo "Native/WASM generation tests complete."
 
 # Rust FFI Integration tests (Mock Backend)
 test_rust_ffi:
@@ -298,9 +309,9 @@ test_ffi_rust: build_plugin_go
 # Java FFI test
 test_ffi_java: build_plugin_go build_java
 	@echo "Running Java FFI API test..."
-	javac -cp java/build/libs/java.jar -d test/ffi/java test/ffi/java/FfiApiTest.java
+	javac -cp $(JAVA_JAR) -d test/ffi/java test/ffi/java/FfiApiTest.java
 	java -Djava.library.path=java/src/main/c/build \
-		-cp java/build/libs/java.jar:test/ffi/java \
+		-cp $(JAVA_JAR):test/ffi/java \
 		FfiApiTest
 
 # Dart FFI test (uses example shared library for GoGreeterService)
@@ -407,7 +418,7 @@ test_bruteforce_process_rust: build_brute_all
 # Run Go plugin brute-force (all 3 plugin languages + reload-under-load)
 test_bruteforce_plugin_go: build_plugin_all
 	@echo "Running Go plugin brute-force tests..."
-	$(BRUTE_ENV) go test -v ./pkg/synurang -run 'TestPlugin(RandomBruteforce|ReloadUnderLoad)' -count=1 -timeout 12m
+	$(BRUTE_ENV) go test -v ./pkg/synurang -run 'TestPlugin(RandomBruteforce|ReloadUnderLoad)' -count=1 -timeout $(BRUTE_GO_TEST_TIMEOUT)
 	@echo "Plugin brute-force tests complete."
 
 test_bruteforce_plugin: test_bruteforce_plugin_go
@@ -429,7 +440,7 @@ test_bruteforce_hybrid_java: build_plugin_all build_host_java_brute $(if $(filte
 	@echo "Running Java hybrid brute-force (mode: $(BRUTE_MODE))..."
 	$(BRUTE_ENV) SYNURANG_BRUTE_MODE=$(BRUTE_MODE) \
 		java -Djava.library.path=java/src/main/c/build \
-		-cp 'java/build/classes:java/libs/*:test/host/java/build' \
+		-cp '$(JAVA_JAR):java/libs/*:test/host/java/build' \
 		JavaHostBruteTest
 
 test_bruteforce_java: test_bruteforce_hybrid_java
@@ -643,8 +654,8 @@ test_host_rust: build_plugin_all
 test_host_java: build_plugin_all build_java
 	@echo "Testing Java host..."
 	@mkdir -p test/host/java/build
-	javac -cp 'java/build/classes:java/libs/*' -d test/host/java/build test/host/java/JavaHostTest.java
-	java -Djava.library.path=java/src/main/c/build -cp 'java/build/classes:java/libs/*:test/host/java/build' JavaHostTest
+	javac -cp '$(JAVA_JAR):java/libs/*' -d test/host/java/build test/host/java/JavaHostTest.java
+	java -Djava.library.path=java/src/main/c/build -cp '$(JAVA_JAR):java/libs/*:test/host/java/build' JavaHostTest
 
 # C# host loading plugins
 build_csharp:
@@ -694,16 +705,16 @@ download_grpc_jars:
 # Compile Java host library
 build_java: build_jni download_grpc_jars
 	@echo "Compiling Java host library..."
-	@mkdir -p java/build/classes java/build/libs
-	javac -cp 'java/libs/*' -d java/build/classes java/src/main/java/io/github/ivere27/synurang/*.java
-	cd java/build/classes && jar cf ../libs/java.jar io/
-	@echo "Built: java/build/classes/ java/build/libs/java.jar"
+	@mkdir -p $(JAVA_CLASSES_DIR) $(JAVA_LIB_DIR)
+	javac -cp 'java/libs/*' -d $(JAVA_CLASSES_DIR) java/src/main/java/io/github/ivere27/synurang/*.java
+	cd $(JAVA_CLASSES_DIR) && jar cf ../libs/java.jar io/
+	@echo "Built: $(JAVA_CLASSES_DIR) $(JAVA_JAR)"
 
 # Build Java host brute-force executable
 build_host_java_brute: build_java
 	@echo "Building Java host brute-force test..."
 	@mkdir -p test/host/java/build
-	javac -cp 'java/build/classes:java/libs/*' -d test/host/java/build test/host/java/JavaHostBruteTest.java
+	javac -cp '$(JAVA_JAR):java/libs/*' -d test/host/java/build test/host/java/JavaHostBruteTest.java
 	@echo "Built: test/host/java/build/ (JavaHostBruteTest)"
 
 # Build Go plugin for Android (for Java/Kotlin example app)
@@ -845,7 +856,7 @@ help:
 	@echo "  proto             - Generate Go, Dart, and FFI proto code"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + C# + Plugin)"
+	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Native/WASM + C# + Plugin)"
 	@echo "  test_ffi          - Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)"
 	@echo "  test_ffi_{go,cpp,rust,java,dart,csharp} - Run individual FFI API test"
 	@echo "  test_go           - Run Go tests only"
@@ -854,6 +865,7 @@ help:
 	@echo "  test_plugin_all   - Test all plugins × all hosts (Go,C++,Rust × Go,C++,Rust,Java,C#)"
 	@echo "  test_cpp          - Run C++ tests (gen + FFI)"
 	@echo "  test_rust         - Run Rust tests (gen + FFI)"
+	@echo "  test_native_wasm_gen - Run native/wasm codegen checks"
 	@echo "  test_csharp       - Run C# tests (gen + FFI API)"
 	@echo "  test_bruteforce_process_go   - Go host managing Go/C++/Rust children"
 	@echo "  test_bruteforce_process_cpp  - C++ host managing Go/C++/Rust children"

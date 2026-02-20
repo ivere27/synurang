@@ -18,10 +18,10 @@ import (
 )
 
 // =============================================================================
-// FFI Server Interface
+// GoGreeterService FFI Server Interface
 // =============================================================================
 
-type FfiServer interface {
+type GoGreeterServiceFfiServer interface {
 	GoGreeterServiceServer
 	BarServerStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
 	BarClientStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
@@ -29,20 +29,13 @@ type FfiServer interface {
 	UploadFileInternal(context.Context, *FileChunk) (*FileStatus, error)
 	DownloadFileInternal(context.Context, *DownloadFileRequest) (*FileChunk, error)
 	BidiFileInternal(context.Context, *FileChunk) (*FileChunk, error)
-	DartGreeterServiceServer
-	FooServerStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
-	FooClientStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
-	FooBidiStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
-	DartUploadFileInternal(context.Context, *FileChunk) (*FileStatus, error)
-	DartDownloadFileInternal(context.Context, *DownloadFileRequest) (*FileChunk, error)
-	DartBidiFileInternal(context.Context, *FileChunk) (*FileChunk, error)
 }
 
 // =============================================================================
-// Invoke - returns []byte (for TCP/UDS)
+// GoGreeterService Invoke - returns []byte (for TCP/UDS)
 // =============================================================================
 
-func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
+func GoGreeterServiceInvoke(s GoGreeterServiceFfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
 	switch method {
 	case "/example.v1.GoGreeterService/Bar":
 		req := &HelloRequest{}
@@ -134,6 +127,429 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 			return nil, err
 		}
 		return proto.Marshal(resp)
+	default:
+		return nil, fmt.Errorf("unknown method: %s", method)
+	}
+}
+
+// =============================================================================
+// GoGreeterService InvokeFfi - returns C pointer (for zero-copy FFI)
+// =============================================================================
+
+// GoGreeterServiceInvokeFfi is the zero-copy variant for FFI mode.
+// It allocates C memory and serializes directly into it.
+// Caller is responsible for freeing the returned pointer via C.free().
+func GoGreeterServiceInvokeFfi(s GoGreeterServiceFfiServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {
+	switch method {
+	case "/example.v1.GoGreeterService/Bar":
+		req := &HelloRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.Bar(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/BarServerStream":
+		req := &HelloRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.BarServerStreamInternal(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/BarClientStream":
+		req := &HelloRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.BarClientStreamInternal(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/BarBidiStream":
+		req := &HelloRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.BarBidiStreamInternal(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/UploadFile":
+		req := &FileChunk{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.UploadFileInternal(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/DownloadFile":
+		req := &DownloadFileRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.DownloadFileInternal(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/BidiFile":
+		req := &FileChunk{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.BidiFileInternal(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/Trigger":
+		req := &TriggerRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.Trigger(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	case "/example.v1.GoGreeterService/GetGoroutines":
+		req := &GoroutinesRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
+		}
+		resp, err := s.GetGoroutines(ctx, req)
+		if err != nil {
+			return nil, 0, err
+		}
+		// Zero-copy: allocate C memory and serialize directly
+		size := proto.Size(resp)
+		if size == 0 {
+			return nil, 0, nil
+		}
+		cPtr := C.malloc(C.size_t(size))
+		if cPtr == nil {
+			return nil, 0, fmt.Errorf("failed to allocate memory for response")
+		}
+		buf := unsafe.Slice((*byte)(cPtr), size)
+		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
+			C.free(cPtr)
+			return nil, 0, err
+		}
+		return cPtr, int64(size), nil
+	default:
+		return nil, 0, fmt.Errorf("unknown method: %s", method)
+	}
+}
+
+// =============================================================================
+// GoGreeterService InvokeStream - dispatches streaming RPC calls
+// =============================================================================
+
+func GoGreeterServiceInvokeStream(s GoGreeterServiceFfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {
+	switch method {
+	case "/example.v1.GoGreeterService/BarServerStream":
+		req := &HelloRequest{}
+		if err := stream.RecvMsg(req); err != nil {
+			return err
+		}
+		return s.BarServerStream(req, &grpcGoGreeterServiceBarServerStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarClientStream":
+		return s.BarClientStream(&grpcGoGreeterServiceBarClientStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarBidiStream":
+		return s.BarBidiStream(&grpcGoGreeterServiceBarBidiStreamStream{stream})
+	case "/example.v1.GoGreeterService/UploadFile":
+		return s.UploadFile(&grpcGoGreeterServiceUploadFileStream{stream})
+	case "/example.v1.GoGreeterService/DownloadFile":
+		req := &DownloadFileRequest{}
+		if err := stream.RecvMsg(req); err != nil {
+			return err
+		}
+		return s.DownloadFile(req, &grpcGoGreeterServiceDownloadFileStream{stream})
+	case "/example.v1.GoGreeterService/BidiFile":
+		return s.BidiFile(&grpcGoGreeterServiceBidiFileStream{stream})
+	default:
+		return fmt.Errorf("unknown streaming method: %s", method)
+	}
+}
+
+// =============================================================================
+// GoGreeterService FFI Invoker - wraps GoGreeterServiceFfiServer
+// =============================================================================
+
+// goGreeterServiceFfiInvoker wraps GoGreeterServiceFfiServer to implement the synurang.Invoker interface.
+// This allows using the synurang runtime's FfiClientConn with generated code.
+// Uses zero-copy: proto.Message pointers are passed directly without serialization.
+type goGreeterServiceFfiInvoker struct {
+	server GoGreeterServiceFfiServer
+}
+
+// Invoke implements synurang.UnaryInvoker (zero-copy).
+func (i *goGreeterServiceFfiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
+	switch method {
+	case "/example.v1.GoGreeterService/Bar":
+		resp, err := i.server.Bar(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/BarServerStream":
+		resp, err := i.server.BarServerStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/BarClientStream":
+		resp, err := i.server.BarClientStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/BarBidiStream":
+		resp, err := i.server.BarBidiStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/UploadFile":
+		resp, err := i.server.UploadFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/DownloadFile":
+		resp, err := i.server.DownloadFileInternal(ctx, req.(*DownloadFileRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/BidiFile":
+		resp, err := i.server.BidiFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/Trigger":
+		resp, err := i.server.Trigger(ctx, req.(*TriggerRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.GoGreeterService/GetGoroutines":
+		resp, err := i.server.GetGoroutines(ctx, req.(*GoroutinesRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	default:
+		return fmt.Errorf("unknown method: %s", method)
+	}
+}
+
+// InvokeStream implements synurang.StreamInvoker (zero-copy).
+func (i *goGreeterServiceFfiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {
+	switch method {
+	case "/example.v1.GoGreeterService/BarServerStream":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*HelloRequest)
+		return i.server.BarServerStream(req, &ffiGoGreeterServiceBarServerStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarClientStream":
+		// Client streaming (zero-copy)
+		return i.server.BarClientStream(&ffiGoGreeterServiceBarClientStreamStream{stream})
+	case "/example.v1.GoGreeterService/BarBidiStream":
+		// Bidi streaming (zero-copy)
+		return i.server.BarBidiStream(&ffiGoGreeterServiceBarBidiStreamStream{stream})
+	case "/example.v1.GoGreeterService/UploadFile":
+		// Client streaming (zero-copy)
+		return i.server.UploadFile(&ffiGoGreeterServiceUploadFileStream{stream})
+	case "/example.v1.GoGreeterService/DownloadFile":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*DownloadFileRequest)
+		return i.server.DownloadFile(req, &ffiGoGreeterServiceDownloadFileStream{stream})
+	case "/example.v1.GoGreeterService/BidiFile":
+		// Bidi streaming (zero-copy)
+		return i.server.BidiFile(&ffiGoGreeterServiceBidiFileStream{stream})
+	default:
+		return fmt.Errorf("unknown streaming method: %s", method)
+	}
+}
+
+var _ synurang.Invoker = (*goGreeterServiceFfiInvoker)(nil)
+
+// =============================================================================
+// GoGreeterService FFI Client - convenience wrapper for synurang.FfiClientConn
+// =============================================================================
+
+func NewGoGreeterServiceFfiClientConn(server GoGreeterServiceFfiServer) grpc.ClientConnInterface {
+	return synurang.NewFfiClientConn(&goGreeterServiceFfiInvoker{server: server})
+}
+
+// =============================================================================
+// DartGreeterService FFI Server Interface
+// =============================================================================
+
+type DartGreeterServiceFfiServer interface {
+	DartGreeterServiceServer
+	FooServerStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
+	FooClientStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
+	FooBidiStreamInternal(context.Context, *HelloRequest) (*HelloResponse, error)
+	DartUploadFileInternal(context.Context, *FileChunk) (*FileStatus, error)
+	DartDownloadFileInternal(context.Context, *DownloadFileRequest) (*FileChunk, error)
+	DartBidiFileInternal(context.Context, *FileChunk) (*FileChunk, error)
+}
+
+// =============================================================================
+// DartGreeterService Invoke - returns []byte (for TCP/UDS)
+// =============================================================================
+
+func DartGreeterServiceInvoke(s DartGreeterServiceFfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
+	switch method {
 	case "/example.v1.DartGreeterService/Foo":
 		req := &HelloRequest{}
 		if err := proto.Unmarshal(data, req); err != nil {
@@ -210,230 +626,14 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 }
 
 // =============================================================================
-// InvokeFfi - returns C pointer (for zero-copy FFI)
+// DartGreeterService InvokeFfi - returns C pointer (for zero-copy FFI)
 // =============================================================================
 
-// InvokeFfi is the zero-copy variant for FFI mode.
+// DartGreeterServiceInvokeFfi is the zero-copy variant for FFI mode.
 // It allocates C memory and serializes directly into it.
 // Caller is responsible for freeing the returned pointer via C.free().
-func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {
+func DartGreeterServiceInvokeFfi(s DartGreeterServiceFfiServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {
 	switch method {
-	case "/example.v1.GoGreeterService/Bar":
-		req := &HelloRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Bar(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/BarServerStream":
-		req := &HelloRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.BarServerStreamInternal(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/BarClientStream":
-		req := &HelloRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.BarClientStreamInternal(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/BarBidiStream":
-		req := &HelloRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.BarBidiStreamInternal(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/UploadFile":
-		req := &FileChunk{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.UploadFileInternal(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/DownloadFile":
-		req := &DownloadFileRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.DownloadFileInternal(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/BidiFile":
-		req := &FileChunk{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.BidiFileInternal(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/Trigger":
-		req := &TriggerRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Trigger(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/example.v1.GoGreeterService/GetGoroutines":
-		req := &GoroutinesRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.GetGoroutines(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
 	case "/example.v1.DartGreeterService/Foo":
 		req := &HelloRequest{}
 		if err := proto.Unmarshal(data, req); err != nil {
@@ -608,31 +808,11 @@ func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (un
 }
 
 // =============================================================================
-// InvokeStream - dispatches streaming RPC calls
+// DartGreeterService InvokeStream - dispatches streaming RPC calls
 // =============================================================================
 
-func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {
+func DartGreeterServiceInvokeStream(s DartGreeterServiceFfiServer, ctx context.Context, method string, stream grpc.ServerStream) error {
 	switch method {
-	case "/example.v1.GoGreeterService/BarServerStream":
-		req := &HelloRequest{}
-		if err := stream.RecvMsg(req); err != nil {
-			return err
-		}
-		return s.BarServerStream(req, &grpcGoGreeterServiceBarServerStreamStream{stream})
-	case "/example.v1.GoGreeterService/BarClientStream":
-		return s.BarClientStream(&grpcGoGreeterServiceBarClientStreamStream{stream})
-	case "/example.v1.GoGreeterService/BarBidiStream":
-		return s.BarBidiStream(&grpcGoGreeterServiceBarBidiStreamStream{stream})
-	case "/example.v1.GoGreeterService/UploadFile":
-		return s.UploadFile(&grpcGoGreeterServiceUploadFileStream{stream})
-	case "/example.v1.GoGreeterService/DownloadFile":
-		req := &DownloadFileRequest{}
-		if err := stream.RecvMsg(req); err != nil {
-			return err
-		}
-		return s.DownloadFile(req, &grpcGoGreeterServiceDownloadFileStream{stream})
-	case "/example.v1.GoGreeterService/BidiFile":
-		return s.BidiFile(&grpcGoGreeterServiceBidiFileStream{stream})
 	case "/example.v1.DartGreeterService/FooServerStream":
 		req := &HelloRequest{}
 		if err := stream.RecvMsg(req); err != nil {
@@ -656,6 +836,127 @@ func InvokeStream(s FfiServer, ctx context.Context, method string, stream grpc.S
 	default:
 		return fmt.Errorf("unknown streaming method: %s", method)
 	}
+}
+
+// =============================================================================
+// DartGreeterService FFI Invoker - wraps DartGreeterServiceFfiServer
+// =============================================================================
+
+// dartGreeterServiceFfiInvoker wraps DartGreeterServiceFfiServer to implement the synurang.Invoker interface.
+// This allows using the synurang runtime's FfiClientConn with generated code.
+// Uses zero-copy: proto.Message pointers are passed directly without serialization.
+type dartGreeterServiceFfiInvoker struct {
+	server DartGreeterServiceFfiServer
+}
+
+// Invoke implements synurang.UnaryInvoker (zero-copy).
+func (i *dartGreeterServiceFfiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
+	switch method {
+	case "/example.v1.DartGreeterService/Foo":
+		resp, err := i.server.Foo(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.DartGreeterService/FooServerStream":
+		resp, err := i.server.FooServerStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.DartGreeterService/FooClientStream":
+		resp, err := i.server.FooClientStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.DartGreeterService/FooBidiStream":
+		resp, err := i.server.FooBidiStreamInternal(ctx, req.(*HelloRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.DartGreeterService/DartUploadFile":
+		resp, err := i.server.DartUploadFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.DartGreeterService/DartDownloadFile":
+		resp, err := i.server.DartDownloadFileInternal(ctx, req.(*DownloadFileRequest))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	case "/example.v1.DartGreeterService/DartBidiFile":
+		resp, err := i.server.DartBidiFileInternal(ctx, req.(*FileChunk))
+		if err != nil {
+			return err
+		}
+		// Use proto.Merge to avoid copying mutex in MessageState
+		proto.Merge(reply.(proto.Message), resp)
+		return nil
+	default:
+		return fmt.Errorf("unknown method: %s", method)
+	}
+}
+
+// InvokeStream implements synurang.StreamInvoker (zero-copy).
+func (i *dartGreeterServiceFfiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {
+	switch method {
+	case "/example.v1.DartGreeterService/FooServerStream":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*HelloRequest)
+		return i.server.FooServerStream(req, &ffiDartGreeterServiceFooServerStreamStream{stream})
+	case "/example.v1.DartGreeterService/FooClientStream":
+		// Client streaming (zero-copy)
+		return i.server.FooClientStream(&ffiDartGreeterServiceFooClientStreamStream{stream})
+	case "/example.v1.DartGreeterService/FooBidiStream":
+		// Bidi streaming (zero-copy)
+		return i.server.FooBidiStream(&ffiDartGreeterServiceFooBidiStreamStream{stream})
+	case "/example.v1.DartGreeterService/DartUploadFile":
+		// Client streaming (zero-copy)
+		return i.server.DartUploadFile(&ffiDartGreeterServiceDartUploadFileStream{stream})
+	case "/example.v1.DartGreeterService/DartDownloadFile":
+		// Server streaming (zero-copy)
+		reqMsg, err := stream.RecvMsgDirect()
+		if err != nil {
+			return err
+		}
+		req := reqMsg.(*DownloadFileRequest)
+		return i.server.DartDownloadFile(req, &ffiDartGreeterServiceDartDownloadFileStream{stream})
+	case "/example.v1.DartGreeterService/DartBidiFile":
+		// Bidi streaming (zero-copy)
+		return i.server.DartBidiFile(&ffiDartGreeterServiceDartBidiFileStream{stream})
+	default:
+		return fmt.Errorf("unknown streaming method: %s", method)
+	}
+}
+
+var _ synurang.Invoker = (*dartGreeterServiceFfiInvoker)(nil)
+
+// =============================================================================
+// DartGreeterService FFI Client - convenience wrapper for synurang.FfiClientConn
+// =============================================================================
+
+func NewDartGreeterServiceFfiClientConn(server DartGreeterServiceFfiServer) grpc.ClientConnInterface {
+	return synurang.NewFfiClientConn(&dartGreeterServiceFfiInvoker{server: server})
 }
 
 // =============================================================================
@@ -845,217 +1146,6 @@ func (s *grpcDartGreeterServiceDartBidiFileStream) Recv() (*FileChunk, error) {
 }
 
 var _ DartGreeterService_DartBidiFileServer = (*grpcDartGreeterServiceDartBidiFileStream)(nil)
-
-// =============================================================================
-// FFI Invoker - wraps FfiServer to implement synurang.Invoker interface
-// =============================================================================
-
-// ffiInvoker wraps FfiServer to implement the synurang.Invoker interface.
-// This allows using the synurang runtime's FfiClientConn with generated code.
-// Uses zero-copy: proto.Message pointers are passed directly without serialization.
-type ffiInvoker struct {
-	server FfiServer
-}
-
-// Invoke implements synurang.UnaryInvoker (zero-copy).
-func (i *ffiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
-	switch method {
-	case "/example.v1.GoGreeterService/Bar":
-		resp, err := i.server.Bar(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/BarServerStream":
-		resp, err := i.server.BarServerStreamInternal(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/BarClientStream":
-		resp, err := i.server.BarClientStreamInternal(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/BarBidiStream":
-		resp, err := i.server.BarBidiStreamInternal(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/UploadFile":
-		resp, err := i.server.UploadFileInternal(ctx, req.(*FileChunk))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/DownloadFile":
-		resp, err := i.server.DownloadFileInternal(ctx, req.(*DownloadFileRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/BidiFile":
-		resp, err := i.server.BidiFileInternal(ctx, req.(*FileChunk))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/Trigger":
-		resp, err := i.server.Trigger(ctx, req.(*TriggerRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.GoGreeterService/GetGoroutines":
-		resp, err := i.server.GetGoroutines(ctx, req.(*GoroutinesRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.DartGreeterService/Foo":
-		resp, err := i.server.Foo(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.DartGreeterService/FooServerStream":
-		resp, err := i.server.FooServerStreamInternal(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.DartGreeterService/FooClientStream":
-		resp, err := i.server.FooClientStreamInternal(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.DartGreeterService/FooBidiStream":
-		resp, err := i.server.FooBidiStreamInternal(ctx, req.(*HelloRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.DartGreeterService/DartUploadFile":
-		resp, err := i.server.DartUploadFileInternal(ctx, req.(*FileChunk))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.DartGreeterService/DartDownloadFile":
-		resp, err := i.server.DartDownloadFileInternal(ctx, req.(*DownloadFileRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/example.v1.DartGreeterService/DartBidiFile":
-		resp, err := i.server.DartBidiFileInternal(ctx, req.(*FileChunk))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	default:
-		return fmt.Errorf("unknown method: %s", method)
-	}
-}
-
-// InvokeStream implements synurang.StreamInvoker (zero-copy).
-func (i *ffiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {
-	switch method {
-	case "/example.v1.GoGreeterService/BarServerStream":
-		// Server streaming (zero-copy)
-		reqMsg, err := stream.RecvMsgDirect()
-		if err != nil {
-			return err
-		}
-		req := reqMsg.(*HelloRequest)
-		return i.server.BarServerStream(req, &ffiGoGreeterServiceBarServerStreamStream{stream})
-	case "/example.v1.GoGreeterService/BarClientStream":
-		// Client streaming (zero-copy)
-		return i.server.BarClientStream(&ffiGoGreeterServiceBarClientStreamStream{stream})
-	case "/example.v1.GoGreeterService/BarBidiStream":
-		// Bidi streaming (zero-copy)
-		return i.server.BarBidiStream(&ffiGoGreeterServiceBarBidiStreamStream{stream})
-	case "/example.v1.GoGreeterService/UploadFile":
-		// Client streaming (zero-copy)
-		return i.server.UploadFile(&ffiGoGreeterServiceUploadFileStream{stream})
-	case "/example.v1.GoGreeterService/DownloadFile":
-		// Server streaming (zero-copy)
-		reqMsg, err := stream.RecvMsgDirect()
-		if err != nil {
-			return err
-		}
-		req := reqMsg.(*DownloadFileRequest)
-		return i.server.DownloadFile(req, &ffiGoGreeterServiceDownloadFileStream{stream})
-	case "/example.v1.GoGreeterService/BidiFile":
-		// Bidi streaming (zero-copy)
-		return i.server.BidiFile(&ffiGoGreeterServiceBidiFileStream{stream})
-	case "/example.v1.DartGreeterService/FooServerStream":
-		// Server streaming (zero-copy)
-		reqMsg, err := stream.RecvMsgDirect()
-		if err != nil {
-			return err
-		}
-		req := reqMsg.(*HelloRequest)
-		return i.server.FooServerStream(req, &ffiDartGreeterServiceFooServerStreamStream{stream})
-	case "/example.v1.DartGreeterService/FooClientStream":
-		// Client streaming (zero-copy)
-		return i.server.FooClientStream(&ffiDartGreeterServiceFooClientStreamStream{stream})
-	case "/example.v1.DartGreeterService/FooBidiStream":
-		// Bidi streaming (zero-copy)
-		return i.server.FooBidiStream(&ffiDartGreeterServiceFooBidiStreamStream{stream})
-	case "/example.v1.DartGreeterService/DartUploadFile":
-		// Client streaming (zero-copy)
-		return i.server.DartUploadFile(&ffiDartGreeterServiceDartUploadFileStream{stream})
-	case "/example.v1.DartGreeterService/DartDownloadFile":
-		// Server streaming (zero-copy)
-		reqMsg, err := stream.RecvMsgDirect()
-		if err != nil {
-			return err
-		}
-		req := reqMsg.(*DownloadFileRequest)
-		return i.server.DartDownloadFile(req, &ffiDartGreeterServiceDartDownloadFileStream{stream})
-	case "/example.v1.DartGreeterService/DartBidiFile":
-		// Bidi streaming (zero-copy)
-		return i.server.DartBidiFile(&ffiDartGreeterServiceDartBidiFileStream{stream})
-	default:
-		return fmt.Errorf("unknown streaming method: %s", method)
-	}
-}
 
 // =============================================================================
 // Stream Wrappers (zero-copy)
@@ -1304,13 +1394,3 @@ func (s *ffiDartGreeterServiceDartBidiFileStream) Recv() (*FileChunk, error) {
 }
 
 var _ DartGreeterService_DartBidiFileServer = (*ffiDartGreeterServiceDartBidiFileStream)(nil)
-
-var _ synurang.Invoker = (*ffiInvoker)(nil)
-
-// =============================================================================
-// FFI Client - convenience wrapper for synurang.FfiClientConn
-// =============================================================================
-
-func NewFfiClientConn(server FfiServer) grpc.ClientConnInterface {
-	return synurang.NewFfiClientConn(&ffiInvoker{server: server})
-}

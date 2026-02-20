@@ -1,0 +1,66 @@
+{{define "rust_native_invoke"}}
+    match plugin.{{snakeCase .Name}}(req) {
+{{- if eq .OutputWKT "Empty"}}
+        Ok(_) => { clear_last_error(); 0 },
+{{- else if .OutputIsHandle}}
+        Ok(r) => { clear_last_error(); r.id },
+{{- else if eq .OutputWKT "Int32Value"}}
+        Ok(r) => { clear_last_error(); r.value },
+{{- else if eq .OutputWKT "BoolValue"}}
+        Ok(r) => { clear_last_error(); if r.value { 1 } else { 0 } },
+{{- else if eq .OutputWKT "DoubleValue"}}
+        Ok(r) => { clear_last_error(); r.value },
+{{- else if eq .OutputWKT "StringValue"}}
+        Ok(r) => {
+            clear_last_error();
+            let bytes = r.value.into_bytes();
+            if !out_len.is_null() { *out_len = bytes.len() as i32; }
+            alloc_payload_with_header(bytes)
+        },
+{{- else}}
+        Ok(r) => {
+            clear_last_error();
+            let mut buf = Vec::new();
+            if r.encode(&mut buf).is_ok() {
+                if !out_len.is_null() { *out_len = buf.len() as i32; }
+                alloc_payload_with_header(buf)
+            } else {
+                if !out_len.is_null() { *out_len = 0; }
+                std::ptr::null_mut()
+            }
+        },
+{{- end}}
+        Err(e) => { set_last_error(e); {{nativeErrReturn .}} },
+    }
+{{- end}}
+
+{{define "rust_wasm_invoke" -}}
+{{- if eq .OutputWKT "Empty"}}
+    match plugin.{{snakeCase .Name}}(req) {
+        Ok(_) => clear_last_error(),
+        Err(e) => { set_last_error(e); },
+    }
+{{- else}}
+    match plugin.{{snakeCase .Name}}(req) {
+{{- if .OutputIsHandle}}
+        Ok(r) => { clear_last_error(); r.id },
+{{- else if eq .OutputWKT "Int32Value"}}
+        Ok(r) => { clear_last_error(); r.value },
+{{- else if eq .OutputWKT "BoolValue"}}
+        Ok(r) => { clear_last_error(); r.value },
+{{- else if eq .OutputWKT "DoubleValue"}}
+        Ok(r) => { clear_last_error(); r.value },
+{{- else if eq .OutputWKT "StringValue"}}
+        Ok(r) => { clear_last_error(); r.value },
+{{- else}}
+        Ok(r) => {
+            clear_last_error();
+            let mut buf = Vec::new();
+            let _ = r.encode(&mut buf);
+            buf
+        },
+{{- end}}
+        Err(e) => { set_last_error(e); {{wasmErrReturn .}} },
+    }
+{{- end}}
+{{- end}}

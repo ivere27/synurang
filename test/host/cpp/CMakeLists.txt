@@ -67,12 +67,16 @@ if(ENABLE_PROCESS_BRUTE)
         ${PROTO_OUT_DIR}/example.grpc.pb.cc
         ${PROTO_OUT_DIR}/core.pb.cc
         ${PROTO_OUT_DIR}/core.grpc.pb.cc
+        ${PROTO_OUT_DIR}/cache.pb.cc
+        ${PROTO_OUT_DIR}/cache.grpc.pb.cc
     )
     set(PROTO_HDRS
         ${PROTO_OUT_DIR}/example.pb.h
         ${PROTO_OUT_DIR}/example.grpc.pb.h
         ${PROTO_OUT_DIR}/core.pb.h
         ${PROTO_OUT_DIR}/core.grpc.pb.h
+        ${PROTO_OUT_DIR}/cache.pb.h
+        ${PROTO_OUT_DIR}/cache.grpc.pb.h
     )
 
     add_custom_command(
@@ -86,9 +90,11 @@ if(ENABLE_PROCESS_BRUTE)
             -I${API_DIR}
             ${EXAMPLE_API_DIR}/example.proto
             ${API_DIR}/core.proto
+            ${API_DIR}/cache.proto
         DEPENDS
             ${EXAMPLE_API_DIR}/example.proto
             ${API_DIR}/core.proto
+            ${API_DIR}/cache.proto
         COMMENT "Generating process-mode protobuf/grpc C++ sources"
     )
 

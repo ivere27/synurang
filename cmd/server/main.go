@@ -52,6 +52,7 @@ import (
 	"os/signal"
 	goruntime "runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -83,6 +84,17 @@ var (
 	// Stream callback for server/bidi streaming
 	streamCallback C.StreamCallback
 )
+
+func invokeCoreFfiByMethod(s *service.CoreServiceServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {
+	switch {
+	case strings.HasPrefix(method, "/core.v1.HealthService/"):
+		return pb.HealthServiceInvokeFfi(s, ctx, method, data)
+	case strings.HasPrefix(method, "/core.v1.CacheService/"):
+		return pb.CacheServiceInvokeFfi(s, ctx, method, data)
+	default:
+		return nil, 0, fmt.Errorf("unknown method: %s", method)
+	}
+}
 
 func init() {
 	log.SetFlags(log.Ldate | log.Ltime)
@@ -267,8 +279,8 @@ func InvokeBackend(method *C.char, data unsafe.Pointer, dataLen C.longlong) C.Ff
 	goMethod := C.GoString(method)
 	goData := unsafe.Slice((*byte)(data), int(dataLen))
 
-	// Zero-copy: InvokeFfi allocates C memory and serializes directly
-	cPtr, size, err := pb.InvokeFfi(localImpl, context.Background(), goMethod, goData)
+	// Zero-copy: service-scoped dispatchers allocate C memory and serialize directly
+	cPtr, size, err := invokeCoreFfiByMethod(localImpl, context.Background(), goMethod, goData)
 
 	if err != nil {
 		log.Printf("Invoke error: %v", err)
@@ -387,8 +399,8 @@ func InvokeBackendWithMeta(method *C.char, data unsafe.Pointer, dataLen C.longlo
 	// Metadata available in 'metadata' map for handlers that need it
 	_ = metadata
 
-	// Zero-copy: InvokeFfi allocates C memory and serializes directly
-	cPtr, size, err := pb.InvokeFfi(localImpl, ctx, goMethod, goData)
+	// Zero-copy: service-scoped dispatchers allocate C memory and serialize directly
+	cPtr, size, err := invokeCoreFfiByMethod(localImpl, ctx, goMethod, goData)
 
 	if err != nil {
 		st, ok := status.FromError(err)

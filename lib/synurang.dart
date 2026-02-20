@@ -58,6 +58,9 @@ import 'synurang_bindings_generated.dart';
 export 'src/generated/core.pb.dart' hide PingResponse;
 export 'src/generated/core.pbgrpc.dart';
 export 'src/generated/core_ffi.pb.dart';
+export 'src/generated/cache.pb.dart';
+export 'src/generated/cache.pbgrpc.dart';
+export 'src/generated/cache_ffi.pb.dart';
 
 // Re-export well-known types
 export 'package:protobuf/well_known_types/google/protobuf/any.pb.dart';

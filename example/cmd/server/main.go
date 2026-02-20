@@ -311,11 +311,18 @@ func InvokeBackend(method *C.char, data unsafe.Pointer, dataLen C.longlong) C.Ff
 	var resp []byte
 	var err error
 
-	// Route to the correct dispatcher (each .proto has its own Invoke)
-	if strings.HasPrefix(goMethod, "/example.v1.") {
-		resp, err = example_pb.Invoke(localGreeter, context.Background(), goMethod, goData)
-	} else {
-		resp, err = pb.Invoke(localCore, context.Background(), goMethod, goData)
+	// Route to the correct service dispatcher.
+	switch {
+	case strings.HasPrefix(goMethod, "/example.v1.GoGreeterService/"):
+		resp, err = example_pb.GoGreeterServiceInvoke(localGreeter, context.Background(), goMethod, goData)
+	case strings.HasPrefix(goMethod, "/example.v1.DartGreeterService/"):
+		resp, err = example_pb.DartGreeterServiceInvoke(localGreeter, context.Background(), goMethod, goData)
+	case strings.HasPrefix(goMethod, "/core.v1.HealthService/"):
+		resp, err = pb.HealthServiceInvoke(localCore, context.Background(), goMethod, goData)
+	case strings.HasPrefix(goMethod, "/core.v1.CacheService/"):
+		resp, err = pb.CacheServiceInvoke(localCore, context.Background(), goMethod, goData)
+	default:
+		err = fmt.Errorf("unknown method: %s", goMethod)
 	}
 
 	// ==========================================================================
@@ -325,10 +332,17 @@ func InvokeBackend(method *C.char, data unsafe.Pointer, dataLen C.longlong) C.Ff
 	// var cPtr unsafe.Pointer
 	// var size int64
 	// var err error
-	// if strings.HasPrefix(goMethod, "/example.v1.") {
-	// 	cPtr, size, err = example_pb.InvokeFfi(localGreeter, context.Background(), goMethod, goData)
-	// } else {
-	// 	cPtr, size, err = pb.InvokeFfi(localCore, context.Background(), goMethod, goData)
+	// switch {
+	// case strings.HasPrefix(goMethod, "/example.v1.GoGreeterService/"):
+	// 	cPtr, size, err = example_pb.GoGreeterServiceInvokeFfi(localGreeter, context.Background(), goMethod, goData)
+	// case strings.HasPrefix(goMethod, "/example.v1.DartGreeterService/"):
+	// 	cPtr, size, err = example_pb.DartGreeterServiceInvokeFfi(localGreeter, context.Background(), goMethod, goData)
+	// case strings.HasPrefix(goMethod, "/core.v1.HealthService/"):
+	// 	cPtr, size, err = pb.HealthServiceInvokeFfi(localCore, context.Background(), goMethod, goData)
+	// case strings.HasPrefix(goMethod, "/core.v1.CacheService/"):
+	// 	cPtr, size, err = pb.CacheServiceInvokeFfi(localCore, context.Background(), goMethod, goData)
+	// default:
+	// 	err = fmt.Errorf("unknown method: %s", goMethod)
 	// }
 	// if err == nil {
 	// 	return C.FfiData{data: cPtr, len: C.longlong(size)}

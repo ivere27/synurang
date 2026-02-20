@@ -19,19 +19,18 @@ import (
 )
 
 // =============================================================================
-// FFI Server Interface
+// HealthService FFI Server Interface
 // =============================================================================
 
-type FfiServer interface {
+type HealthServiceFfiServer interface {
 	HealthServiceServer
-	CacheServiceServer
 }
 
 // =============================================================================
-// Invoke - returns []byte (for TCP/UDS)
+// HealthService Invoke - returns []byte (for TCP/UDS)
 // =============================================================================
 
-func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
+func HealthServiceInvoke(s HealthServiceFfiServer, ctx context.Context, method string, data []byte) ([]byte, error) {
 	switch method {
 	case "/core.v1.HealthService/Ping":
 		req := &empty.Empty{}
@@ -39,106 +38,6 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
 		}
 		resp, err := s.Ping(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/Get":
-		req := &GetCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Get(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/Put":
-		req := &PutCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Put(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/Delete":
-		req := &DeleteCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Delete(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/Clear":
-		req := &ClearCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Clear(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/Contains":
-		req := &GetCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Contains(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/Keys":
-		req := &GetCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Keys(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/SetMaxEntries":
-		req := &SetMaxEntriesRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.SetMaxEntries(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/SetMaxBytes":
-		req := &SetMaxBytesRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.SetMaxBytes(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/GetStats":
-		req := &GetStatsRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.GetStats(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		return proto.Marshal(resp)
-	case "/core.v1.CacheService/Compact":
-		req := &empty.Empty{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Compact(ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -149,13 +48,13 @@ func Invoke(s FfiServer, ctx context.Context, method string, data []byte) ([]byt
 }
 
 // =============================================================================
-// InvokeFfi - returns C pointer (for zero-copy FFI)
+// HealthService InvokeFfi - returns C pointer (for zero-copy FFI)
 // =============================================================================
 
-// InvokeFfi is the zero-copy variant for FFI mode.
+// HealthServiceInvokeFfi is the zero-copy variant for FFI mode.
 // It allocates C memory and serializes directly into it.
 // Caller is responsible for freeing the returned pointer via C.free().
-func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {
+func HealthServiceInvokeFfi(s HealthServiceFfiServer, ctx context.Context, method string, data []byte) (unsafe.Pointer, int64, error) {
 	switch method {
 	case "/core.v1.HealthService/Ping":
 		req := &empty.Empty{}
@@ -163,246 +62,6 @@ func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (un
 			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
 		}
 		resp, err := s.Ping(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/Get":
-		req := &GetCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Get(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/Put":
-		req := &PutCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Put(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/Delete":
-		req := &DeleteCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Delete(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/Clear":
-		req := &ClearCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Clear(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/Contains":
-		req := &GetCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Contains(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/Keys":
-		req := &GetCacheRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Keys(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/SetMaxEntries":
-		req := &SetMaxEntriesRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.SetMaxEntries(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/SetMaxBytes":
-		req := &SetMaxBytesRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.SetMaxBytes(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/GetStats":
-		req := &GetStatsRequest{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.GetStats(ctx, req)
-		if err != nil {
-			return nil, 0, err
-		}
-		// Zero-copy: allocate C memory and serialize directly
-		size := proto.Size(resp)
-		if size == 0 {
-			return nil, 0, nil
-		}
-		cPtr := C.malloc(C.size_t(size))
-		if cPtr == nil {
-			return nil, 0, fmt.Errorf("failed to allocate memory for response")
-		}
-		buf := unsafe.Slice((*byte)(cPtr), size)
-		if _, err := (proto.MarshalOptions{}).MarshalAppend(buf[:0], resp); err != nil {
-			C.free(cPtr)
-			return nil, 0, err
-		}
-		return cPtr, int64(size), nil
-	case "/core.v1.CacheService/Compact":
-		req := &empty.Empty{}
-		if err := proto.Unmarshal(data, req); err != nil {
-			return nil, 0, fmt.Errorf("failed to unmarshal request: %w", err)
-		}
-		resp, err := s.Compact(ctx, req)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -427,101 +86,21 @@ func InvokeFfi(s FfiServer, ctx context.Context, method string, data []byte) (un
 }
 
 // =============================================================================
-// FFI Invoker - wraps FfiServer to implement synurang.Invoker interface
+// HealthService FFI Invoker - wraps HealthServiceFfiServer
 // =============================================================================
 
-// ffiInvoker wraps FfiServer to implement the synurang.Invoker interface.
+// healthServiceFfiInvoker wraps HealthServiceFfiServer to implement the synurang.Invoker interface.
 // This allows using the synurang runtime's FfiClientConn with generated code.
 // Uses zero-copy: proto.Message pointers are passed directly without serialization.
-type ffiInvoker struct {
-	server FfiServer
+type healthServiceFfiInvoker struct {
+	server HealthServiceFfiServer
 }
 
 // Invoke implements synurang.UnaryInvoker (zero-copy).
-func (i *ffiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
+func (i *healthServiceFfiInvoker) Invoke(ctx context.Context, method string, req, reply proto.Message) error {
 	switch method {
 	case "/core.v1.HealthService/Ping":
 		resp, err := i.server.Ping(ctx, req.(*empty.Empty))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/Get":
-		resp, err := i.server.Get(ctx, req.(*GetCacheRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/Put":
-		resp, err := i.server.Put(ctx, req.(*PutCacheRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/Delete":
-		resp, err := i.server.Delete(ctx, req.(*DeleteCacheRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/Clear":
-		resp, err := i.server.Clear(ctx, req.(*ClearCacheRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/Contains":
-		resp, err := i.server.Contains(ctx, req.(*GetCacheRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/Keys":
-		resp, err := i.server.Keys(ctx, req.(*GetCacheRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/SetMaxEntries":
-		resp, err := i.server.SetMaxEntries(ctx, req.(*SetMaxEntriesRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/SetMaxBytes":
-		resp, err := i.server.SetMaxBytes(ctx, req.(*SetMaxBytesRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/GetStats":
-		resp, err := i.server.GetStats(ctx, req.(*GetStatsRequest))
-		if err != nil {
-			return err
-		}
-		// Use proto.Merge to avoid copying mutex in MessageState
-		proto.Merge(reply.(proto.Message), resp)
-		return nil
-	case "/core.v1.CacheService/Compact":
-		resp, err := i.server.Compact(ctx, req.(*empty.Empty))
 		if err != nil {
 			return err
 		}
@@ -534,19 +113,19 @@ func (i *ffiInvoker) Invoke(ctx context.Context, method string, req, reply proto
 }
 
 // InvokeStream implements synurang.StreamInvoker (zero-copy).
-func (i *ffiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {
+func (i *healthServiceFfiInvoker) InvokeStream(ctx context.Context, method string, stream synurang.ServerStream) error {
 	switch method {
 	default:
 		return fmt.Errorf("unknown streaming method: %s", method)
 	}
 }
 
-var _ synurang.Invoker = (*ffiInvoker)(nil)
+var _ synurang.Invoker = (*healthServiceFfiInvoker)(nil)
 
 // =============================================================================
-// FFI Client - convenience wrapper for synurang.FfiClientConn
+// HealthService FFI Client - convenience wrapper for synurang.FfiClientConn
 // =============================================================================
 
-func NewFfiClientConn(server FfiServer) grpc.ClientConnInterface {
-	return synurang.NewFfiClientConn(&ffiInvoker{server: server})
+func NewHealthServiceFfiClientConn(server HealthServiceFfiServer) grpc.ClientConnInterface {
+	return synurang.NewFfiClientConn(&healthServiceFfiInvoker{server: server})
 }

@@ -56,6 +56,7 @@ android {
 val copyProtos = tasks.register<Copy>("copyProtos") {
     from("../../../api/example.proto")  // example/api/example.proto
     from("../../../../api/core.proto")  // api/core.proto
+    from("../../../../api/cache.proto") // api/cache.proto
     from("../../api/media.proto")       // example/java/api/media.proto
     into("src/main/proto")
 }
@@ -104,5 +105,5 @@ dependencies {
     compileOnly("javax.annotation:javax.annotation-api:1.3.2")
 
     // Synurang Java host library (local project)
-    implementation(files("../../../../java/build/libs/java.jar"))
+    implementation(files("../../../../build/java/libs/java.jar"))
 }

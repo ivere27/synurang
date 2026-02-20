@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
 
         .compile(
-            &["../../../example/api/example.proto", "../../../api/core.proto"],
+            &["../../../example/api/example.proto", "../../../api/core.proto", "../../../api/cache.proto"],
             &["../../../example/api", "../../../api"],
         )?;
     Ok(())

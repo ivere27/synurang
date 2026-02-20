@@ -1,0 +1,84 @@
+syntax = "proto3";
+package nativetest.v1;
+
+import "google/protobuf/empty.proto";
+import "core.proto";
+
+option go_package = "github.com/ivere27/synurang/test/api";
+
+// Service exercising edge cases for native/wasm codegen.
+service NativeTestService {
+  // Empty request — tests zero-field signature.
+  rpc Ping(google.protobuf.Empty) returns (core.v1.PingResponse);
+
+  // Empty request + empty return — tests void prototype.
+  rpc NoOp(google.protobuf.Empty) returns (google.protobuf.Empty);
+
+  // All scalar types including uint64.
+  rpc ScalarTypes(ScalarRequest) returns (ScalarResponse);
+
+  // Imported request type from another proto file.
+  rpc ImportedInput(core.v1.Error) returns (google.protobuf.Empty);
+
+  // Oneof field — must route to _pb variant.
+  rpc OneofInput(OneofRequest) returns (google.protobuf.Empty);
+
+  // Repeated field — must route to _pb variant.
+  rpc RepeatedInput(RepeatedRequest) returns (google.protobuf.Empty);
+
+  // Mixed: repeated + oneof — must route to _pb variant.
+  rpc MixedInput(MixedRequest) returns (google.protobuf.Empty);
+
+  // Map field — must route to _pb variant.
+  rpc MapInput(MapRequest) returns (google.protobuf.Empty);
+
+  // Recursive message — must not crash the generator.
+  rpc TreeOp(TreeNode) returns (google.protobuf.Empty);
+}
+
+message ScalarRequest {
+  int32 a = 1;
+  int64 b = 2;
+  uint32 c = 3;
+  uint64 d = 4;
+  float e = 5;
+  double f = 6;
+  bool g = 7;
+  string h = 8;
+  bytes i = 9;
+}
+
+message ScalarResponse {
+  int64 result = 1;
+}
+
+message OneofRequest {
+  string name = 1;
+  oneof value {
+    string text = 2;
+    int32 number = 3;
+  }
+}
+
+message RepeatedRequest {
+  repeated string items = 1;
+}
+
+message MixedRequest {
+  repeated int32 ids = 1;
+  oneof filter {
+    string name = 2;
+    int32 code = 3;
+  }
+}
+
+message MapRequest {
+  map<string, string> tags = 1;
+  string name = 2;
+}
+
+// Self-referential message — regression test for collectMessage cycle handling.
+message TreeNode {
+  string name = 1;
+  TreeNode child = 2;
+}

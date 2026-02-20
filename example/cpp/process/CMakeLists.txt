@@ -14,7 +14,7 @@ set(API_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../api)
 set(EXAMPLE_API_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../example/api)
 
 # Generate proto files
-set(PROTO_FILES ${EXAMPLE_API_DIR}/example.proto ${API_DIR}/core.proto)
+set(PROTO_FILES ${EXAMPLE_API_DIR}/example.proto ${API_DIR}/core.proto ${API_DIR}/cache.proto)
 set(PROTO_SRCS)
 set(PROTO_HDRS)
 foreach(PROTO_FILE ${PROTO_FILES})

@@ -22,7 +22,7 @@ import (
 // Mock FfiServer Implementation
 // =============================================================================
 
-// MockFfiServer implements FfiServer for testing Go-to-Go FFI calls.
+// MockFfiServer implements both HealthServiceFfiServer and CacheServiceFfiServer for testing.
 type MockFfiServer struct {
 	UnimplementedHealthServiceServer
 	UnimplementedCacheServiceServer
@@ -100,7 +100,7 @@ func (s *MockFfiServer) Clear(ctx context.Context, req *ClearCacheRequest) (*emp
 
 	prefix := req.StoreName + ":"
 	for k := range s.cache {
-		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			delete(s.cache, k)
 		}
 	}
@@ -123,7 +123,7 @@ func (s *MockFfiServer) Contains(ctx context.Context, req *GetCacheRequest) (*wr
 
 func TestFfiClientConn_Ping(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewHealthServiceFfiClientConn(server)
 
 	client := NewHealthServiceClient(conn)
 	resp, err := client.Ping(context.Background(), &empty.Empty{})
@@ -144,7 +144,7 @@ func TestFfiClientConn_Ping(t *testing.T) {
 
 func TestFfiClientConn_CachePutAndGet(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewCacheServiceFfiClientConn(server)
 
 	client := NewCacheServiceClient(conn)
 	ctx := context.Background()
@@ -175,7 +175,7 @@ func TestFfiClientConn_CachePutAndGet(t *testing.T) {
 
 func TestFfiClientConn_CacheContains(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewCacheServiceFfiClientConn(server)
 
 	client := NewCacheServiceClient(conn)
 	ctx := context.Background()
@@ -217,7 +217,7 @@ func TestFfiClientConn_CacheContains(t *testing.T) {
 
 func TestFfiClientConn_CacheDelete(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewCacheServiceFfiClientConn(server)
 
 	client := NewCacheServiceClient(conn)
 	ctx := context.Background()
@@ -256,7 +256,7 @@ func TestFfiClientConn_CacheDelete(t *testing.T) {
 
 func TestFfiClientConn_CacheClear(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewCacheServiceFfiClientConn(server)
 
 	client := NewCacheServiceClient(conn)
 	ctx := context.Background()
@@ -298,7 +298,7 @@ func TestFfiClientConn_CacheClear(t *testing.T) {
 
 func TestFfiClientConn_MultipleSequentialCalls(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewHealthServiceFfiClientConn(server)
 
 	client := NewHealthServiceClient(conn)
 	ctx := context.Background()
@@ -320,7 +320,7 @@ func TestFfiClientConn_MultipleSequentialCalls(t *testing.T) {
 
 func TestFfiClientConn_ConcurrentCalls(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewHealthServiceFfiClientConn(server)
 
 	client := NewHealthServiceClient(conn)
 	ctx := context.Background()
@@ -357,8 +357,8 @@ func TestFfiClientConn_MultipleClients(t *testing.T) {
 	server := NewMockFfiServer()
 
 	// Create multiple clients sharing the same server
-	conn1 := NewFfiClientConn(server)
-	conn2 := NewFfiClientConn(server)
+	conn1 := NewHealthServiceFfiClientConn(server)
+	conn2 := NewHealthServiceFfiClientConn(server)
 
 	client1 := NewHealthServiceClient(conn1)
 	client2 := NewHealthServiceClient(conn2)
@@ -386,7 +386,7 @@ func TestFfiClientConn_MultipleClients(t *testing.T) {
 
 func TestFfiClientConn_ContextTimeout(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewHealthServiceFfiClientConn(server)
 
 	client := NewHealthServiceClient(conn)
 
@@ -405,7 +405,7 @@ func TestFfiClientConn_ContextTimeout(t *testing.T) {
 
 func TestFfiClientConn_LargePayload(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewCacheServiceFfiClientConn(server)
 
 	client := NewCacheServiceClient(conn)
 	ctx := context.Background()
@@ -450,7 +450,7 @@ func TestFfiClientConn_LargePayload(t *testing.T) {
 
 func TestFfiClientConn_EmptyResponse(t *testing.T) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewCacheServiceFfiClientConn(server)
 
 	client := NewCacheServiceClient(conn)
 	ctx := context.Background()
@@ -470,13 +470,14 @@ func TestFfiClientConn_EmptyResponse(t *testing.T) {
 
 func TestFfiClientConn_DropInReplacement(t *testing.T) {
 	// This test demonstrates that FfiClientConn is a drop-in replacement
-	// for grpc.ClientConn - you can use the same generated client code
+	// for grpc.ClientConn — each proto file produces its own conn builder
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	coreConn := NewHealthServiceFfiClientConn(server)
+	cacheConn := NewCacheServiceFfiClientConn(server)
 
 	// Use standard generated client - same API as with real gRPC
-	healthClient := NewHealthServiceClient(conn)
-	cacheClient := NewCacheServiceClient(conn)
+	healthClient := NewHealthServiceClient(coreConn)
+	cacheClient := NewCacheServiceClient(cacheConn)
 
 	ctx := context.Background()
 
@@ -518,7 +519,7 @@ func TestFfiClientConn_DropInReplacement(t *testing.T) {
 
 func BenchmarkFfiClientConn_Ping(b *testing.B) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewHealthServiceFfiClientConn(server)
 
 	client := NewHealthServiceClient(conn)
 	ctx := context.Background()
@@ -534,7 +535,7 @@ func BenchmarkFfiClientConn_Ping(b *testing.B) {
 
 func BenchmarkFfiClientConn_CachePutGet(b *testing.B) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewCacheServiceFfiClientConn(server)
 
 	client := NewCacheServiceClient(conn)
 	ctx := context.Background()
@@ -565,7 +566,7 @@ func BenchmarkFfiClientConn_CachePutGet(b *testing.B) {
 
 func BenchmarkFfiClientConn_Parallel(b *testing.B) {
 	server := NewMockFfiServer()
-	conn := NewFfiClientConn(server)
+	conn := NewHealthServiceFfiClientConn(server)
 
 	client := NewHealthServiceClient(conn)
 	ctx := context.Background()

@@ -17,6 +17,9 @@
 #include <vector>
 
 #include "{{.PbHeaderFile}}"
+{{- range .CppDepHeaders}}
+#include "{{.}}"
+{{- end}}
 
 {{if .CppNamespace}}
 namespace {{.CppNamespace}} {
@@ -52,14 +55,14 @@ public:
 
 {{- range $m := .Methods}}
 {{- if $m.IsUnary}}
-    virtual {{$m.OutputType}} {{$m.GoName}}(const {{$m.InputType}}& request) = 0;
+    virtual {{$m.OutputCppType}} {{$m.GoName}}(const {{$m.InputCppType}}& request) = 0;
 {{- else if $m.IsServerStreaming}}
-    virtual void {{$m.GoName}}(const {{$m.InputType}}& request, 
-                                PluginStream<{{$m.InputType}}, {{$m.OutputType}}>* stream) = 0;
+    virtual void {{$m.GoName}}(const {{$m.InputCppType}}& request, 
+                                PluginStream<{{$m.InputCppType}}, {{$m.OutputCppType}}>* stream) = 0;
 {{- else if $m.IsClientStreaming}}
-    virtual {{$m.OutputType}} {{$m.GoName}}(PluginStream<{{$m.InputType}}, {{$m.OutputType}}>* stream) = 0;
+    virtual {{$m.OutputCppType}} {{$m.GoName}}(PluginStream<{{$m.InputCppType}}, {{$m.OutputCppType}}>* stream) = 0;
 {{- else if $m.IsBidiStreaming}}
-    virtual void {{$m.GoName}}(PluginStream<{{$m.InputType}}, {{$m.OutputType}}>* stream) = 0;
+    virtual void {{$m.GoName}}(PluginStream<{{$m.InputCppType}}, {{$m.OutputCppType}}>* stream) = 0;
 {{- end}}
 {{- end}}
 };

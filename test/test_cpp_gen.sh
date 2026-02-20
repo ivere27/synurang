@@ -34,8 +34,8 @@ if ! grep -q '#include "core.pb.h"' "$CORE_FFI"; then
     exit 1
 fi
 
-if ! grep -q 'class FfiServer' "$CORE_FFI"; then
-    echo "Error: core_ffi.h missing FfiServer class!"
+if ! grep -q 'class HealthServiceFfiServer' "$CORE_FFI"; then
+    echo "Error: core_ffi.h missing HealthServiceFfiServer class!"
     exit 1
 fi
 

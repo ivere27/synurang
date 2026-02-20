@@ -9,7 +9,7 @@ FFI and IPC transport for gRPC. Implements `grpc.ClientConnInterface` — same c
 conn, _ := grpc.Dial("localhost:50051")
 
 // Synurang FFI - source (compiled-in backend)
-conn := synurang.NewFfiClientConn(server)
+conn := api.NewMyServiceFfiClientConn(server)
 
 // Synurang FFI - plugin (loaded at runtime)
 plugin := synurang.LoadPlugin("./plugin.so")
@@ -525,7 +525,7 @@ await cachePutRaw(store, key, data, ttl);
 
 ```go
 // FFI client connection (for embeddable libraries)
-conn := api.NewFfiClientConn(server)
+conn := api.NewMyServiceFfiClientConn(server)
 client := pb.NewMyServiceClient(conn)
 
 // Plugin loader
