@@ -40,6 +40,9 @@ go install github.com/ivere27/synurang/cmd/protoc-gen-synurang-ffi@latest
 
 # Generate FFI bindings from your .proto
 protoc --synurang-ffi_out=. --synurang-ffi_opt=lang=go service.proto
+
+# Generate native C ABI (flattened parameters, no protobuf at call site)
+protoc --synurang-ffi_out=. --synurang-ffi_opt=lang=rust,mode=native service.proto
 ```
 
 See [Installation & Quick Start](#-installation--quick-start) for the full setup.
@@ -71,6 +74,27 @@ All four gRPC patterns work: unary, server streaming, client streaming, and bidi
 | **TCP/UDS** | Standard network gRPC | Debugging, distributed |
 
 FFI and TCP/UDS run simultaneously on the same server.
+
+### Code Generation Modes
+
+The `mode` parameter controls what kind of code is generated.
+
+| Language | Mode | Output | Description |
+|----------|------|--------|-------------|
+| go | *(default)* | `_ffi.pb.go` | gRPC FFI client/server bindings |
+| dart | *(default)* | `_ffi.pb.dart` | Dart FFI client |
+| cpp | *(default)* | `_ffi.h` | C++ FFI host header |
+| rust | *(default)* | `_ffi.rs` | Rust FFI host bindings |
+| rust | `native` | `_ffi_native.rs` | Flattened C ABI (per-method functions, no protobuf at call site) |
+| rust | `wasm` | `_wasm.rs` | WASM exports via `#[wasm_bindgen]` |
+| java | *(default)* | `_ffi.java` | Java FFI host bindings |
+| csharp | *(default)* | `_ffi.cs` | C# FFI host bindings |
+| c | `native` | `_ffi_native.h` | C header with flattened per-method signatures |
+| c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
+
+The default `plugin_server` mode exports the standard Synurang ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`) — all data is serialized protobuf, and any Synurang host can load the plugin.
+
+Native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). Callers pass scalars directly — no protobuf serialization at the call site. This is for direct FFI from C/C++/WASM without the Synurang host infrastructure. Methods with `repeated`, `oneof`, or `map` fields get a `_pb` fallback accepting raw protobuf bytes. Unary only.
 
 ---
 
@@ -382,6 +406,15 @@ protoc -Iapi --synurang-ffi_out=./pkg/api --synurang-ffi_opt=lang=go service.pro
 protoc -Iapi --synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart service.proto
 protoc -Iapi --synurang-ffi_out=./java/src --synurang-ffi_opt=lang=java,java_package=com.example.api service.proto
 protoc -Iapi --synurang-ffi_out=./csharp/src --synurang-ffi_opt=lang=csharp,csharp_namespace=Example.Api service.proto
+
+# Rust native C ABI (flattened parameters, no protobuf at call site)
+protoc -Iapi --synurang-ffi_out=./rust/src --synurang-ffi_opt=lang=rust,mode=native service.proto
+
+# Rust WASM (wasm-bindgen exports)
+protoc -Iapi --synurang-ffi_out=./wasm/src --synurang-ffi_opt=lang=rust,mode=wasm service.proto
+
+# C native header (FFI contract for C/C++ plugins)
+protoc -Iapi --synurang-ffi_out=./native --synurang-ffi_opt=lang=c,mode=native service.proto
 ```
 
 ### Step 3: Implement Server
@@ -479,7 +512,8 @@ grpcurl -plaintext localhost:18000 api.Greeter/SayHello
 - Zero-copy memory via `unsafe.Slice`
 - Code generation: `protoc-gen-synurang-ffi`
 - Thread-safe: Isolates and goroutines managed automatically
-- Platforms: Android, iOS, macOS, Windows, Linux
+- Platforms: Android, iOS, macOS, Windows, Linux, WebAssembly
+- Native C ABI: Per-method functions with flattened parameters (Rust/C, no protobuf at call site)
 
 ---
 
@@ -488,6 +522,14 @@ grpcurl -plaintext localhost:18000 api.Greeter/SayHello
 **C++**: `--synurang-ffi_opt=lang=cpp`. Full support including all streaming types.
 
 **Rust**: `--synurang-ffi_opt=lang=rust`. Full support including all streaming types.
+
+**Rust Native**: `--synurang-ffi_opt=lang=rust,mode=native`. Generates per-method C ABI functions with flattened parameters — each scalar field becomes a direct function argument instead of going through serialized protobuf bytes. Methods with `repeated`, `oneof`, or `map` fields get a `_pb` fallback that accepts raw protobuf bytes. Error handling via thread-local `last_error()` (dlerror-style). Unary only.
+
+**Rust WASM**: `--synurang-ffi_opt=lang=rust,mode=wasm`. Generates `#[wasm_bindgen]` exports for browser/JS execution. Same flattened signature convention as native mode with idiomatic Rust types (`&str`, `&[u8]`).
+
+**C Native**: `--synurang-ffi_opt=lang=c` or `--synurang-ffi_opt=lang=c,mode=native`. Generates a C header (`.h`) declaring per-method function signatures with flattened parameters. Companion to Rust native — implement in C/C++ and call directly without protobuf serialization.
+
+**ActiveX**: `--synurang-ffi_opt=lang=c,mode=activex`. Generates a Windows COM/ActiveX dispatch header with DISPID constants, name lookup table, and re-includable dispatch macros. Driven by `(synurang.v1.activex_service)` service option in `.proto` files.
 
 **Java/Android**: `--synurang-ffi_opt=lang=java`. Full support including all streaming types via JNI.
 
@@ -594,7 +636,7 @@ make run_android_java
 synurang/
 ├── cmd/
 │   ├── server/main.go                # FFI entry point example
-│   └── protoc-gen-synurang-ffi/      # Code generator
+│   └── protoc-gen-synurang-ffi/      # Code generator (go/dart/cpp/rust/java/csharp/c/wasm/activex)
 ├── pkg/
 │   ├── synurang/                     # Runtime library
 │   │   ├── synurang.go               # FfiClientConn
