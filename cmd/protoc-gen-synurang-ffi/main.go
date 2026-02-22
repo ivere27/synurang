@@ -10,7 +10,9 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/ivere27/synurang/pkg/api"
 	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/pluginpb"
 )
@@ -48,6 +50,20 @@ type FileData struct {
 	// Used to disambiguate top-level Go symbols when multiple proto files
 	// generate into the same package.
 	FilePrefix string
+	// ActiveX COM dispatch codegen
+	ComPrefix     string        // "VFG"
+	ComProperties []ComProperty // sorted by DispId
+}
+
+// ComProperty describes one COM DISPID entry for ActiveX codegen.
+type ComProperty struct {
+	DispId       int32
+	Name         string // COM property name (e.g., "Rows")
+	ConstName    string // DISPID_VFG_ROWS
+	DispatchType string // "int_getput", "int_put", "color_getput", "indexed_int_getput", "indexed_int_put", "method", ""
+	IsCustom     bool   // skip dispatch generation
+	NativeSetFn  string // C function: vv_flex_grid_set_rows
+	NativeGetFn  string // C function: vv_flex_grid_get_rows
 }
 
 type GoImport struct {
@@ -190,6 +206,73 @@ func lowerFirst(s string) string {
 		return s
 	}
 	return strings.ToLower(s[:1]) + s[1:]
+}
+
+// toScreamingSnake converts CamelCase to SCREAMING_SNAKE_CASE.
+// e.g., "BackColorFixed" → "BACK_COLOR_FIXED", "TopRow" → "TOP_ROW".
+func toScreamingSnake(s string) string {
+	var result strings.Builder
+	runes := []rune(s)
+	for i, r := range runes {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			prev := runes[i-1]
+			if prev >= 'a' && prev <= 'z' {
+				result.WriteRune('_')
+			} else if i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z' {
+				result.WriteRune('_')
+			}
+		}
+		result.WriteRune(r)
+	}
+	return strings.ToUpper(result.String())
+}
+
+// inferDispatchType determines the COM dispatch macro type for an ActiveX property.
+func inferDispatchType(prop *api.ActiveXProperty, setMethod, getMethod *MethodData, msgs map[string]MessageData) string {
+	if setMethod == nil && getMethod == nil {
+		return ""
+	}
+
+	hasGet := getMethod != nil
+	hasPut := setMethod != nil
+
+	// Color properties
+	if prop.Olecolor {
+		if hasGet && hasPut {
+			return "color_getput"
+		}
+		return ""
+	}
+
+	// Count fields in setter input to distinguish simple vs indexed.
+	// The first field is typically grid_id (raw int64 handle), so:
+	//   2 total fields → simple (grid_id + value)
+	//   3+ total fields → indexed (grid_id + index + value)
+	isIndexed := false
+	if hasPut {
+		inMsg, ok := msgs[setMethod.InputTypeKey]
+		if ok && len(inMsg.Fields) >= 3 {
+			isIndexed = true
+		}
+	}
+
+	if isIndexed {
+		if hasGet && hasPut {
+			return "indexed_int_getput"
+		}
+		if hasPut {
+			return "indexed_int_put"
+		}
+	}
+
+	if hasGet && hasPut {
+		return "int_getput"
+	}
+	if hasPut {
+		return "int_put"
+	}
+
+	return ""
 }
 
 // computeFilePrefix derives a CamelCase prefix from a proto file path.
@@ -457,6 +540,8 @@ func init() {
 		"wasmErrReturn":       wasmErrReturn,
 		"lowerFirst":          lowerFirst,
 		"serviceHasStreaming": serviceHasStreaming,
+		"lower":               strings.ToLower,
+		"screaming":           toScreamingSnake,
 	}
 	var err error
 	templates, err = template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
@@ -595,7 +680,12 @@ func selectTemplate(lang, modeOrOpt string) string {
 			return "rust.rs.tmpl"
 		}
 	case "c":
-		return "c_native.h.tmpl"
+		switch modeOrOpt {
+		case "activex":
+			return "c_activex.h.tmpl"
+		default:
+			return "c_native.h.tmpl"
+		}
 	case "java":
 		return "java.java.tmpl"
 	case "csharp":
@@ -622,6 +712,10 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 		case "rust":
 			return base + "_ffi_plugin.rs"
 		}
+	}
+
+	if mode == "activex" && lang == "c" {
+		return base + "_activex.h"
 	}
 
 	if mode == "native" {
@@ -937,6 +1031,91 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 		}
 	}
 	markBoxFields(data.Messages)
+
+	// Build ActiveX COM properties (for c activex mode).
+	// Must come after messages map is built so inferDispatchType can inspect field counts.
+	if lang == "c" && modeOrOpt == "activex" {
+		for _, service := range file.Services {
+			if !shouldGenerateService(service.GoName, serviceList) {
+				continue
+			}
+			opts := service.Desc.Options()
+			if opts == nil {
+				continue
+			}
+			axSvc, ok := proto.GetExtension(opts, api.E_ActivexService).(*api.ActiveXServiceOption)
+			if !ok || axSvc == nil {
+				continue
+			}
+
+			data.ComPrefix = axSvc.Prefix
+
+			// Find matching ServiceData for NativePrefix lookup
+			var svcNativePrefix string
+			for _, sd := range data.Services {
+				if sd.GoName == service.GoName {
+					svcNativePrefix = sd.NativePrefix
+					break
+				}
+			}
+
+			// Build method lookup map (name -> MethodData)
+			methodMap := make(map[string]*MethodData)
+			for i := range data.Services {
+				if data.Services[i].GoName == service.GoName {
+					for j := range data.Services[i].Methods {
+						methodMap[data.Services[i].Methods[j].Name] = &data.Services[i].Methods[j]
+					}
+					break
+				}
+			}
+
+			for _, prop := range axSvc.Properties {
+				cp := ComProperty{
+					DispId:   prop.Dispid,
+					Name:     prop.Name,
+					IsCustom: prop.Custom,
+				}
+
+				// Compute constant name: DISPID_VFG_ROWS
+				// Use plain uppercase (no underscore insertion) to match legacy COM convention.
+				cp.ConstName = "DISPID_" + axSvc.Prefix + "_" + strings.ToUpper(prop.Name)
+
+				// Determine setter/getter RPC names
+				setMethodName := "Set" + prop.Name
+				getMethodName := "Get" + prop.Name
+				if prop.SetMethod != "" {
+					setMethodName = prop.SetMethod
+				}
+				if prop.GetMethod != "" {
+					getMethodName = prop.GetMethod
+				}
+
+				setMethod := methodMap[setMethodName]
+				getMethod := methodMap[getMethodName]
+
+				// Compute native function names
+				if setMethod != nil {
+					cp.NativeSetFn = svcNativePrefix + "_" + toSnakeCase(setMethod.Name)
+				}
+				if getMethod != nil {
+					cp.NativeGetFn = svcNativePrefix + "_" + toSnakeCase(getMethod.Name)
+				}
+
+				// Infer dispatch type
+				if !prop.Custom {
+					cp.DispatchType = inferDispatchType(prop, setMethod, getMethod, data.Messages)
+				}
+
+				data.ComProperties = append(data.ComProperties, cp)
+			}
+		}
+
+		// Sort by DispId
+		sort.Slice(data.ComProperties, func(i, j int) bool {
+			return data.ComProperties[i].DispId < data.ComProperties[j].DispId
+		})
+	}
 
 	// Build external imports for Dart
 	if lang == "dart" {

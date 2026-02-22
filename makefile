@@ -70,7 +70,7 @@ proto: build_plugin
 	protoc -Iapi -I/usr/include \
 		--go_out=./pkg/api --go_opt=paths=source_relative \
 		--go-grpc_out=./pkg/api --go-grpc_opt=paths=source_relative \
-		core.proto cache.proto
+		core.proto cache.proto activex.proto
 	protoc -Iapi -I/usr/include \
 		--dart_out=grpc:lib/src/generated \
 		core.proto cache.proto

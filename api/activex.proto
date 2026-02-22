@@ -1,0 +1,23 @@
+syntax = "proto3";
+package synurang.v1;
+option go_package = "github.com/ivere27/synurang/pkg/api";
+
+import "google/protobuf/descriptor.proto";
+
+message ActiveXProperty {
+  int32  dispid     = 1;  // COM DISPID number
+  string name       = 2;  // COM property/method name (e.g., "Rows")
+  bool   custom     = 3;  // Emit constant + name entry, but skip dispatch case
+  bool   olecolor   = 4;  // Apply olecolor <-> argb conversion
+  string set_method = 5;  // Override: explicit setter RPC name (default: "Set" + name)
+  string get_method = 6;  // Override: explicit getter RPC name (default: "Get" + name)
+}
+
+message ActiveXServiceOption {
+  string prefix                      = 1;  // DISPID constant prefix (e.g., "VFG")
+  repeated ActiveXProperty properties = 2;
+}
+
+extend google.protobuf.ServiceOptions {
+  optional ActiveXServiceOption activex_service = 50100;
+}

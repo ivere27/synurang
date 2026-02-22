@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 // before the payload pointer. This makes free safe even if callers pass
 // an incorrect length argument.
 
-fn alloc_payload_with_header(payload: Vec<u8>) -> *mut u8 {
+pub fn alloc_payload_with_header(payload: Vec<u8>) -> *mut u8 {
     let payload_len = payload.len();
     let header_len = std::mem::size_of::<usize>();
     let total_len = header_len + payload_len;
@@ -30,7 +30,7 @@ fn alloc_payload_with_header(payload: Vec<u8>) -> *mut u8 {
     unsafe { raw.add(header_len) }
 }
 
-fn free_payload_with_header(ptr: *mut u8) {
+pub fn free_payload_with_header(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
