@@ -1,3 +1,8 @@
+## 0.5.0
+
+*   **WASM & Rust native**: Added WASM and Rust native support.
+*   **ActiveX**: Added ActiveX support.
+
 ## 0.4.0
 
 *   **C# support**: Added full support for C# via pure managed interop (NativeLibrary + Marshal).
