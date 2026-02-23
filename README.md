@@ -590,13 +590,13 @@ The desktop JAR auto-extracts the native library at runtime — no `-Djava.libra
 
 ```groovy
 // Android (build.gradle)
-implementation 'io.github.ivere27:synurang-android:0.5.2'
-implementation 'io.github.ivere27:synurang-android-grpc:0.5.2'  // optional, for gRPC channel
+implementation 'io.github.ivere27:synurang-android:0.5.3'
+implementation 'io.github.ivere27:synurang-android-grpc:0.5.3'  // optional, for gRPC channel
 implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
 
 // Desktop (build.gradle)
-implementation 'io.github.ivere27:synurang-desktop:0.5.2'
-implementation 'io.github.ivere27:synurang-desktop-grpc:0.5.2'  // optional, for gRPC channel
+implementation 'io.github.ivere27:synurang-desktop:0.5.3'
+implementation 'io.github.ivere27:synurang-desktop-grpc:0.5.3'  // optional, for gRPC channel
 implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
 ```
 
