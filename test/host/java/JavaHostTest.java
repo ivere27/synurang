@@ -5,15 +5,15 @@
 //
 // Build:
 //   # Build synurang_jni native library
-//   cd java/src/main/c && cmake -B build && cmake --build build
+//   cd java/core/src/main/c && cmake -B build && cmake --build build
 //   # Build Java host library
-//   cd java && gradle build
+//   make build_java
 //   # Compile test
-//   javac -cp java/build/libs/java.jar test/host/java/JavaHostTest.java
+//   javac -cp build/java/libs/java.jar:java/libs/* test/host/java/JavaHostTest.java
 //
 // Run:
-//   java -Djava.library.path=java/src/main/c/build \
-//        -cp java/build/libs/java.jar:test/host/java \
+//   java -Djava.library.path=java/core/src/main/c/build \
+//        -cp build/java/libs/java.jar:java/libs/*:test/host/java \
 //        JavaHostTest
 
 import io.github.ivere27.synurang.PluginHost;

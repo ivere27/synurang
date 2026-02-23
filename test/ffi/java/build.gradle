@@ -26,10 +26,10 @@ repositories {
 
 dependencies {
     // Only the synurang host library — no gRPC, no protobuf
-    implementation files('../../../java/build/libs/java.jar')
+    implementation files('../../../build/java/libs/java.jar')
 }
 
 tasks.named('run') {
-    systemProperty 'java.library.path', '../../../java/src/main/c/build'
+    systemProperty 'java.library.path', '../../../java/core/src/main/c/build'
     workingDir = '../../../'
 }

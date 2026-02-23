@@ -24,18 +24,22 @@
 #include <stdint.h>
 #include <errno.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <sys/time.h>
-#include <sys/syscall.h>
 
+#ifdef __linux__
+#include <sys/syscall.h>
 // close_range() syscall (Linux 5.9+, glibc 2.34+)
 #ifndef __NR_close_range
 #define __NR_close_range 436
+#endif
 #endif
 #endif
 
@@ -63,8 +67,20 @@ static void throw_plugin_error(JNIEnv *env, const char *msg) {
 JNIEXPORT jlong JNICALL
 Java_io_github_ivere27_synurang_SynurangJni_nativeOpen(JNIEnv *env, jclass clazz, jstring path) {
 #ifdef _WIN32
-    throw_plugin_error(env, "Windows not supported in JNI layer");
-    return 0;
+    const char *c_path = (*env)->GetStringUTFChars(env, path, NULL);
+    if (c_path == NULL) return 0;
+
+    HMODULE handle = LoadLibraryA(c_path);
+    (*env)->ReleaseStringUTFChars(env, path, c_path);
+
+    if (handle == NULL) {
+        char buf[256];
+        DWORD err = GetLastError();
+        snprintf(buf, sizeof(buf), "LoadLibrary failed (error %lu)", (unsigned long)err);
+        throw_plugin_error(env, buf);
+        return 0;
+    }
+    return (jlong)(uintptr_t)handle;
 #else
     const char *c_path = (*env)->GetStringUTFChars(env, path, NULL);
     if (c_path == NULL) return 0;
@@ -82,7 +98,11 @@ Java_io_github_ivere27_synurang_SynurangJni_nativeOpen(JNIEnv *env, jclass clazz
 
 JNIEXPORT void JNICALL
 Java_io_github_ivere27_synurang_SynurangJni_nativeClose(JNIEnv *env, jclass clazz, jlong handle) {
-#ifndef _WIN32
+#ifdef _WIN32
+    if (handle != 0) {
+        FreeLibrary((HMODULE)(uintptr_t)handle);
+    }
+#else
     if (handle != 0) {
         dlclose((void *)(uintptr_t)handle);
     }
@@ -92,7 +112,13 @@ Java_io_github_ivere27_synurang_SynurangJni_nativeClose(JNIEnv *env, jclass claz
 JNIEXPORT jlong JNICALL
 Java_io_github_ivere27_synurang_SynurangJni_nativeLookupSymbol(JNIEnv *env, jclass clazz, jlong handle, jstring name) {
 #ifdef _WIN32
-    return 0;
+    const char *c_name = (*env)->GetStringUTFChars(env, name, NULL);
+    if (c_name == NULL) return 0;
+
+    FARPROC sym = GetProcAddress((HMODULE)(uintptr_t)handle, c_name);
+    (*env)->ReleaseStringUTFChars(env, name, c_name);
+
+    return (jlong)(uintptr_t)sym;
 #else
     const char *c_name = (*env)->GetStringUTFChars(env, name, NULL);
     if (c_name == NULL) return 0;
@@ -276,10 +302,130 @@ Java_io_github_ivere27_synurang_SynurangJni_nativeStreamClose(
 }
 
 // =============================================================================
-// Process Host — socketpair + fork/exec
+// Process Host — socketpair + fork/exec (Unix only)
 // =============================================================================
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+JNIEXPORT jintArray JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeSocketpair(JNIEnv *env, jclass clazz) {
+    throw_plugin_error(env, "Process host not supported on Windows");
+    return NULL;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeForkExec(
+    JNIEnv *env, jclass clazz,
+    jstring executable, jobjectArray args, jint childFd
+) {
+    throw_plugin_error(env, "Process host not supported on Windows");
+    return -1;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeKill(
+    JNIEnv *env, jclass clazz, jint pid, jint sig
+) {
+    throw_plugin_error(env, "Process host not supported on Windows");
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeWaitPid(
+    JNIEnv *env, jclass clazz, jint pid
+) {
+    throw_plugin_error(env, "Process host not supported on Windows");
+    return -1;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeIsAlive(
+    JNIEnv *env, jclass clazz, jint pid
+) {
+    throw_plugin_error(env, "Process host not supported on Windows");
+    return JNI_FALSE;
+}
+
+// =============================================================================
+// Raw fd I/O stubs (Windows)
+// =============================================================================
+
+JNIEXPORT jint JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeReadFd(
+    JNIEnv *env, jclass clazz,
+    jint fd, jbyteArray buf, jint offset, jint len
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+    return -1;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeWriteFd(
+    JNIEnv *env, jclass clazz,
+    jint fd, jbyteArray buf, jint offset, jint len
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeCloseFd(
+    JNIEnv *env, jclass clazz, jint fd
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeShutdownFd(
+    JNIEnv *env, jclass clazz, jint fd, jint how
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeSetSoTimeout(
+    JNIEnv *env, jclass clazz, jint fd, jint timeoutMs
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeGetSoTimeout(
+    JNIEnv *env, jclass clazz, jint fd
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+    return 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeGetRecvBufSize(
+    JNIEnv *env, jclass clazz, jint fd
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+    return 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeGetSendBufSize(
+    JNIEnv *env, jclass clazz, jint fd
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+    return 0;
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeSetRecvBufSize(
+    JNIEnv *env, jclass clazz, jint fd, jint size
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+}
+
+JNIEXPORT void JNICALL
+Java_io_github_ivere27_synurang_SynurangJni_nativeSetSendBufSize(
+    JNIEnv *env, jclass clazz, jint fd, jint size
+) {
+    throw_plugin_error(env, "fd I/O not supported on Windows");
+}
+
+#else // !_WIN32
 
 JNIEXPORT jintArray JNICALL
 Java_io_github_ivere27_synurang_SynurangJni_nativeSocketpair(JNIEnv *env, jclass clazz) {
@@ -369,8 +515,11 @@ Java_io_github_ivere27_synurang_SynurangJni_nativeForkExec(
         }
 
         // Close all fds > 3 to prevent leaking parent's fds.
+#ifdef __linux__
         // Try close_range() syscall first (Linux 5.9+), fall back to loop.
-        if (syscall(__NR_close_range, 4, ~0U, 0) != 0) {
+        if (syscall(__NR_close_range, 4, ~0U, 0) != 0)
+#endif
+        {
             long maxfd = sysconf(_SC_OPEN_MAX);
             if (maxfd < 0) maxfd = 1024;
             for (int fd = 4; fd < maxfd; fd++) {
@@ -550,6 +699,8 @@ Java_io_github_ivere27_synurang_SynurangJni_nativeSetSendBufSize(
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size));
 }
 
+#endif // !_WIN32
+
 // =============================================================================
 // Direct buffer address — for zero-copy native pointer access
 // =============================================================================
@@ -565,5 +716,3 @@ Java_io_github_ivere27_synurang_SynurangJni_nativeGetDirectBufferAddress(
     }
     return (jlong)(uintptr_t)addr;
 }
-
-#endif // !_WIN32

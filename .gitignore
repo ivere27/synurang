@@ -37,8 +37,11 @@
 
 # Java build artifacts
 /java/build/
+/java/core/build/
+/java/grpc/build/
 /java/libs/
-/java/src/main/c/build/
+/java/core/src/main/c/build/
+/java/core/src/main/c/build-*/
 /java/.gradle/
 /test/ffi/java/.gradle/
 /test/ffi/java/*.class
@@ -57,6 +60,12 @@
 /src/libsynurang-android-arm64.so
 /src/libsynurang-android-x86_64.h
 /src/libsynurang-android-x86_64.so
+
+# Maven credentials
+.maven-settings.xml
+
+# Dist artifacts
+/dist/
 
 # IDE
 .idea/

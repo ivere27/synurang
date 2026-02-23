@@ -8,7 +8,7 @@ package io.github.ivere27.synurang;
  */
 class SynurangJni {
     static {
-        System.loadLibrary("synurang_jni");
+        NativeLibLoader.load();
     }
 
     // =========================================================================

@@ -1,0 +1,47 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    file \
+    gcc-aarch64-linux-gnu \
+    libc6-dev-arm64-cross \
+    gcc-arm-linux-gnueabihf \
+    libc6-dev-armhf-cross \
+    gcc-i686-linux-gnu \
+    libc6-dev-i386-cross \
+    gcc-mingw-w64-x86-64 \
+    gcc-mingw-w64-i686 \
+    openjdk-17-jdk \
+    unzip \
+    zip && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+# Install modern Gradle (Ubuntu package is too old for current java/build.gradle DSL)
+ENV GRADLE_VERSION=8.12
+ENV GRADLE_HOME=/opt/gradle/gradle-${GRADLE_VERSION}
+ENV PATH=${GRADLE_HOME}/bin:${PATH}
+RUN mkdir -p /opt/gradle && \
+    curl -fsSL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip && \
+    unzip -q /tmp/gradle.zip -d /opt/gradle && \
+    rm -f /tmp/gradle.zip
+
+# Install Zig (for macOS cross-compilation via zig cc)
+ENV ZIG_VERSION=0.13.0
+RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz && \
+    tar xf /tmp/zig.tar.xz -C /opt && \
+    ln -s /opt/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/zig && \
+    rm -f /tmp/zig.tar.xz
+
+COPY docker/build_desktop_jar.sh /opt/synurang/build_desktop_jar.sh
+RUN chmod +x /opt/synurang/build_desktop_jar.sh
+
+WORKDIR /workspace/synurang
+ENTRYPOINT ["/opt/synurang/build_desktop_jar.sh"]

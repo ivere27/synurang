@@ -4,13 +4,13 @@
 // bytes. No io.grpc.* imports anywhere.
 //
 // Build (from project root):
-//   cd java/src/main/c && cmake -B build && cmake --build build && cd -
-//   cd java && gradle build && cd -
-//   javac -cp java/build/libs/java.jar test/ffi/java/FfiApiTest.java
+//   cd java/core/src/main/c && cmake -B build && cmake --build build && cd -
+//   make build_java
+//   javac -cp build/java/libs/java.jar test/ffi/java/FfiApiTest.java
 //
 // Run (from project root):
-//   java -Djava.library.path=java/src/main/c/build \
-//        -cp java/build/libs/java.jar:test/ffi/java \
+//   java -Djava.library.path=java/core/src/main/c/build \
+//        -cp build/java/libs/java.jar:test/ffi/java \
 //        FfiApiTest [plugin-path]
 //
 // Default plugin: bin/libplugin_go.so

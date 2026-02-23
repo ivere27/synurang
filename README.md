@@ -110,7 +110,7 @@ Host loads plugin as `.so`/`.dll` via `dlopen`/`LoadLibrary`.
 | Dart/Flutter | Go | ✓ | Experimental | Stable |
 | C++ | Go/C++/Rust | ✓ | Experimental | Experimental |
 | Rust | Go/C++/Rust | ✓ | Experimental | Experimental |
-| Java/Android | Go/C++/Rust | ✓ | — | Experimental |
+| Java/Android | Go/C++/Rust | ✓ | ✓ | Experimental |
 | C# (.NET) | Go/C++/Rust | ✓ | ✓ | Experimental |
 
 ### Process Mode (IPC)
@@ -577,22 +577,43 @@ conn := synurang.NewPluginClientConn(plugin, "MyService")
 
 ### Java/Android
 
-```java
-// Plugin mode — drop-in grpc-java Channel (recommended)
-PluginHost plugin = PluginHost.load("./libplugin.so");
-Channel channel = SynurangChannel.create(plugin, "MyService");
+Four Maven packages — two for Android (AAR), two for desktop (JAR with embedded natives):
 
-// Standard protoc-gen-grpc-java stubs — zero custom codegen
-MyServiceGrpc.MyServiceBlockingStub stub = MyServiceGrpc.newBlockingStub(channel);
-HelloReply reply = stub.sayHello(request);  // goes through FFI, not TCP
+| Package | Platform | Contents |
+|---------|----------|----------|
+| `synurang-android` | Android | Core: PluginHost, ProcessHost, JNI bridge (AAR) |
+| `synurang-android-grpc` | Android | SynurangChannel, SynurangClientCall (AAR) |
+| `synurang-desktop` | Linux/macOS/Windows | Core + embedded JNI natives for 5 platforms (JAR) |
+| `synurang-desktop-grpc` | Linux/macOS/Windows | SynurangChannel, SynurangClientCall (JAR) |
+
+The desktop JAR auto-extracts the native library at runtime — no `-Djava.library.path` needed.
+
+```groovy
+// Android (build.gradle)
+implementation 'io.github.ivere27:synurang-android:0.5.2'
+implementation 'io.github.ivere27:synurang-android-grpc:0.5.2'  // optional, for gRPC channel
+implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
+
+// Desktop (build.gradle)
+implementation 'io.github.ivere27:synurang-desktop:0.5.2'
+implementation 'io.github.ivere27:synurang-desktop-grpc:0.5.2'  // optional, for gRPC channel
+implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
+```
+
+```java
+// Low-level API (core only, no gRPC dependency)
+PluginHost plugin = PluginHost.load("./libplugin.so");
+byte[] resp = plugin.invoke("MyService", "/pkg.MyService/Method", requestBytes);
+PluginStream stream = plugin.openStream("MyService", "/pkg.MyService/StreamMethod");
 
 // Process mode — socketpair IPC on Unix, TCP loopback fallback on Windows
 ProcessHost proc = ProcessHost.start("./child-process");
 ManagedChannel channel = (ManagedChannel) proc.channel();  // socketpair, no TCP
 
-// Low-level API (when you don't want grpc-java dependency)
-byte[] resp = plugin.invoke("MyService", "/pkg.MyService/Method", requestBytes);
-PluginStream stream = plugin.openStream("MyService", "/pkg.MyService/StreamMethod");
+// Plugin mode — drop-in grpc-java Channel (requires synurang-android-grpc)
+Channel channel = SynurangChannel.create(plugin, "MyService");
+MyServiceGrpc.MyServiceBlockingStub stub = MyServiceGrpc.newBlockingStub(channel);
+HelloReply reply = stub.sayHello(request);  // goes through FFI, not TCP
 
 plugin.close();
 ```
@@ -646,9 +667,11 @@ synurang/
 ├── lib/                              # Dart package
 │   ├── synurang.dart                 # Main entry point
 │   └── src/generated/                # Generated proto
-├── java/                             # Java host library
-│   ├── src/main/java/                # PluginHost, PluginStream, etc.
-│   └── src/main/c/                   # JNI native layer
+├── java/                             # Java host library (multi-module Gradle)
+│   ├── core/                         # Core module: PluginHost, ProcessHost, JNI bridge (zero dependencies)
+│   │   ├── src/main/java/            # PluginHost, PluginStream, BidiStream, SynurangJni, etc.
+│   │   └── src/main/c/               # JNI native layer
+│   └── grpc/                         # gRPC module: SynurangChannel, SynurangClientCall (requires grpc-api)
 ├── csharp/                           # C# host library (pure managed)
 │   └── Synurang/                     # PluginHost, SynurangCallInvoker, ProcessHost
 ├── example/                          # Working examples

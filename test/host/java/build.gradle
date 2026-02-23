@@ -25,13 +25,13 @@ repositories {
 }
 
 dependencies {
-    implementation files('../../../java/build/libs/java.jar')
+    implementation files('../../../build/java/libs/java.jar')
     implementation 'io.grpc:grpc-api:1.60.0'
     implementation 'io.grpc:grpc-stub:1.60.0'
 }
 
 tasks.named('run') {
     // Point to the JNI native library and working directory
-    systemProperty 'java.library.path', '../../../java/src/main/c/build'
+    systemProperty 'java.library.path', '../../../java/core/src/main/c/build'
     workingDir = '../../../'
 }

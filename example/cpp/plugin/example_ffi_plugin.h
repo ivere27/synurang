@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "example.pb.h"
+#include "google/protobuf/timestamp.pb.h"
 
 
 namespace example::v1 {
@@ -49,17 +50,17 @@ public:
 class GoGreeterServicePlugin {
 public:
     virtual ~GoGreeterServicePlugin() = default;
-    virtual HelloResponse Bar(const HelloRequest& request) = 0;
-    virtual void BarServerStream(const HelloRequest& request, 
-                                PluginStream<HelloRequest, HelloResponse>* stream) = 0;
-    virtual HelloResponse BarClientStream(PluginStream<HelloRequest, HelloResponse>* stream) = 0;
-    virtual void BarBidiStream(PluginStream<HelloRequest, HelloResponse>* stream) = 0;
-    virtual FileStatus UploadFile(PluginStream<FileChunk, FileStatus>* stream) = 0;
-    virtual void DownloadFile(const DownloadFileRequest& request, 
-                                PluginStream<DownloadFileRequest, FileChunk>* stream) = 0;
-    virtual void BidiFile(PluginStream<FileChunk, FileChunk>* stream) = 0;
-    virtual HelloResponse Trigger(const TriggerRequest& request) = 0;
-    virtual GoroutinesResponse GetGoroutines(const GoroutinesRequest& request) = 0;
+    virtual ::example::v1::HelloResponse Bar(const ::example::v1::HelloRequest& request) = 0;
+    virtual void BarServerStream(const ::example::v1::HelloRequest& request, 
+                                PluginStream<::example::v1::HelloRequest, ::example::v1::HelloResponse>* stream) = 0;
+    virtual ::example::v1::HelloResponse BarClientStream(PluginStream<::example::v1::HelloRequest, ::example::v1::HelloResponse>* stream) = 0;
+    virtual void BarBidiStream(PluginStream<::example::v1::HelloRequest, ::example::v1::HelloResponse>* stream) = 0;
+    virtual ::example::v1::FileStatus UploadFile(PluginStream<::example::v1::FileChunk, ::example::v1::FileStatus>* stream) = 0;
+    virtual void DownloadFile(const ::example::v1::DownloadFileRequest& request, 
+                                PluginStream<::example::v1::DownloadFileRequest, ::example::v1::FileChunk>* stream) = 0;
+    virtual void BidiFile(PluginStream<::example::v1::FileChunk, ::example::v1::FileChunk>* stream) = 0;
+    virtual ::example::v1::HelloResponse Trigger(const ::example::v1::TriggerRequest& request) = 0;
+    virtual ::example::v1::GoroutinesResponse GetGoroutines(const ::example::v1::GoroutinesRequest& request) = 0;
 };
 
 void RegisterGoGreeterServicePlugin(GoGreeterServicePlugin* plugin);

@@ -137,21 +137,21 @@ char* Synurang_Invoke_GoGreeterService(const char* method, const char* data, int
     std::string output;
     bool success = false;
     if (method_str == "/example.v1.GoGreeterService/Bar") {
-        example::v1::HelloRequest req;
+        ::example::v1::HelloRequest req;
         if (req.ParseFromString(input)) {
             auto resp = plugin->Bar(req);
             success = resp.SerializeToString(&output);
         }
     }
     if (method_str == "/example.v1.GoGreeterService/Trigger") {
-        example::v1::TriggerRequest req;
+        ::example::v1::TriggerRequest req;
         if (req.ParseFromString(input)) {
             auto resp = plugin->Trigger(req);
             success = resp.SerializeToString(&output);
         }
     }
     if (method_str == "/example.v1.GoGreeterService/GetGoroutines") {
-        example::v1::GoroutinesRequest req;
+        ::example::v1::GoroutinesRequest req;
         if (req.ParseFromString(input)) {
             auto resp = plugin->GetGoroutines(req);
             success = resp.SerializeToString(&output);
@@ -202,9 +202,9 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             ctx_ptr->send_queue.pop();
             lock.unlock();
             
-            HelloRequest req;
+            ::example::v1::HelloRequest req;
             if (req.ParseFromString(data)) {
-                StreamWrapper<HelloRequest, HelloResponse> wrapper(ctx_ptr);
+                StreamWrapper<::example::v1::HelloRequest, ::example::v1::HelloResponse> wrapper(ctx_ptr);
                 plugin->BarServerStream(req, &wrapper);
             }
             // Signal EOF after streaming completes
@@ -216,7 +216,7 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/BarClientStream") {
-            StreamWrapper<HelloRequest, HelloResponse> wrapper(ctx_ptr);
+            StreamWrapper<::example::v1::HelloRequest, ::example::v1::HelloResponse> wrapper(ctx_ptr);
             auto resp = plugin->BarClientStream(&wrapper);
             wrapper.Send(resp);
             // Signal EOF after response sent
@@ -228,7 +228,7 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/BarBidiStream") {
-            StreamWrapper<HelloRequest, HelloResponse> wrapper(ctx_ptr);
+            StreamWrapper<::example::v1::HelloRequest, ::example::v1::HelloResponse> wrapper(ctx_ptr);
             plugin->BarBidiStream(&wrapper);
             // Signal EOF after bidi streaming completes
             {
@@ -239,7 +239,7 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/UploadFile") {
-            StreamWrapper<FileChunk, FileStatus> wrapper(ctx_ptr);
+            StreamWrapper<::example::v1::FileChunk, ::example::v1::FileStatus> wrapper(ctx_ptr);
             auto resp = plugin->UploadFile(&wrapper);
             wrapper.Send(resp);
             // Signal EOF after response sent
@@ -262,9 +262,9 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             ctx_ptr->send_queue.pop();
             lock.unlock();
             
-            DownloadFileRequest req;
+            ::example::v1::DownloadFileRequest req;
             if (req.ParseFromString(data)) {
-                StreamWrapper<DownloadFileRequest, FileChunk> wrapper(ctx_ptr);
+                StreamWrapper<::example::v1::DownloadFileRequest, ::example::v1::FileChunk> wrapper(ctx_ptr);
                 plugin->DownloadFile(req, &wrapper);
             }
             // Signal EOF after streaming completes
@@ -276,7 +276,7 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/BidiFile") {
-            StreamWrapper<FileChunk, FileChunk> wrapper(ctx_ptr);
+            StreamWrapper<::example::v1::FileChunk, ::example::v1::FileChunk> wrapper(ctx_ptr);
             plugin->BidiFile(&wrapper);
             // Signal EOF after bidi streaming completes
             {
