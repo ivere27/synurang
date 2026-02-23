@@ -94,7 +94,7 @@ The `mode` parameter controls what kind of code is generated.
 
 The default `plugin_server` mode exports the standard Synurang ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`) — all data is serialized protobuf, and any Synurang host can load the plugin.
 
-Native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). Callers pass scalars directly — no protobuf serialization at the call site. This is for direct FFI from C/C++/WASM without the Synurang host infrastructure. Methods with `repeated`, `oneof`, or `map` fields get a `_pb` fallback accepting raw protobuf bytes. Unary only.
+Native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). Callers pass scalars directly - no protobuf serialization at the call site. This is for direct FFI from C/C++/WASM without the Synurang host infrastructure. Methods with `repeated`, `oneof`, or `map` fields get a `_pb` fallback accepting raw protobuf bytes. Native mode is unary-only. WASM mode also emits stream APIs for streaming RPCs (`*_stream_open`, `*_stream_send`, `*_stream_recv`, `*_stream_close_send`, `*_stream_close`).
 
 ---
 
@@ -525,7 +525,7 @@ grpcurl -plaintext localhost:18000 api.Greeter/SayHello
 
 **Rust Native**: `--synurang-ffi_opt=lang=rust,mode=native`. Generates per-method C ABI functions with flattened parameters — each scalar field becomes a direct function argument instead of going through serialized protobuf bytes. Methods with `repeated`, `oneof`, or `map` fields get a `_pb` fallback that accepts raw protobuf bytes. Error handling via thread-local `last_error()` (dlerror-style). Unary only.
 
-**Rust WASM**: `--synurang-ffi_opt=lang=rust,mode=wasm`. Generates `#[wasm_bindgen]` exports for browser/JS execution. Same flattened signature convention as native mode with idiomatic Rust types (`&str`, `&[u8]`).
+**Rust WASM**: `--synurang-ffi_opt=lang=rust,mode=wasm`. Generates `#[wasm_bindgen]` exports for browser/JS execution. Same flattened signature convention as native mode with idiomatic Rust types (`&str`, `&[u8]`), plus stream exports for streaming RPCs (`*_stream_open/send/recv/close_send/close`). `*_stream_recv` returns `[status, payload...]` where status is `0=data`, `1=eof`, `2=error`, `3=pending`.
 
 **C Native**: `--synurang-ffi_opt=lang=c` or `--synurang-ffi_opt=lang=c,mode=native`. Generates a C header (`.h`) declaring per-method function signatures with flattened parameters. Companion to Rust native — implement in C/C++ and call directly without protobuf serialization.
 

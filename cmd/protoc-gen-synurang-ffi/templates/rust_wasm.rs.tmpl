@@ -2,22 +2,472 @@
 // Rust WASM bindings for {{.Package}}
 //
 // Error sentinel convention (aligned with native C API where possible):
-//   Empty       → (no return value)
-//   Handle      → -1_i64
-//   Int32Value  → i32::MIN
-//   BoolValue   → false  (native uses -1_i32, but WASM returns bool)
-//   DoubleValue → f64::NAN
-//   StringValue → String::new()
-//   Protobuf    → Vec::new()
+//   Empty       -> (no return value)
+//   Handle      -> -1_i64
+//   Int32Value  -> i32::MIN
+//   BoolValue   -> false  (native uses -1_i32, but WASM returns bool)
+//   DoubleValue -> f64::NAN
+//   StringValue -> String::new()
+//   Protobuf    -> Vec::new()
 
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
 use prost::Message;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
+use std::marker::PhantomData;
 use std::sync::OnceLock;
 use wasm_bindgen::prelude::*;
 
-{{template "rust_plugin_trait" .}}
+// =============================================================================
+// Last Error (thread-local, dlerror()-style)
+// =============================================================================
+
+thread_local! {
+    static LAST_ERROR: RefCell<String> = RefCell::new(String::new());
+}
+
+fn set_last_error(msg: String) {
+    LAST_ERROR.with(|e| *e.borrow_mut() = msg);
+}
+
+fn clear_last_error() {
+    LAST_ERROR.with(|e| e.borrow_mut().clear());
+}
+
+// =============================================================================
+// Stream Result Framing
+// =============================================================================
+// `*_stream_recv()` returns `[status, payload...]`:
+//   0 = data
+//   1 = eof
+//   2 = error (see last_error)
+//   3 = pending (non-blocking; no data yet)
+
+const STREAM_STATUS_DATA: u8 = 0;
+const STREAM_STATUS_EOF: u8 = 1;
+const STREAM_STATUS_ERROR: u8 = 2;
+const STREAM_STATUS_PENDING: u8 = 3;
+
+fn stream_pack(status: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + payload.len());
+    out.push(status);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn stream_status(status: u8) -> Vec<u8> {
+    vec![status]
+}
+
+// =============================================================================
+// Stream Interfaces (WASM)
+// =============================================================================
+
+pub trait PluginStreamSender<T> {
+    fn send(&self, msg: T) -> bool;
+    fn is_cancelled(&self) -> bool;
+}
+
+pub trait PluginStreamReceiver<T> {
+    fn recv(&self) -> Option<T>;
+    fn is_cancelled(&self) -> bool;
+}
+
+pub trait PluginStreamBidi<Req, Resp>: PluginStreamSender<Resp> + PluginStreamReceiver<Req> {}
+
+struct LocalStreamSender<T> {
+    outputs: RefCell<Vec<Vec<u8>>>,
+    cancelled: Cell<bool>,
+    encode_error: RefCell<Option<String>>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> LocalStreamSender<T> {
+    fn new() -> Self {
+        Self {
+            outputs: RefCell::new(Vec::new()),
+            cancelled: Cell::new(false),
+            encode_error: RefCell::new(None),
+            _marker: PhantomData,
+        }
+    }
+
+    fn take_outputs(&self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut *self.outputs.borrow_mut())
+    }
+
+    fn take_encode_error(&self) -> Option<String> {
+        self.encode_error.borrow_mut().take()
+    }
+}
+
+impl<T: Message + Default> PluginStreamSender<T> for LocalStreamSender<T> {
+    fn send(&self, msg: T) -> bool {
+        if self.cancelled.get() {
+            return false;
+        }
+        let mut buf = Vec::new();
+        match msg.encode(&mut buf) {
+            Ok(_) => {
+                self.outputs.borrow_mut().push(buf);
+                true
+            }
+            Err(e) => {
+                *self.encode_error.borrow_mut() = Some(format!("encode stream message: {}", e));
+                self.cancelled.set(true);
+                false
+            }
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.get()
+    }
+}
+
+struct LocalStreamReceiver<T> {
+    inputs: RefCell<VecDeque<Vec<u8>>>,
+    cancelled: Cell<bool>,
+    decode_error: RefCell<Option<String>>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> LocalStreamReceiver<T> {
+    fn from_queue(inputs: VecDeque<Vec<u8>>) -> Self {
+        Self {
+            inputs: RefCell::new(inputs),
+            cancelled: Cell::new(false),
+            decode_error: RefCell::new(None),
+            _marker: PhantomData,
+        }
+    }
+
+    fn take_decode_error(&self) -> Option<String> {
+        self.decode_error.borrow_mut().take()
+    }
+}
+
+impl<T: Message + Default> PluginStreamReceiver<T> for LocalStreamReceiver<T> {
+    fn recv(&self) -> Option<T> {
+        if self.cancelled.get() {
+            return None;
+        }
+        let data = self.inputs.borrow_mut().pop_front()?;
+        match T::decode(data.as_slice()) {
+            Ok(msg) => Some(msg),
+            Err(e) => {
+                *self.decode_error.borrow_mut() = Some(format!("decode stream message: {}", e));
+                self.cancelled.set(true);
+                None
+            }
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.get()
+    }
+}
+
+struct LocalStreamBidi<Req, Resp> {
+    sender: LocalStreamSender<Resp>,
+    receiver: LocalStreamReceiver<Req>,
+}
+
+impl<Req, Resp> LocalStreamBidi<Req, Resp> {
+    fn from_queue(inputs: VecDeque<Vec<u8>>) -> Self {
+        Self {
+            sender: LocalStreamSender::new(),
+            receiver: LocalStreamReceiver::from_queue(inputs),
+        }
+    }
+
+    fn take_outputs(&self) -> Vec<Vec<u8>> {
+        self.sender.take_outputs()
+    }
+
+    fn take_encode_error(&self) -> Option<String> {
+        self.sender.take_encode_error()
+    }
+
+    fn take_decode_error(&self) -> Option<String> {
+        self.receiver.take_decode_error()
+    }
+}
+
+impl<Req: Message + Default, Resp: Message + Default> PluginStreamSender<Resp>
+    for LocalStreamBidi<Req, Resp>
+{
+    fn send(&self, msg: Resp) -> bool {
+        self.sender.send(msg)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.sender.is_cancelled() || self.receiver.is_cancelled()
+    }
+}
+
+impl<Req: Message + Default, Resp: Message + Default> PluginStreamReceiver<Req>
+    for LocalStreamBidi<Req, Resp>
+{
+    fn recv(&self) -> Option<Req> {
+        self.receiver.recv()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.sender.is_cancelled() || self.receiver.is_cancelled()
+    }
+}
+
+impl<Req: Message + Default, Resp: Message + Default> PluginStreamBidi<Req, Resp>
+    for LocalStreamBidi<Req, Resp>
+{
+}
+
+// =============================================================================
+// Plugin Traits
+// =============================================================================
+{{range $svc := .Services}}
+pub trait {{$svc.GoName}}Plugin: Send + Sync + 'static {
+{{- range $m := .Methods}}
+{{- if $m.IsUnary}}
+    fn {{snakeCase $m.Name}}(&self, request: {{$m.InputType}}) -> Result<{{$m.OutputType}}, String>;
+{{- else if $m.IsServerStreaming}}
+    fn {{snakeCase $m.Name}}(
+        &self,
+        request: {{$m.InputType}},
+        stream: &dyn PluginStreamSender<{{$m.OutputType}}>,
+    ) -> Result<(), String>;
+{{- else if $m.IsClientStreaming}}
+    fn {{snakeCase $m.Name}}(
+        &self,
+        stream: &dyn PluginStreamReceiver<{{$m.InputType}}>,
+    ) -> Result<{{$m.OutputType}}, String>;
+{{- else if $m.IsBidiStreaming}}
+    fn {{snakeCase $m.Name}}(
+        &self,
+        stream: &dyn PluginStreamBidi<{{$m.InputType}}, {{$m.OutputType}}>,
+    ) -> Result<(), String>;
+{{- end}}
+{{- end}}
+}
+
+static PLUGIN_{{$svc.GoName | snakeCase | upper}}: OnceLock<Box<dyn {{$svc.GoName}}Plugin>> = OnceLock::new();
+
+/// Register a plugin implementation. Returns `true` on success, `false` if
+/// a plugin was already registered (the new plugin is dropped).
+pub fn register_{{$svc.GoName | snakeCase}}_plugin(plugin: impl {{$svc.GoName}}Plugin) -> bool {
+    PLUGIN_{{$svc.GoName | snakeCase | upper}}.set(Box::new(plugin)).is_ok()
+}
+
+fn get_{{$svc.GoName | snakeCase}}_plugin() -> Option<&'static dyn {{$svc.GoName}}Plugin> {
+    PLUGIN_{{$svc.GoName | snakeCase | upper}}.get().map(|p| p.as_ref())
+}
+
+{{if serviceHasStreaming $svc}}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum {{$svc.GoName}}StreamMode {
+    Server,
+    Client,
+    Bidi,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum {{$svc.GoName}}StreamMethod {
+{{- range $m := $svc.Methods}}
+{{- if not $m.IsUnary}}
+    {{$m.GoName}},
+{{- end}}
+{{- end}}
+}
+
+struct {{$svc.GoName}}StreamContext {
+    method: {{$svc.GoName}}StreamMethod,
+    mode: {{$svc.GoName}}StreamMode,
+    send_queue: VecDeque<Vec<u8>>,
+    recv_queue: VecDeque<Vec<u8>>,
+    send_closed: bool,
+    closed: bool,
+    started: bool,
+    finished: bool,
+    stream_error: bool,
+}
+
+impl {{$svc.GoName}}StreamContext {
+    fn new(method: {{$svc.GoName}}StreamMethod, mode: {{$svc.GoName}}StreamMode) -> Self {
+        Self {
+            method,
+            mode,
+            send_queue: VecDeque::new(),
+            recv_queue: VecDeque::new(),
+            send_closed: false,
+            closed: false,
+            started: false,
+            finished: false,
+            stream_error: false,
+        }
+    }
+}
+
+thread_local! {
+    static STREAMS_{{$svc.GoName | snakeCase | upper}}: RefCell<HashMap<i64, {{$svc.GoName}}StreamContext>> =
+        RefCell::new(HashMap::new());
+    static NEXT_STREAM_HANDLE_{{$svc.GoName | snakeCase | upper}}: Cell<i64> = Cell::new(1);
+}
+
+fn {{$svc.GoName | snakeCase}}_next_stream_handle() -> i64 {
+    NEXT_STREAM_HANDLE_{{$svc.GoName | snakeCase | upper}}.with(|cell| {
+        let current = cell.get();
+        let next = if current == i64::MAX { 1 } else { current + 1 };
+        cell.set(next);
+        current
+    })
+}
+
+fn {{$svc.GoName | snakeCase}}_run_stream(ctx: &mut {{$svc.GoName}}StreamContext) {
+    if ctx.closed || ctx.finished {
+        return;
+    }
+
+    let plugin = match get_{{$svc.GoName | snakeCase}}_plugin() {
+        Some(p) => p,
+        None => {
+            set_last_error("plugin not registered".into());
+            ctx.stream_error = true;
+            ctx.finished = true;
+            return;
+        }
+    };
+
+    match ctx.method {
+{{- range $m := $svc.Methods}}
+{{- if $m.IsServerStreaming}}
+        {{$svc.GoName}}StreamMethod::{{$m.GoName}} => {
+            if ctx.started {
+                return;
+            }
+
+            let data = match ctx.send_queue.pop_front() {
+                Some(d) => d,
+                None => return,
+            };
+
+            if !ctx.send_queue.is_empty() {
+                set_last_error("server stream expects one request".into());
+                ctx.stream_error = true;
+                ctx.finished = true;
+                ctx.started = true;
+                return;
+            }
+
+            let req = match {{$m.InputType}}::decode(data.as_slice()) {
+                Ok(r) => r,
+                Err(e) => {
+                    set_last_error(format!("decode stream request: {}", e));
+                    ctx.stream_error = true;
+                    ctx.finished = true;
+                    ctx.started = true;
+                    return;
+                }
+            };
+
+            let sender = LocalStreamSender::<{{$m.OutputType}}>::new();
+            match plugin.{{snakeCase $m.Name}}(req, &sender) {
+                Ok(_) => {
+                    if let Some(e) = sender.take_encode_error() {
+                        set_last_error(e);
+                        ctx.stream_error = true;
+                    } else {
+                        for out in sender.take_outputs() {
+                            ctx.recv_queue.push_back(out);
+                        }
+                        clear_last_error();
+                    }
+                }
+                Err(e) => {
+                    set_last_error(e);
+                    ctx.stream_error = true;
+                }
+            }
+
+            ctx.finished = true;
+            ctx.started = true;
+        }
+{{- else if $m.IsClientStreaming}}
+        {{$svc.GoName}}StreamMethod::{{$m.GoName}} => {
+            if ctx.started || !ctx.send_closed {
+                return;
+            }
+
+            let receiver =
+                LocalStreamReceiver::<{{$m.InputType}}>::from_queue(std::mem::take(&mut ctx.send_queue));
+            match plugin.{{snakeCase $m.Name}}(&receiver) {
+                Ok(resp) => {
+                    if let Some(e) = receiver.take_decode_error() {
+                        set_last_error(e);
+                        ctx.stream_error = true;
+                    } else {
+                        let mut buf = Vec::new();
+                        match resp.encode(&mut buf) {
+                            Ok(_) => {
+                                ctx.recv_queue.push_back(buf);
+                                clear_last_error();
+                            }
+                            Err(e) => {
+                                set_last_error(format!("encode stream response: {}", e));
+                                ctx.stream_error = true;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    set_last_error(e);
+                    ctx.stream_error = true;
+                }
+            }
+
+            ctx.finished = true;
+            ctx.started = true;
+        }
+{{- else if $m.IsBidiStreaming}}
+        {{$svc.GoName}}StreamMethod::{{$m.GoName}} => {
+            if ctx.started || !ctx.send_closed {
+                return;
+            }
+
+            let bidi =
+                LocalStreamBidi::<{{$m.InputType}}, {{$m.OutputType}}>::from_queue(std::mem::take(&mut ctx.send_queue));
+            match plugin.{{snakeCase $m.Name}}(&bidi) {
+                Ok(_) => {
+                    if let Some(e) = bidi.take_decode_error() {
+                        set_last_error(e);
+                        ctx.stream_error = true;
+                    } else if let Some(e) = bidi.take_encode_error() {
+                        set_last_error(e);
+                        ctx.stream_error = true;
+                    } else {
+                        for out in bidi.take_outputs() {
+                            ctx.recv_queue.push_back(out);
+                        }
+                        clear_last_error();
+                    }
+                }
+                Err(e) => {
+                    set_last_error(e);
+                    ctx.stream_error = true;
+                }
+            }
+
+            ctx.finished = true;
+            ctx.started = true;
+        }
+{{- end}}
+{{- end}}
+    }
+}
+{{end}}
+{{end}}
 
 // =============================================================================
 // WASM Exports
@@ -95,7 +545,7 @@ pub fn {{$prefix}}_{{snakeCase $m.Name}}(
 }
 
 {{- else}}
-{{- /* For RPCs with repeated/oneof fields, accept protobuf bytes */}}
+{{- /* For RPCs with repeated/oneof/map fields, accept protobuf bytes */}}
 #[wasm_bindgen]
 pub fn {{$prefix}}_{{snakeCase $m.Name}}_pb(data: &[u8]){{- if eq $m.OutputWKT "Empty"}} {{- else if $m.OutputIsHandle}} -> i64{{- else if eq $m.OutputWKT "Int32Value"}} -> i32{{- else if eq $m.OutputWKT "BoolValue"}} -> bool{{- else if eq $m.OutputWKT "DoubleValue"}} -> f64{{- else if eq $m.OutputWKT "StringValue"}} -> String{{- else}} -> Vec<u8>{{- end}} {
     let plugin = match get_{{$svc.GoName | snakeCase}}_plugin() {
@@ -111,6 +561,188 @@ pub fn {{$prefix}}_{{snakeCase $m.Name}}_pb(data: &[u8]){{- if eq $m.OutputWKT "
 {{- end}}
 {{end}}
 {{- end}}
+{{end}}
+
+// =============================================================================
+// WASM Stream Exports
+// =============================================================================
+{{range $svc := .Services}}
+{{- if serviceHasStreaming $svc}}
+{{- $prefix := $svc.NativePrefix}}
+#[wasm_bindgen]
+pub fn {{$prefix}}_stream_open(method: &str) -> i64 {
+    if get_{{$svc.GoName | snakeCase}}_plugin().is_none() {
+        set_last_error("plugin not registered".into());
+        return -1;
+    }
+
+    let (method_id, mode) = match method {
+{{- range $m := $svc.Methods}}
+{{- if $m.IsServerStreaming}}
+        "{{$m.FullMethodName}}" => ({{$svc.GoName}}StreamMethod::{{$m.GoName}}, {{$svc.GoName}}StreamMode::Server),
+{{- else if $m.IsClientStreaming}}
+        "{{$m.FullMethodName}}" => ({{$svc.GoName}}StreamMethod::{{$m.GoName}}, {{$svc.GoName}}StreamMode::Client),
+{{- else if $m.IsBidiStreaming}}
+        "{{$m.FullMethodName}}" => ({{$svc.GoName}}StreamMethod::{{$m.GoName}}, {{$svc.GoName}}StreamMode::Bidi),
+{{- end}}
+{{- end}}
+        _ => {
+            set_last_error(format!("unknown streaming method: {}", method));
+            return -1;
+        }
+    };
+
+    let handle = {{$svc.GoName | snakeCase}}_next_stream_handle();
+    STREAMS_{{$svc.GoName | snakeCase | upper}}.with(|streams| {
+        streams
+            .borrow_mut()
+            .insert(handle, {{$svc.GoName}}StreamContext::new(method_id, mode));
+    });
+    clear_last_error();
+    handle
+}
+
+#[wasm_bindgen]
+pub fn {{$prefix}}_stream_send(handle: i64, data: &[u8]) -> i32 {
+    STREAMS_{{$svc.GoName | snakeCase | upper}}.with(|streams| {
+        let mut streams = streams.borrow_mut();
+        let ctx = match streams.get_mut(&handle) {
+            Some(c) => c,
+            None => {
+                set_last_error(format!("invalid stream handle: {}", handle));
+                return -1;
+            }
+        };
+
+        if ctx.closed {
+            set_last_error("stream is closed".into());
+            return -1;
+        }
+        if ctx.send_closed {
+            set_last_error("send side already closed".into());
+            return -1;
+        }
+        if ctx.stream_error || ctx.finished {
+            set_last_error("stream already finished".into());
+            return -1;
+        }
+
+        if matches!(ctx.mode, {{$svc.GoName}}StreamMode::Server) && (ctx.started || !ctx.send_queue.is_empty()) {
+            set_last_error("server stream accepts a single request".into());
+            return -1;
+        }
+
+        ctx.send_queue.push_back(data.to_vec());
+
+        if matches!(ctx.mode, {{$svc.GoName}}StreamMode::Server) {
+            {{$svc.GoName | snakeCase}}_run_stream(ctx);
+        }
+
+        if ctx.stream_error {
+            -1
+        } else {
+            clear_last_error();
+            0
+        }
+    })
+}
+
+#[wasm_bindgen]
+pub fn {{$prefix}}_stream_recv(handle: i64) -> Vec<u8> {
+    STREAMS_{{$svc.GoName | snakeCase | upper}}.with(|streams| {
+        let mut streams = streams.borrow_mut();
+        let ctx = match streams.get_mut(&handle) {
+            Some(c) => c,
+            None => {
+                set_last_error(format!("invalid stream handle: {}", handle));
+                return stream_status(STREAM_STATUS_ERROR);
+            }
+        };
+
+        if ctx.closed {
+            set_last_error("stream is closed".into());
+            return stream_status(STREAM_STATUS_ERROR);
+        }
+
+        if let Some(payload) = ctx.recv_queue.pop_front() {
+            clear_last_error();
+            return stream_pack(STREAM_STATUS_DATA, payload.as_slice());
+        }
+
+        if ctx.stream_error {
+            return stream_status(STREAM_STATUS_ERROR);
+        }
+
+        if ctx.finished {
+            clear_last_error();
+            return stream_status(STREAM_STATUS_EOF);
+        }
+
+        clear_last_error();
+        stream_status(STREAM_STATUS_PENDING)
+    })
+}
+
+#[wasm_bindgen]
+pub fn {{$prefix}}_stream_close_send(handle: i64) {
+    STREAMS_{{$svc.GoName | snakeCase | upper}}.with(|streams| {
+        let mut streams = streams.borrow_mut();
+        let ctx = match streams.get_mut(&handle) {
+            Some(c) => c,
+            None => {
+                set_last_error(format!("invalid stream handle: {}", handle));
+                return;
+            }
+        };
+
+        if ctx.closed {
+            set_last_error("stream is closed".into());
+            return;
+        }
+
+        if ctx.send_closed {
+            clear_last_error();
+            return;
+        }
+
+        ctx.send_closed = true;
+
+        match ctx.mode {
+            {{$svc.GoName}}StreamMode::Server => {
+                if !ctx.started {
+                    if ctx.send_queue.is_empty() {
+                        set_last_error("server stream request not sent".into());
+                        ctx.stream_error = true;
+                        ctx.finished = true;
+                        ctx.started = true;
+                    } else {
+                        {{$svc.GoName | snakeCase}}_run_stream(ctx);
+                    }
+                }
+            }
+            {{$svc.GoName}}StreamMode::Client | {{$svc.GoName}}StreamMode::Bidi => {
+                {{$svc.GoName | snakeCase}}_run_stream(ctx);
+            }
+        }
+
+        if !ctx.stream_error {
+            clear_last_error();
+        }
+    });
+}
+
+#[wasm_bindgen]
+pub fn {{$prefix}}_stream_close(handle: i64) {
+    STREAMS_{{$svc.GoName | snakeCase | upper}}.with(|streams| {
+        let mut streams = streams.borrow_mut();
+        if let Some(ctx) = streams.get_mut(&handle) {
+            ctx.closed = true;
+        }
+        streams.remove(&handle);
+    });
+    clear_last_error();
+}
+{{end}}
 {{end}}
 
 // =============================================================================

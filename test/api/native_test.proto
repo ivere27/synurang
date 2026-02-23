@@ -8,10 +8,10 @@ option go_package = "github.com/ivere27/synurang/test/api";
 
 // Service exercising edge cases for native/wasm codegen.
 service NativeTestService {
-  // Empty request — tests zero-field signature.
+  // Empty request - tests zero-field signature.
   rpc Ping(google.protobuf.Empty) returns (core.v1.PingResponse);
 
-  // Empty request + empty return — tests void prototype.
+  // Empty request + empty return - tests void prototype.
   rpc NoOp(google.protobuf.Empty) returns (google.protobuf.Empty);
 
   // All scalar types including uint64.
@@ -20,20 +20,25 @@ service NativeTestService {
   // Imported request type from another proto file.
   rpc ImportedInput(core.v1.Error) returns (google.protobuf.Empty);
 
-  // Oneof field — must route to _pb variant.
+  // Oneof field - must route to _pb variant.
   rpc OneofInput(OneofRequest) returns (google.protobuf.Empty);
 
-  // Repeated field — must route to _pb variant.
+  // Repeated field - must route to _pb variant.
   rpc RepeatedInput(RepeatedRequest) returns (google.protobuf.Empty);
 
-  // Mixed: repeated + oneof — must route to _pb variant.
+  // Mixed: repeated + oneof - must route to _pb variant.
   rpc MixedInput(MixedRequest) returns (google.protobuf.Empty);
 
-  // Map field — must route to _pb variant.
+  // Map field - must route to _pb variant.
   rpc MapInput(MapRequest) returns (google.protobuf.Empty);
 
-  // Recursive message — must not crash the generator.
+  // Recursive message - must not crash the generator.
   rpc TreeOp(TreeNode) returns (google.protobuf.Empty);
+
+  // Streaming methods used to validate WASM stream codegen.
+  rpc ServerStream(google.protobuf.Empty) returns (stream ScalarResponse);
+  rpc ClientStream(stream ScalarRequest) returns (ScalarResponse);
+  rpc BidiStream(stream ScalarRequest) returns (stream ScalarResponse);
 }
 
 message ScalarRequest {
@@ -77,7 +82,7 @@ message MapRequest {
   string name = 2;
 }
 
-// Self-referential message — regression test for collectMessage cycle handling.
+// Self-referential message - regression test for collectMessage cycle handling.
 message TreeNode {
   string name = 1;
   TreeNode child = 2;

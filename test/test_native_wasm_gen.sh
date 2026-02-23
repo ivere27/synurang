@@ -194,6 +194,19 @@ assert_contains "$RS_WASM" 'wasm_bindgen' "wasm_bindgen attribute present"
 echo "--- Error reset on success ---"
 assert_contains "$RS_WASM" 'clear_last_error();' "wasm clears LAST_ERROR on success"
 
+echo "--- WASM stream ABI ---"
+assert_contains "$RS_WASM" 'trait PluginStreamSender' "WASM stream sender trait generated"
+assert_contains "$RS_WASM" 'trait PluginStreamReceiver' "WASM stream receiver trait generated"
+assert_contains "$RS_WASM" 'trait PluginStreamBidi' "WASM stream bidi trait generated"
+assert_contains "$RS_WASM" 'fn server_stream(' "server-stream trait method generated"
+assert_contains "$RS_WASM" 'fn client_stream(' "client-stream trait method generated"
+assert_contains "$RS_WASM" 'fn bidi_stream(' "bidi-stream trait method generated"
+assert_contains "$RS_WASM" "fn ${PREFIX}_stream_open(" "stream open export generated"
+assert_contains "$RS_WASM" "fn ${PREFIX}_stream_send(" "stream send export generated"
+assert_contains "$RS_WASM" "fn ${PREFIX}_stream_recv(" "stream recv export generated"
+assert_contains "$RS_WASM" "fn ${PREFIX}_stream_close_send(" "stream close_send export generated"
+assert_contains "$RS_WASM" "fn ${PREFIX}_stream_close(" "stream close export generated"
+
 # =========================================================================
 # Compilation checks
 # =========================================================================
