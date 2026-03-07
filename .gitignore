@@ -49,6 +49,7 @@
 /test/ffi/java/*.class
 /test/host/java/.gradle/
 /test/host/java/bin/
+/test/ffi/java/build/
 
 # Shared libraries
 *.so

@@ -1,3 +1,10 @@
+## 0.5.4
+
+*   **Structured FFI errors**: Replaced `PluginError` with `FfiError` carrying `code`, `message`, and `grpc_code` fields across all 6 languages (Go, Dart, C++, Rust, Java, C#).
+*   **New wire format**: Unary uses `resp_len < 0` for errors (payload is serialized `core.v1.Error`); stream uses `status < 0`. Removes the old status-byte prefix overhead.
+*   **Plugin stream interfaces**: Go plugin server codegen now emits minimal `PluginStream` interfaces instead of `grpc.ServerStream`, removing the `google.golang.org/grpc/metadata` dependency from plugin code.
+*   **gRPC status extraction**: New `pkg/ffierror` package extracts structured errors from gRPC status details via reflection, avoiding a hard gRPC dependency.
+
 ## 0.5.0
 
 *   **WASM & Rust native**: Added WASM and Rust native support.
