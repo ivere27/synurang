@@ -36,7 +36,7 @@ public class BidiStream<Req, Resp> implements AutoCloseable {
     /**
      * Send a request message.
      */
-    public void send(Req request) throws PluginError {
+    public void send(Req request) throws FfiError {
         stream.send(serializer.serialize(request));
     }
 

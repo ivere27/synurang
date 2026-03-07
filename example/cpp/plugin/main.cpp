@@ -2,8 +2,27 @@
 #include "example_ffi_plugin.h"
 #include "../service/greeter_service.h"
 #include <iostream>
+#include <stdexcept>
 
 namespace example::v1 {
+
+namespace {
+
+constexpr const char* kErrorTriggerName = "trigger_error";
+constexpr int32_t kCppUnaryFfiCode = 4201;
+constexpr int32_t kCppServerFfiCode = 4202;
+constexpr int32_t kCppClientFfiCode = 4203;
+constexpr int32_t kCppBidiFfiCode = 4204;
+
+bool is_error_trigger_request(const std::string& name) {
+    return name == kErrorTriggerName;
+}
+
+FfiError ffi_test_error(const char* message, int32_t code) {
+    return FfiError(message, code, 10);
+}
+
+}  // namespace
 
 // Adapter: wraps shared logic with FFI plugin interface
 class MyGoGreeterPlugin : public GoGreeterServicePlugin {
@@ -11,11 +30,17 @@ class MyGoGreeterPlugin : public GoGreeterServicePlugin {
 
 public:
     HelloResponse Bar(const HelloRequest& request) override {
+        if (is_error_trigger_request(request.name())) {
+            throw ffi_test_error("cpp unary ffi error", kCppUnaryFfiCode);
+        }
         return logic.Bar(request);
     }
 
     void BarServerStream(const HelloRequest& request, 
                          PluginStream<HelloRequest, HelloResponse>* stream) override {
+        if (is_error_trigger_request(request.name())) {
+            throw ffi_test_error("cpp server stream ffi error", kCppServerFfiCode);
+        }
         // Wrap PluginStream to work with template
         struct StreamWriter {
             PluginStream<HelloRequest, HelloResponse>* s;
@@ -25,20 +50,33 @@ public:
     }
 
     HelloResponse BarClientStream(PluginStream<HelloRequest, HelloResponse>* stream) override {
-        struct StreamReader {
-            PluginStream<HelloRequest, HelloResponse>* s;
-            bool Read(HelloRequest* r) { return s->Recv(r); }
-        } reader{stream};
-        return logic.BarClientStream(&reader);
+        int count = 0;
+        HelloRequest req;
+        while (stream->Recv(&req)) {
+            if (is_error_trigger_request(req.name())) {
+                throw ffi_test_error("cpp client stream ffi error", kCppClientFfiCode);
+            }
+            count++;
+        }
+        HelloResponse response;
+        response.set_message("Received " + std::to_string(count) + " messages");
+        response.set_from("cpp-plugin");
+        return response;
     }
 
     void BarBidiStream(PluginStream<HelloRequest, HelloResponse>* stream) override {
-        struct BidiStream {
-            PluginStream<HelloRequest, HelloResponse>* s;
-            bool Read(HelloRequest* r) { return s->Recv(r); }
-            bool Write(const HelloResponse& r) { return s->Send(r); }
-        } bidi{stream};
-        logic.BarBidiStream(&bidi);
+        HelloRequest req;
+        while (stream->Recv(&req)) {
+            if (is_error_trigger_request(req.name())) {
+                throw ffi_test_error("cpp bidi stream ffi error", kCppBidiFfiCode);
+            }
+            HelloResponse response;
+            response.set_message("Echo: " + req.name());
+            response.set_from("cpp-plugin");
+            if (!stream->Send(response)) {
+                break;
+            }
+        }
     }
 
     // Stub implementations

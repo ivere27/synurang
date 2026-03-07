@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 
 namespace Synurang;
@@ -40,7 +39,7 @@ public class PluginStream : IDisposable
                 Marshal.Copy(data, 0, dataPtr, data.Length);
             int result = _funcs.Send(_handle, dataPtr, data.Length);
             if (result != 0)
-                throw new PluginError("Stream send failed with code " + result);
+                throw new FfiError("Stream send failed with code " + result);
         }
         finally
         {
@@ -52,7 +51,7 @@ public class PluginStream : IDisposable
 
     /// <summary>
     /// Receive data from the stream.
-    /// Returns protobuf response bytes (status byte stripped), or null on EOF.
+    /// Returns raw protobuf response bytes, or null on EOF.
     /// </summary>
     public byte[]? Recv()
     {
@@ -64,14 +63,13 @@ public class PluginStream : IDisposable
         {
             IntPtr resultPtr = _funcs.Recv(_handle, out int respLen, out int status);
 
-            // Stream-level status: 0=data, 1=EOF, 2+=error
             if (status == 1)
             {
                 _host.FreeNative(resultPtr);
                 return null;
             }
 
-            if (status >= 2)
+            if (status < 0)
             {
                 if (resultPtr != IntPtr.Zero && respLen > 0)
                 {
@@ -79,7 +77,7 @@ public class PluginStream : IDisposable
                     {
                         byte[] errBytes = new byte[respLen];
                         Marshal.Copy(resultPtr, errBytes, 0, respLen);
-                        throw new PluginError(Encoding.UTF8.GetString(errBytes));
+                        throw FfiError.FromPayload(errBytes);
                     }
                     finally
                     {
@@ -88,33 +86,27 @@ public class PluginStream : IDisposable
                 }
 
                 _host.FreeNative(resultPtr);
-                throw new PluginError("Stream recv failed with status " + status);
+                throw new FfiError("Stream recv failed with status " + status);
             }
 
-            // status == 0: data
-            if (resultPtr == IntPtr.Zero)
-                throw new PluginError("Empty stream response");
+            if (status != 0)
+            {
+                _host.FreeNative(resultPtr);
+                throw new FfiError("Stream recv failed with status " + status);
+            }
 
             try
             {
-                if (respLen <= 0)
-                    throw new PluginError("Empty stream response");
-
-                // Check response status byte: 0=success, 1=error
-                byte responseStatus = Marshal.ReadByte(resultPtr);
-                if (responseStatus == 1)
+                if (resultPtr == IntPtr.Zero)
                 {
-                    int errLen = respLen - 1;
-                    byte[] errBytes = new byte[errLen];
-                    if (errLen > 0)
-                        Marshal.Copy(IntPtr.Add(resultPtr, 1), errBytes, 0, errLen);
-                    throw new PluginError(Encoding.UTF8.GetString(errBytes));
+                    if (respLen == 0)
+                        return Array.Empty<byte>();
+                    throw new FfiError("Plugin returned null for stream recv");
                 }
 
-                // Success: copy payload (skip status byte)
-                byte[] payload = new byte[respLen - 1];
+                byte[] payload = new byte[respLen];
                 if (payload.Length > 0)
-                    Marshal.Copy(IntPtr.Add(resultPtr, 1), payload, 0, payload.Length);
+                    Marshal.Copy(resultPtr, payload, 0, payload.Length);
                 return payload;
             }
             finally

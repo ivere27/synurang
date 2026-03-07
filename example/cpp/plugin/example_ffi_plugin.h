@@ -24,6 +24,23 @@ namespace example::v1 {
 
 
 // =============================================================================
+// Structured FFI Error
+// =============================================================================
+
+class FfiError : public std::runtime_error {
+public:
+    explicit FfiError(const std::string& message, int32_t code = 0, int32_t grpc_code = 2)
+        : std::runtime_error(message), code_(code), grpc_code_(grpc_code) {}
+
+    int32_t code() const noexcept { return code_; }
+    int32_t grpc_code() const noexcept { return grpc_code_; }
+
+private:
+    int32_t code_;
+    int32_t grpc_code_;
+};
+
+// =============================================================================
 // Stream Interface
 // =============================================================================
 

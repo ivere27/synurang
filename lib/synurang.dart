@@ -50,7 +50,8 @@ import 'dart:developer' as developer;
 import 'package:ffi/ffi.dart';
 import 'package:grpc/grpc.dart';
 import 'package:protobuf/protobuf.dart' show GeneratedMessage;
-import 'package:protobuf/well_known_types/google/protobuf/any.pb.dart' as pb_any;
+import 'package:protobuf/well_known_types/google/protobuf/any.pb.dart'
+    as pb_any;
 import 'package:synurang/src/generated/core.pb.dart' as pb;
 import 'synurang_bindings_generated.dart';
 
@@ -74,12 +75,10 @@ export 'package:protobuf/well_known_types/google/protobuf/wrappers.pb.dart';
 // Plugin ABI Native Function Types
 // =============================================================================
 
-typedef _PluginInvokeNative = Pointer<Char> Function(
-    Pointer<Char> method, Pointer<Char> data, Int32 dataLen,
-    Pointer<Int32> respLen);
-typedef _PluginInvokeDart = Pointer<Char> Function(
-    Pointer<Char> method, Pointer<Char> data, int dataLen,
-    Pointer<Int32> respLen);
+typedef _PluginInvokeNative = Pointer<Char> Function(Pointer<Char> method,
+    Pointer<Char> data, Int32 dataLen, Pointer<Int32> respLen);
+typedef _PluginInvokeDart = Pointer<Char> Function(Pointer<Char> method,
+    Pointer<Char> data, int dataLen, Pointer<Int32> respLen);
 
 typedef _PluginFreeNative = Void Function(Pointer<Void> ptr);
 typedef _PluginFreeDart = void Function(Pointer<Void> ptr);
@@ -139,14 +138,13 @@ class _MainPluginEntry {
 
   void ensureStreamFuncs() {
     if (_streamFuncsLoaded) return;
-    _streamSend = library
-        .lookupFunction<_PluginStreamSendNative, _PluginStreamSendDart>(
+    _streamSend =
+        library.lookupFunction<_PluginStreamSendNative, _PluginStreamSendDart>(
             'Synurang_Stream_Send');
     _streamCloseSend = library.lookupFunction<_PluginStreamCloseSendNative,
         _PluginStreamCloseSendDart>('Synurang_Stream_CloseSend');
-    _streamClose = library
-        .lookupFunction<_PluginStreamCloseNative, _PluginStreamCloseDart>(
-            'Synurang_Stream_Close');
+    _streamClose = library.lookupFunction<_PluginStreamCloseNative,
+        _PluginStreamCloseDart>('Synurang_Stream_Close');
     _streamFuncsLoaded = true;
   }
 }
@@ -168,17 +166,16 @@ class _WorkerPluginEntry {
 
   void ensureStreamFuncs() {
     if (_streamFuncsLoaded) return;
-    streamSend = library
-        .lookupFunction<_PluginStreamSendNative, _PluginStreamSendDart>(
+    streamSend =
+        library.lookupFunction<_PluginStreamSendNative, _PluginStreamSendDart>(
             'Synurang_Stream_Send');
-    streamRecv = library
-        .lookupFunction<_PluginStreamRecvNative, _PluginStreamRecvDart>(
+    streamRecv =
+        library.lookupFunction<_PluginStreamRecvNative, _PluginStreamRecvDart>(
             'Synurang_Stream_Recv');
     streamCloseSend = library.lookupFunction<_PluginStreamCloseSendNative,
         _PluginStreamCloseSendDart>('Synurang_Stream_CloseSend');
-    streamClose = library
-        .lookupFunction<_PluginStreamCloseNative, _PluginStreamCloseDart>(
-            'Synurang_Stream_Close');
+    streamClose = library.lookupFunction<_PluginStreamCloseNative,
+        _PluginStreamCloseDart>('Synurang_Stream_Close');
     _streamFuncsLoaded = true;
   }
 }
@@ -225,15 +222,40 @@ String _extractServiceName(String method) {
 // FfiError - Structured error with gRPC status code
 // =============================================================================
 
-/// Exception thrown when FFI call fails. Includes gRPC status code.
+/// Exception thrown when an FFI call fails.
+///
+/// Mirrors [pb.Error] so Dart callers can inspect both the transport-level
+/// gRPC status and any application-specific error code carried over FFI.
 class FfiError implements Exception {
   final String message;
   final int grpcCode;
+  final int code;
 
-  const FfiError(this.message, this.grpcCode);
+  const FfiError(this.message, this.grpcCode, {this.code = 0});
+
+  factory FfiError.fromProto(pb.Error error) {
+    return FfiError(error.message, error.grpcCode, code: error.code);
+  }
+
+  factory FfiError.fromBuffer(List<int> bytes) {
+    try {
+      return FfiError.fromProto(pb.Error.fromBuffer(bytes));
+    } catch (_) {
+      return FfiError(utf8.decode(bytes, allowMalformed: true), 2);
+    }
+  }
+
+  pb.Error toProto() {
+    return pb.Error()
+      ..code = code
+      ..message = message
+      ..grpcCode = grpcCode;
+  }
 
   @override
-  String toString() => 'FfiError($grpcCode): $message';
+  String toString() => code == 0
+      ? 'FfiError($grpcCode): $message'
+      : 'FfiError(code=$code, grpcCode=$grpcCode): $message';
 }
 
 // =============================================================================
@@ -393,7 +415,8 @@ class _PluginInvokeResponse {
   final int address;
   final int len;
   final int pluginIndex;
-  const _PluginInvokeResponse(this.id, this.address, this.len, this.pluginIndex);
+  const _PluginInvokeResponse(
+      this.id, this.address, this.len, this.pluginIndex);
 }
 
 // Plugin stream requests
@@ -713,8 +736,8 @@ Stream<Uint8List> _pluginServerStream(String method, Uint8List data) {
       _PluginStreamState(controller, pluginIndex);
 
   _CoreIsolateManager.instance
-      .sendRequest<int>((id) =>
-          _PluginServerStreamRequest(id, dartStreamId, method, data))
+      .sendRequest<int>(
+          (id) => _PluginServerStreamRequest(id, dartStreamId, method, data))
       .then((int handle) {
     if (handle == 0) {
       controller.addError(Exception('Failed to start server stream'));
@@ -813,9 +836,8 @@ Future<Uint8List> _pluginClientStream(
   );
 
   // Open stream on worker (worker enters recv loop)
-  final int handle = await _CoreIsolateManager.instance
-      .sendRequest<int>(
-          (id) => _PluginClientStreamRequest(id, dartStreamId, method));
+  final int handle = await _CoreIsolateManager.instance.sendRequest<int>(
+      (id) => _PluginClientStreamRequest(id, dartStreamId, method));
 
   if (handle == 0) {
     _pluginActiveStreams.remove(dartStreamId);
@@ -1210,8 +1232,7 @@ class _CoreIsolateManager {
           libraryName: _libraryName,
           libraryPath: resolvedPath,
           usePluginMode: _usePluginMode,
-          pluginRegistrations:
-              _usePluginMode ? _pluginRegistrations : const [],
+          pluginRegistrations: _usePluginMode ? _pluginRegistrations : const [],
         ),
       ));
     }
@@ -1257,7 +1278,7 @@ class _CoreIsolateManager {
       final info = _pluginActiveStreams.remove(data.dartStreamId);
       if (info != null) {
         info.controller.addError(data.error is String
-            ? FfiError(data.error as String, 0)
+            ? FfiError(data.error as String, 2)
             : data.error);
         info.controller.close();
       }
@@ -1283,8 +1304,7 @@ class _CoreIsolateManager {
       completer?.completeError(data.error);
       return;
     }
-    developer.log(
-        'Synurang: unsupported response type: ${data.runtimeType}');
+    developer.log('Synurang: unsupported response type: ${data.runtimeType}');
   }
 
   void _completeRequest<T>(int id, T result) {
@@ -1333,34 +1353,36 @@ class _CoreIsolateManager {
   }
 
   /// Complete a plugin invoke response with per-plugin finalizer.
-  /// Response format: [status:1byte][payload...] where status 0=success, 1=error.
+  /// Success responses carry raw protobuf bytes. Errors are handled on the worker.
   void _completePluginZeroCopy(
       int id, int address, int totalLen, int pluginIndex) {
     _updateWorkerStats(id);
     final completer = _requests.remove(id) as Completer<Uint8List>?;
     if (completer == null) return;
 
-    if (address == 0 || totalLen <= 0) {
+    if (totalLen < 0) {
+      if (address == 0) {
+        completer.completeError(FfiError('plugin returned null', 2));
+        return;
+      }
+      final ptr = Pointer<Void>.fromAddress(address);
+      final errorBytes = ptr.cast<Uint8>().asTypedList(-totalLen);
+      _mainPlugins[pluginIndex].freeFunc(ptr);
+      completer.completeError(FfiError.fromBuffer(errorBytes));
+      return;
+    }
+
+    if (address == 0 || totalLen == 0) {
+      if (address != 0) {
+        _mainPlugins[pluginIndex].freeFunc(Pointer<Void>.fromAddress(address));
+      }
       completer.complete(Uint8List(0));
       return;
     }
 
     final ptr = Pointer<Void>.fromAddress(address);
-    final allBytes = ptr.cast<Uint8>();
-    final status = allBytes.value; // byte 0
     final plugin = _mainPlugins[pluginIndex];
-
-    if (status == 1) {
-      // Error
-      final errorBytes = allBytes.elementAt(1).asTypedList(totalLen - 1);
-      final errorMsg = utf8.decode(errorBytes);
-      plugin.freeFunc(ptr);
-      completer.completeError(FfiError(errorMsg, 0));
-      return;
-    }
-
-    // Success: zero-copy payload (skip status byte)
-    final payload = allBytes.elementAt(1).asTypedList(totalLen - 1);
+    final payload = ptr.cast<Uint8>().asTypedList(totalLen);
     final nativePayload = _NativePayload();
     plugin.finalizer.attach(nativePayload, ptr.cast(),
         detach: nativePayload, externalSize: totalLen);
@@ -1380,24 +1402,20 @@ class _CoreIsolateManager {
       return;
     }
 
-    if (data.address == 0 || data.len <= 0) return;
+    if (data.len < 0) return;
 
-    final ptr = Pointer<Void>.fromAddress(data.address);
-    final allBytes = ptr.cast<Uint8>();
-    final status = allBytes.value;
-    final plugin = _mainPlugins[info.pluginIndex];
-
-    if (status == 1) {
-      // Error in stream data
-      final errorBytes = allBytes.elementAt(1).asTypedList(data.len - 1);
-      final errorMsg = utf8.decode(errorBytes);
-      plugin.freeFunc(ptr);
-      info.controller.addError(FfiError(errorMsg, 0));
+    if (data.address == 0 || data.len == 0) {
+      if (data.address != 0) {
+        _mainPlugins[info.pluginIndex]
+            .freeFunc(Pointer<Void>.fromAddress(data.address));
+      }
+      info.controller.add(Uint8List(0));
       return;
     }
 
-    // Success: zero-copy payload (skip status byte)
-    final payload = allBytes.elementAt(1).asTypedList(data.len - 1);
+    final ptr = Pointer<Void>.fromAddress(data.address);
+    final plugin = _mainPlugins[info.pluginIndex];
+    final payload = ptr.cast<Uint8>().asTypedList(data.len);
     final nativePayload = _NativePayload();
     plugin.finalizer.attach(nativePayload, ptr.cast(),
         detach: nativePayload, externalSize: data.len);
@@ -1451,17 +1469,14 @@ void _initWorkerPlugins(List<_PluginRegistration> registrations) {
     final reg = registrations[i];
     final lib = DynamicLibrary.open(reg.libraryPath);
     final freeFunc =
-        lib.lookupFunction<_PluginFreeNative, _PluginFreeDart>(
-            'Synurang_Free');
+        lib.lookupFunction<_PluginFreeNative, _PluginFreeDart>('Synurang_Free');
     final workerPlugin = _WorkerPluginEntry(lib, freeFunc);
     _workerPlugins.add(workerPlugin);
 
     for (final svc in reg.serviceNames) {
-      final invoke =
-          lib.lookupFunction<_PluginInvokeNative, _PluginInvokeDart>(
-              'Synurang_Invoke_$svc');
-      _workerServices[svc] =
-          _WorkerServiceEntry(workerPlugin, i, invoke, svc);
+      final invoke = lib.lookupFunction<_PluginInvokeNative, _PluginInvokeDart>(
+          'Synurang_Invoke_$svc');
+      _workerServices[svc] = _WorkerServiceEntry(workerPlugin, i, invoke, svc);
     }
   }
 }
@@ -1522,14 +1537,7 @@ void _handleIsolateMessage(dynamic data, SendPort sendPort) {
         final errorLen = -ffiData.len;
         final errorBytes = ffiData.data.cast<Uint8>().asTypedList(errorLen);
 
-        Object errorToThrow;
-        try {
-          final pbErr = pb.Error.fromBuffer(errorBytes);
-          errorToThrow = FfiError(pbErr.message, pbErr.grpcCode);
-        } catch (e) {
-          final errorMessage = String.fromCharCodes(errorBytes);
-          errorToThrow = FfiError(errorMessage, 0);
-        }
+        final errorToThrow = FfiError.fromBuffer(errorBytes);
         _ffi.FreeFfiData(ffiData.data);
         sendPort.send(_ErrorResponse(data.id, errorToThrow));
       } else {
@@ -1555,14 +1563,7 @@ void _handleIsolateMessage(dynamic data, SendPort sendPort) {
         final errorLen = -ffiData.len;
         final errorBytes = ffiData.data.cast<Uint8>().asTypedList(errorLen);
 
-        Object errorToThrow;
-        try {
-          final pbErr = pb.Error.fromBuffer(errorBytes);
-          errorToThrow = FfiError(pbErr.message, pbErr.grpcCode);
-        } catch (e) {
-          final errorMessage = String.fromCharCodes(errorBytes);
-          errorToThrow = FfiError(errorMessage, 0);
-        }
+        final errorToThrow = FfiError.fromBuffer(errorBytes);
         _ffi.FreeFfiData(ffiData.data);
         sendPort.send(_ErrorResponse(data.id, errorToThrow));
       } else {
@@ -1714,7 +1715,8 @@ void _handleIsolateMessage(dynamic data, SendPort sendPort) {
     return;
   }
 
-  developer.log('Synurang isolate: unsupported message type: ${data.runtimeType}');
+  developer
+      .log('Synurang isolate: unsupported message type: ${data.runtimeType}');
 }
 
 // =============================================================================
@@ -1751,27 +1753,33 @@ void _handlePluginIsolateMessage(dynamic data, SendPort sendPort) {
       calloc.free(dataPtr);
       calloc.free(respLenPtr);
 
-      if (resultPtr == nullptr || respLen <= 0) {
-        sendPort.send(
-            _ErrorResponse(data.id, FfiError('null response from plugin', 0)));
+      if (resultPtr == nullptr) {
+        if (respLen == 0) {
+          sendPort
+              .send(_PluginInvokeResponse(data.id, 0, 0, service.pluginIndex));
+          return;
+        }
+        sendPort
+            .send(_ErrorResponse(data.id, FfiError('plugin returned null', 2)));
         return;
       }
 
-      // Check status byte on worker to handle errors without zero-copy
-      final status = resultPtr.cast<Uint8>().value;
-      if (status == 1) {
-        final errorBytes =
-            resultPtr.cast<Uint8>().elementAt(1).asTypedList(respLen - 1);
-        final errorMsg = utf8.decode(errorBytes);
+      if (respLen < 0) {
+        final errorBytes = resultPtr.cast<Uint8>().asTypedList(-respLen);
         service.plugin.freeFunc(resultPtr.cast<Void>());
-        sendPort.send(_ErrorResponse(data.id, FfiError(errorMsg, 0)));
+        sendPort.send(_ErrorResponse(data.id, FfiError.fromBuffer(errorBytes)));
         return;
       }
 
-      // Success: send pointer for zero-copy on main isolate
-      sendPort.send(_PluginInvokeResponse(
-          data.id, resultPtr.cast<Void>().address, respLen,
-          service.pluginIndex));
+      if (respLen == 0) {
+        service.plugin.freeFunc(resultPtr.cast<Void>());
+        sendPort
+            .send(_PluginInvokeResponse(data.id, 0, 0, service.pluginIndex));
+        return;
+      }
+
+      sendPort.send(_PluginInvokeResponse(data.id,
+          resultPtr.cast<Void>().address, respLen, service.pluginIndex));
     } catch (e) {
       sendPort.send(_ErrorResponse(data.id, e));
     }
@@ -1799,15 +1807,15 @@ void _handlePluginIsolateMessage(dynamic data, SendPort sendPort) {
       // Send initial request data to the stream
       final dataPtr = calloc<Uint8>(data.data.length);
       dataPtr.asTypedList(data.data.length).setAll(0, data.data);
-      service.plugin.streamSend!(handle, dataPtr.cast<Char>(), data.data.length);
+      service.plugin.streamSend!(
+          handle, dataPtr.cast<Char>(), data.data.length);
       calloc.free(dataPtr);
 
       // Complete the sendRequest with the handle
       sendPort.send(_StreamIdResponse(data.id, handle));
 
       // Enter blocking recv loop (this blocks the worker for the stream duration)
-      _pluginStreamRecvLoop(
-          data.dartStreamId, handle, service, sendPort);
+      _pluginStreamRecvLoop(data.dartStreamId, handle, service, sendPort);
     } catch (e) {
       sendPort.send(_ErrorResponse(data.id, e));
     }
@@ -1836,8 +1844,7 @@ void _handlePluginIsolateMessage(dynamic data, SendPort sendPort) {
       sendPort.send(_StreamIdResponse(data.id, handle));
 
       // Enter blocking recv loop
-      _pluginStreamRecvLoop(
-          data.dartStreamId, handle, service, sendPort);
+      _pluginStreamRecvLoop(data.dartStreamId, handle, service, sendPort);
     } catch (e) {
       sendPort.send(_ErrorResponse(data.id, e));
     }
@@ -1866,8 +1873,7 @@ void _handlePluginIsolateMessage(dynamic data, SendPort sendPort) {
       sendPort.send(_StreamIdResponse(data.id, handle));
 
       // Enter blocking recv loop
-      _pluginStreamRecvLoop(
-          data.dartStreamId, handle, service, sendPort);
+      _pluginStreamRecvLoop(data.dartStreamId, handle, service, sendPort);
     } catch (e) {
       sendPort.send(_ErrorResponse(data.id, e));
     }
@@ -1887,32 +1893,50 @@ void _pluginStreamRecvLoop(int dartStreamId, int handle,
 
   try {
     while (true) {
-      final dataPtr =
-          service.plugin.streamRecv!(handle, respLenPtr, statusPtr);
+      final dataPtr = service.plugin.streamRecv!(handle, respLenPtr, statusPtr);
       final status = statusPtr.value;
       final respLen = respLenPtr.value;
 
       if (status == 1) {
         // EOF
+        if (dataPtr != nullptr) {
+          service.plugin.freeFunc(dataPtr.cast<Void>());
+        }
         sendPort.send(_PluginStreamEnd(dartStreamId));
         break;
       }
-      if (status >= 2) {
-        // Error
-        String errorMsg = 'stream error (status $status)';
+      if (status < 0) {
+        Object errorToSend = FfiError('stream error (status $status)', 2);
         if (dataPtr != nullptr && respLen > 0) {
-          errorMsg =
-              dataPtr.cast<Utf8>().toDartString(length: respLen);
+          final errorBytes = dataPtr.cast<Uint8>().asTypedList(respLen);
+          errorToSend = FfiError.fromBuffer(errorBytes);
+          service.plugin.freeFunc(dataPtr.cast<Void>());
+        } else if (dataPtr != nullptr) {
           service.plugin.freeFunc(dataPtr.cast<Void>());
         }
-        sendPort.send(_PluginStreamError(dartStreamId, errorMsg));
+        sendPort.send(_PluginStreamError(dartStreamId, errorToSend));
+        break;
+      }
+      if (status != 0) {
+        if (dataPtr != nullptr) {
+          service.plugin.freeFunc(dataPtr.cast<Void>());
+        }
+        sendPort.send(_PluginStreamError(
+            dartStreamId, FfiError('stream error (status $status)', 2)));
         break;
       }
 
-      // Data (status == 0)
-      if (dataPtr == nullptr || respLen <= 0) continue;
+      if (dataPtr == nullptr) {
+        if (respLen == 0) {
+          sendPort
+              .send(_PluginStreamData(dartStreamId, 0, 0, service.pluginIndex));
+          continue;
+        }
+        sendPort.send(_PluginStreamError(
+            dartStreamId, FfiError('plugin returned null', 2)));
+        break;
+      }
 
-      // Send pointer address + len to main for zero-copy
       sendPort.send(_PluginStreamData(dartStreamId,
           dataPtr.cast<Void>().address, respLen, service.pluginIndex));
     }
@@ -2080,22 +2104,25 @@ Uint8List _invokePluginSync(String method, Uint8List data) {
   calloc.free(dataPtr);
   calloc.free(respLenPtr);
 
-  if (resultPtr == nullptr || respLen <= 0) {
+  if (resultPtr == nullptr) {
+    if (respLen == 0) {
+      return Uint8List(0);
+    }
+    throw FfiError('plugin returned null', 2);
+  }
+
+  if (respLen < 0) {
+    final errorBytes = resultPtr.cast<Uint8>().asTypedList(-respLen);
+    plugin.freeFunc(resultPtr.cast<Void>());
+    throw FfiError.fromBuffer(errorBytes);
+  }
+
+  if (respLen == 0) {
+    plugin.freeFunc(resultPtr.cast<Void>());
     return Uint8List(0);
   }
 
-  final status = resultPtr.cast<Uint8>().value;
-
-  if (status == 1) {
-    final errorBytes =
-        resultPtr.cast<Uint8>().elementAt(1).asTypedList(respLen - 1);
-    final errorMsg = utf8.decode(errorBytes);
-    plugin.freeFunc(resultPtr.cast<Void>());
-    throw FfiError(errorMsg, 0);
-  }
-
-  // Zero-copy success response (skip status byte)
-  final payload = resultPtr.cast<Uint8>().elementAt(1).asTypedList(respLen - 1);
+  final payload = resultPtr.cast<Uint8>().asTypedList(respLen);
   final nativePayload = _NativePayload();
   plugin.finalizer.attach(nativePayload, resultPtr.cast(),
       detach: nativePayload, externalSize: respLen);
@@ -2260,14 +2287,15 @@ void _handleStreamCallback(
       controller.close();
       break;
     case _StreamMsgType.error:
-      final errorMsg =
-          len > 0 ? data.cast<Utf8>().toDartString() : 'Unknown stream error';
+      final error = len > 0
+          ? FfiError.fromBuffer(data.cast<Uint8>().asTypedList(len))
+          : const FfiError('Unknown stream error', 2);
       if (len > 0) {
         _ffi.FreeFfiData(data);
       }
       _activeStreams.remove(streamId);
       _activeStreamTrailers.remove(streamId);
-      controller.addError(Exception(errorMsg));
+      controller.addError(error);
       controller.close();
       break;
   }

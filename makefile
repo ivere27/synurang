@@ -38,6 +38,10 @@ AAR_ARTIFACT_ID_CORE ?= synurang-android
 AAR_ARTIFACT_ID_GRPC ?= synurang-android-grpc
 AAR_ANDROID_ABIS ?= arm64-v8a,armeabi-v7a
 AAR_ANDROID_API ?= 21
+DOCKER_GO_BUILD_CACHE_VOLUME ?= go-build-cache
+DOCKER_GRADLE_BUILD_CACHE_VOLUME ?= gradle-build-cache
+DOCKER_GO_BUILD_CACHE_DIR ?= /cache/go-build
+DOCKER_GRADLE_CACHE_DIR ?= /cache/gradle
 MAVEN_SETTINGS ?= $(CURRENT_DIR)/.maven-settings.xml
 MAVEN_REPO_URL ?= https://central.sonatype.com/api/v1/publisher/upload
 
@@ -212,9 +216,18 @@ docker_android_aar_image:
 docker_android_aar: docker_android_aar_image
 	@echo "Packaging Android AARs (version $(AAR_VERSION), ABIs $(AAR_ANDROID_ABIS))..."
 	docker run --rm \
+		-v "$(DOCKER_GO_BUILD_CACHE_VOLUME):$(DOCKER_GO_BUILD_CACHE_DIR)" \
+		-v "$(DOCKER_GRADLE_BUILD_CACHE_VOLUME):$(DOCKER_GRADLE_CACHE_DIR)" \
+		"$(AAR_DOCKER_IMAGE)" \
+		bash -lc 'chmod -R a+rwx /cache/go-build /cache/gradle || true'
+	docker run --rm \
 		-u "$$(id -u):$$(id -g)" \
 		-v "$(CURRENT_DIR):/workspace/synurang" \
+		-v "$(DOCKER_GO_BUILD_CACHE_VOLUME):$(DOCKER_GO_BUILD_CACHE_DIR)" \
+		-v "$(DOCKER_GRADLE_BUILD_CACHE_VOLUME):$(DOCKER_GRADLE_CACHE_DIR)" \
 		-w /workspace/synurang \
+		-e GOCACHE="$(DOCKER_GO_BUILD_CACHE_DIR)/synurang-go-build" \
+		-e GRADLE_USER_HOME="$(DOCKER_GRADLE_CACHE_DIR)" \
 		-e VERSION="$(AAR_VERSION)" \
 		-e GROUP_ID="$(AAR_GROUP_ID)" \
 		-e ARTIFACT_ID_CORE="$(AAR_ARTIFACT_ID_CORE)" \
@@ -299,9 +312,18 @@ docker_desktop_jar_image:
 docker_desktop_jar: docker_desktop_jar_image
 	@echo "Packaging desktop JARs (version $(DESKTOP_VERSION))..."
 	docker run --rm \
+		-v "$(DOCKER_GO_BUILD_CACHE_VOLUME):$(DOCKER_GO_BUILD_CACHE_DIR)" \
+		-v "$(DOCKER_GRADLE_BUILD_CACHE_VOLUME):$(DOCKER_GRADLE_CACHE_DIR)" \
+		"$(DESKTOP_DOCKER_IMAGE)" \
+		bash -lc 'chmod -R a+rwx /cache/go-build /cache/gradle || true'
+	docker run --rm \
 		-u "$$(id -u):$$(id -g)" \
 		-v "$(CURRENT_DIR):/workspace/synurang" \
+		-v "$(DOCKER_GO_BUILD_CACHE_VOLUME):$(DOCKER_GO_BUILD_CACHE_DIR)" \
+		-v "$(DOCKER_GRADLE_BUILD_CACHE_VOLUME):$(DOCKER_GRADLE_CACHE_DIR)" \
 		-w /workspace/synurang \
+		-e GOCACHE="$(DOCKER_GO_BUILD_CACHE_DIR)/synurang-go-build" \
+		-e GRADLE_USER_HOME="$(DOCKER_GRADLE_CACHE_DIR)" \
 		-e VERSION="$(DESKTOP_VERSION)" \
 		-e GROUP_ID="$(DESKTOP_GROUP_ID)" \
 		-e ARTIFACT_ID_CORE="$(DESKTOP_ARTIFACT_ID_CORE)" \

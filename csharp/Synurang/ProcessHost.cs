@@ -123,7 +123,7 @@ public class ProcessHost : IDisposable
         }
 
         var process = Process.Start(startInfo)
-            ?? throw new PluginError("Failed to start process: " + executable);
+            ?? throw new FfiError("Failed to start process: " + executable);
 
         // Read stdout for SYNURANG_PORT:<port>
         var reader = process.StandardOutput;
@@ -141,28 +141,28 @@ public class ProcessHost : IDisposable
         if (!readTask.Wait(StartupTimeoutMs))
         {
             KillProcessQuietly(process, entireProcessTree: false);
-            throw new PluginError("Child process did not report port within timeout");
+            throw new FfiError("Child process did not report port within timeout");
         }
 
         if (readTask.IsFaulted)
         {
             KillProcessQuietly(process, entireProcessTree: false);
             string message = readTask.Exception?.GetBaseException().Message ?? "unknown error";
-            throw new PluginError("Failed to read child stdout: " + message);
+            throw new FfiError("Failed to read child stdout: " + message);
         }
 
         string? portLine = readTask.Result;
         if (portLine == null)
         {
             KillProcessQuietly(process, entireProcessTree: false);
-            throw new PluginError("Child process exited before reporting port");
+            throw new FfiError("Child process exited before reporting port");
         }
 
         string portText = portLine["SYNURANG_PORT:".Length..].Trim();
         if (!int.TryParse(portText, out int port) || port <= 0 || port > 65535)
         {
             KillProcessQuietly(process, entireProcessTree: false);
-            throw new PluginError("Child reported invalid port: " + portText);
+            throw new FfiError("Child reported invalid port: " + portText);
         }
         string target = $"http://127.0.0.1:{port}";
 
@@ -326,7 +326,7 @@ public class ProcessHost : IDisposable
     {
         int[] fds = new int[2];
         if (Libc.socketpair(Libc.AF_UNIX, Libc.SOCK_STREAM, 0, fds) != 0)
-            throw new PluginError("socketpair() failed");
+            throw new FfiError("socketpair() failed");
 
         int parentFd = fds[0];
         int childFd = fds[1];
@@ -395,7 +395,7 @@ public class ProcessHost : IDisposable
             if (pid < 0)
             {
                 Libc.close(childFd);
-                throw new PluginError("fork() failed");
+                throw new FfiError("fork() failed");
             }
 
             if (pid == 0)
@@ -509,7 +509,7 @@ public class ProcessHost : IDisposable
         }
 
         var process = Process.Start(startInfo)
-            ?? throw new PluginError("Failed to start process: " + executable);
+            ?? throw new FfiError("Failed to start process: " + executable);
 
         // Read stdout for SYNURANG_PIPE:<name> or SYNURANG_PORT:<port>
         var reader = process.StandardOutput;
@@ -527,21 +527,21 @@ public class ProcessHost : IDisposable
         if (!readTask.Wait(StartupTimeoutMs))
         {
             KillProcessQuietly(process, entireProcessTree: false);
-            throw new PluginError("Child process did not report pipe/port within timeout");
+            throw new FfiError("Child process did not report pipe/port within timeout");
         }
 
         if (readTask.IsFaulted)
         {
             KillProcessQuietly(process, entireProcessTree: false);
             string message = readTask.Exception?.GetBaseException().Message ?? "unknown error";
-            throw new PluginError("Failed to read child stdout: " + message);
+            throw new FfiError("Failed to read child stdout: " + message);
         }
 
         string? resultLine = readTask.Result;
         if (resultLine == null)
         {
             KillProcessQuietly(process, entireProcessTree: false);
-            throw new PluginError("Child process exited before reporting pipe/port");
+            throw new FfiError("Child process exited before reporting pipe/port");
         }
 
         if (resultLine.StartsWith("SYNURANG_PIPE:"))
@@ -555,7 +555,7 @@ public class ProcessHost : IDisposable
         if (!int.TryParse(portText, out int port) || port <= 0 || port > 65535)
         {
             KillProcessQuietly(process, entireProcessTree: false);
-            throw new PluginError("Child reported invalid port: " + portText);
+            throw new FfiError("Child reported invalid port: " + portText);
         }
         return new ProcessHost(process, $"http://127.0.0.1:{port}");
     }

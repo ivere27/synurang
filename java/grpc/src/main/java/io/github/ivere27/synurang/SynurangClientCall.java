@@ -62,7 +62,7 @@ class SynurangClientCall<ReqT, RespT> extends ClientCall<ReqT, RespT> {
             try {
                 stream = host.openStream(serviceName, "/" + method.getFullMethodName());
                 startRecvThread();
-            } catch (PluginError e) {
+            } catch (FfiError e) {
                 deliverClose(Status.INTERNAL.withDescription(e.getMessage()), new Metadata());
             }
         }
@@ -87,7 +87,7 @@ class SynurangClientCall<ReqT, RespT> extends ClientCall<ReqT, RespT> {
             if (stream != null) {
                 try {
                     stream.send(data);
-                } catch (PluginError e) {
+                } catch (FfiError e) {
                     if (!cancelled.get()) {
                         cancelled.set(true);
                         if (stream != null) stream.close();
@@ -119,7 +119,7 @@ class SynurangClientCall<ReqT, RespT> extends ClientCall<ReqT, RespT> {
                     RespT msg = deserialize(resp);
                     deliver(() -> listener.onMessage(msg));
                     deliverClose(Status.OK, new Metadata());
-                } catch (PluginError e) {
+                } catch (FfiError e) {
                     if (!cancelled.get()) {
                         deliverClose(Status.INTERNAL.withDescription(e.getMessage()), new Metadata());
                     }
@@ -145,7 +145,7 @@ class SynurangClientCall<ReqT, RespT> extends ClientCall<ReqT, RespT> {
 
                     deliver(() -> listener.onHeaders(new Metadata()));
                     recvLoop(s);
-                } catch (PluginError e) {
+                } catch (FfiError e) {
                     if (s != null) s.close();
                     if (!cancelled.get()) {
                         deliverClose(Status.INTERNAL.withDescription(e.getMessage()), new Metadata());
@@ -195,7 +195,7 @@ class SynurangClientCall<ReqT, RespT> extends ClientCall<ReqT, RespT> {
                 byte[] data;
                 try {
                     data = s.recv();
-                } catch (PluginError e) {
+                } catch (FfiError e) {
                     s.close();
                     if (!cancelled.get()) {
                         deliverClose(Status.INTERNAL.withDescription(e.getMessage()), new Metadata());

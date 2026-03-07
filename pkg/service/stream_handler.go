@@ -21,6 +21,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ivere27/synurang/pkg/ffierror"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -429,7 +430,7 @@ func (s *StreamSession) ErrorStream(err error) {
 	s.mu.Unlock()
 
 	if cb != nil {
-		cb(s.ID, StreamMsgError, []byte(err.Error()))
+		cb(s.ID, StreamMsgError, ffierror.Marshal(err))
 	}
 	close(s.DoneChan)
 }

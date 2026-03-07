@@ -9,9 +9,12 @@ import (
 	"io"
 
 	"github.com/ivere27/synurang/example/go/logic"
+	"github.com/ivere27/synurang/pkg/ffierror"
 	pb "github.com/ivere27/synurang/test/plugin/api"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+const errorTriggerName = "trigger_error"
 
 // PluginServer implements GoGreeterServicePlugin for FFI mode
 type PluginServer struct {
@@ -25,8 +28,15 @@ func NewPluginServer() *PluginServer {
 	}
 }
 
+func ffiTestError(code int32, message string) error {
+	return ffierror.New(code, message, 10)
+}
+
 // Unary methods
 func (s *PluginServer) Bar(ctx context.Context, req *pb.HelloRequest) (*pb.HelloResponse, error) {
+	if req.Name == errorTriggerName {
+		return nil, ffiTestError(4101, "go unary ffi error")
+	}
 	msg, from := s.logic.Bar(req.Name)
 	return &pb.HelloResponse{
 		Message:   msg,
@@ -46,7 +56,10 @@ func (s *PluginServer) GetGoroutines(ctx context.Context, req *pb.GoroutinesRequ
 }
 
 // Server streaming
-func (s *PluginServer) BarServerStream(req *pb.HelloRequest, stream pb.GoGreeterService_BarServerStreamServer) error {
+func (s *PluginServer) BarServerStream(req *pb.HelloRequest, stream pb.GoGreeterService_BarServerStreamPluginStream) error {
+	if req.Name == errorTriggerName {
+		return ffiTestError(4102, "go server stream ffi error")
+	}
 	s.logic.BarServerStream(req.Name, func(message, from string, index, total int) bool {
 		err := stream.Send(&pb.HelloResponse{
 			Message: message,
@@ -58,7 +71,7 @@ func (s *PluginServer) BarServerStream(req *pb.HelloRequest, stream pb.GoGreeter
 }
 
 // Client streaming
-func (s *PluginServer) BarClientStream(stream pb.GoGreeterService_BarClientStreamServer) (*pb.HelloResponse, error) {
+func (s *PluginServer) BarClientStream(stream pb.GoGreeterService_BarClientStreamPluginStream) (*pb.HelloResponse, error) {
 	var names []string
 	for {
 		req, err := stream.Recv()
@@ -72,12 +85,15 @@ func (s *PluginServer) BarClientStream(stream pb.GoGreeterService_BarClientStrea
 		if err != nil {
 			return nil, err
 		}
+		if req.Name == errorTriggerName {
+			return nil, ffiTestError(4103, "go client stream ffi error")
+		}
 		names = append(names, req.Name)
 	}
 }
 
 // Bidi streaming
-func (s *PluginServer) BarBidiStream(stream pb.GoGreeterService_BarBidiStreamServer) error {
+func (s *PluginServer) BarBidiStream(stream pb.GoGreeterService_BarBidiStreamPluginStream) error {
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -85,6 +101,9 @@ func (s *PluginServer) BarBidiStream(stream pb.GoGreeterService_BarBidiStreamSer
 		}
 		if err != nil {
 			return err
+		}
+		if req.Name == errorTriggerName {
+			return ffiTestError(4104, "go bidi stream ffi error")
 		}
 		msg, from := s.logic.BarBidiStream(req.Name, req.Language)
 		if err := stream.Send(&pb.HelloResponse{
@@ -97,15 +116,15 @@ func (s *PluginServer) BarBidiStream(stream pb.GoGreeterService_BarBidiStreamSer
 }
 
 // Stub implementations for file operations
-func (s *PluginServer) UploadFile(stream pb.GoGreeterService_UploadFileServer) (*pb.FileStatus, error) {
+func (s *PluginServer) UploadFile(stream pb.GoGreeterService_UploadFilePluginStream) (*pb.FileStatus, error) {
 	return &pb.FileStatus{}, nil
 }
 
-func (s *PluginServer) DownloadFile(req *pb.DownloadFileRequest, stream pb.GoGreeterService_DownloadFileServer) error {
+func (s *PluginServer) DownloadFile(req *pb.DownloadFileRequest, stream pb.GoGreeterService_DownloadFilePluginStream) error {
 	return nil
 }
 
-func (s *PluginServer) BidiFile(stream pb.GoGreeterService_BidiFileServer) error {
+func (s *PluginServer) BidiFile(stream pb.GoGreeterService_BidiFilePluginStream) error {
 	return nil
 }
 

@@ -2,7 +2,7 @@
 //!
 //! Supports loading Go/C++/Rust plugins that export Synurang FFI symbols.
 
-use crate::{Error, Result};
+use crate::{Error, FfiError, Result};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::sync::Mutex;
@@ -22,8 +22,7 @@ pub struct PluginHost {
 }
 
 // FFI function types
-type InvokeFunc =
-    unsafe extern "C" fn(*const i8, *const u8, i32, *mut i32) -> *mut u8;
+type InvokeFunc = unsafe extern "C" fn(*const i8, *const u8, i32, *mut i32) -> *mut u8;
 type FreeFunc = unsafe extern "C" fn(*mut u8);
 type StreamOpenFunc = unsafe extern "C" fn(*const i8) -> u64;
 type StreamSendFunc = unsafe extern "C" fn(u64, *const u8, i32) -> i32;
@@ -41,6 +40,91 @@ struct StreamFuncs {
 // Safety: Plugin handles can be sent between threads
 unsafe impl Send for PluginHost {}
 unsafe impl Sync for PluginHost {}
+
+fn read_varint(data: &[u8], index: &mut usize) -> Option<u64> {
+    let mut value = 0u64;
+    let mut shift = 0u32;
+    while *index < data.len() && shift < 64 {
+        let b = data[*index];
+        *index += 1;
+        value |= ((b & 0x7f) as u64) << shift;
+        if (b & 0x80) == 0 {
+            return Some(value);
+        }
+        shift += 7;
+    }
+    None
+}
+
+fn skip_field(data: &[u8], index: &mut usize, wire_type: u64) {
+    match wire_type {
+        0 => {
+            let _ = read_varint(data, index);
+        }
+        2 => {
+            if let Some(len) = read_varint(data, index) {
+                let next = index.saturating_add(len as usize);
+                *index = next.min(data.len());
+            } else {
+                *index = data.len();
+            }
+        }
+        _ => {
+            *index = data.len();
+        }
+    }
+}
+
+fn decode_ffi_error_payload(payload: &[u8]) -> FfiError {
+    let mut index = 0usize;
+    let mut code = 0i32;
+    let mut grpc_code = 0i32;
+    let mut message: Option<String> = None;
+
+    while index < payload.len() {
+        let Some(tag) = read_varint(payload, &mut index) else {
+            break;
+        };
+        if tag == 0 {
+            break;
+        }
+        let field = tag >> 3;
+        let wire = tag & 0x07;
+        match field {
+            1 if wire == 0 => {
+                let Some(value) = read_varint(payload, &mut index) else {
+                    break;
+                };
+                code = value as i32;
+            }
+            2 if wire == 2 => {
+                let Some(len) = read_varint(payload, &mut index) else {
+                    break;
+                };
+                let len = len as usize;
+                if index + len > payload.len() {
+                    break;
+                }
+                message = Some(String::from_utf8_lossy(&payload[index..index + len]).into_owned());
+                index += len;
+            }
+            3 if wire == 0 => {
+                let Some(value) = read_varint(payload, &mut index) else {
+                    break;
+                };
+                grpc_code = value as i32;
+            }
+            _ => skip_field(payload, &mut index, wire),
+        }
+    }
+
+    FfiError {
+        message: message.unwrap_or_else(|| String::from_utf8_lossy(payload).into_owned()),
+        code,
+        grpc_code,
+        payload: payload.to_vec(),
+    }
+}
 
 impl PluginHost {
     /// Load a plugin from the given path
@@ -77,8 +161,8 @@ impl PluginHost {
     /// Load a plugin from the given path (Windows)
     #[cfg(windows)]
     pub fn load(path: &str) -> Result<Self> {
-        use std::os::windows::ffi::OsStrExt;
         use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
         use windows::core::PCWSTR;
         use windows::Win32::Foundation::GetLastError;
         use windows::Win32::System::LibraryLoader::{FreeLibrary, GetProcAddress, LoadLibraryW};
@@ -89,19 +173,19 @@ impl PluginHost {
             .chain(std::iter::once(0))
             .collect();
 
-        let handle = unsafe { LoadLibraryW(PCWSTR::from_raw(wide_path.as_ptr())) }
-            .map_err(|_| {
+        let handle =
+            unsafe { LoadLibraryW(PCWSTR::from_raw(wide_path.as_ptr())) }.map_err(|_| {
                 let err = unsafe { GetLastError() };
                 Error::LoadError(format!("LoadLibrary failed: {:?}", err))
             })?;
 
         // Lookup Synurang_Free (symbol names are ASCII, so PCSTR is fine)
         let free_name = CString::new("Synurang_Free").unwrap();
-        let free_ptr = unsafe { 
+        let free_ptr = unsafe {
             GetProcAddress(
-                handle, 
-                windows::core::PCSTR::from_raw(free_name.as_ptr() as *const u8)
-            ) 
+                handle,
+                windows::core::PCSTR::from_raw(free_name.as_ptr() as *const u8),
+            )
         };
         if free_ptr.is_none() {
             unsafe { FreeLibrary(handle) };
@@ -145,8 +229,8 @@ impl PluginHost {
 
         let invoke_fn = self.get_invoker(service_name)?;
 
-        let c_method =
-            CString::new(method).map_err(|_| Error::PluginError("Invalid method".into()))?;
+        let c_method = CString::new(method)
+            .map_err(|_| Error::PluginError(FfiError::new("Invalid method")))?;
 
         let mut resp_len: i32 = 0;
         let resp = unsafe {
@@ -163,30 +247,25 @@ impl PluginHost {
         };
 
         if resp.is_null() {
-            return Err(Error::PluginError(format!(
+            if resp_len == 0 {
+                return Ok(Vec::new());
+            }
+            return Err(Error::PluginError(FfiError::new(format!(
                 "Plugin returned null for {}",
                 method
-            )));
+            ))));
         }
 
+        let copy_len = if resp_len < 0 { -resp_len } else { resp_len } as usize;
         // Copy response before freeing
-        let result = unsafe { std::slice::from_raw_parts(resp, resp_len as usize).to_vec() };
+        let result = unsafe { std::slice::from_raw_parts(resp, copy_len).to_vec() };
         unsafe { (self.free_ptr)(resp) };
 
-        // Check status byte
-        if result.is_empty() {
-            return Err(Error::PluginError(format!(
-                "Empty response from plugin for {}",
-                method
-            )));
-        }
-        if result[0] == 1 {
-            return Err(Error::PluginError(
-                String::from_utf8_lossy(&result[1..]).into(),
-            ));
+        if resp_len < 0 {
+            return Err(Error::PluginError(decode_ffi_error_payload(&result)));
         }
 
-        Ok(result[1..].to_vec())
+        Ok(result)
     }
 
     fn get_invoker(&self, service_name: &str) -> Result<InvokeFunc> {
@@ -222,7 +301,8 @@ impl PluginHost {
         use windows::Win32::System::LibraryLoader::GetProcAddress;
 
         let c_name = CString::new(name).map_err(|_| Error::SymbolNotFound(name.into()))?;
-        let ptr = unsafe { GetProcAddress(self.handle, PCSTR::from_raw(c_name.as_ptr() as *const u8)) };
+        let ptr =
+            unsafe { GetProcAddress(self.handle, PCSTR::from_raw(c_name.as_ptr() as *const u8)) };
         match ptr {
             Some(p) => Ok(p as *mut std::ffi::c_void),
             None => Err(Error::SymbolNotFound(name.into())),
@@ -230,7 +310,7 @@ impl PluginHost {
     }
 
     /// Open a streaming RPC
-    pub fn open_stream(&self, service_name: &str, method: &str) -> Result<PluginStream> {
+    pub fn open_stream(&self, service_name: &str, method: &str) -> Result<PluginStream<'_>> {
         if *self.closed.lock().unwrap() {
             return Err(Error::PluginClosed);
         }
@@ -238,15 +318,15 @@ impl PluginHost {
         self.ensure_stream_funcs()?;
         let open_fn = self.get_stream_opener(service_name)?;
 
-        let c_method =
-            CString::new(method).map_err(|_| Error::StreamError("Invalid method".into()))?;
+        let c_method = CString::new(method)
+            .map_err(|_| Error::StreamError(FfiError::new("Invalid method")))?;
 
         let handle = unsafe { open_fn(c_method.as_ptr()) };
         if handle == 0 {
-            return Err(Error::StreamError(format!(
+            return Err(Error::StreamError(FfiError::new(format!(
                 "Failed to open stream for {}",
                 method
-            )));
+            ))));
         }
 
         Ok(PluginStream {
@@ -316,7 +396,9 @@ impl<'a> PluginStream<'a> {
         }
 
         let funcs = self.plugin.stream_funcs.lock().unwrap();
-        let funcs = funcs.as_ref().ok_or(Error::StreamError("No stream funcs".into()))?;
+        let funcs = funcs
+            .as_ref()
+            .ok_or(Error::StreamError(FfiError::new("No stream funcs")))?;
 
         let result = unsafe {
             (funcs.send)(
@@ -331,10 +413,10 @@ impl<'a> PluginStream<'a> {
         };
 
         if result != 0 {
-            return Err(Error::StreamError(format!(
+            return Err(Error::StreamError(FfiError::new(format!(
                 "Stream send failed with code {}",
                 result
-            )));
+            ))));
         }
         Ok(())
     }
@@ -346,7 +428,9 @@ impl<'a> PluginStream<'a> {
         }
 
         let funcs = self.plugin.stream_funcs.lock().unwrap();
-        let funcs = funcs.as_ref().ok_or(Error::StreamError("No stream funcs".into()))?;
+        let funcs = funcs
+            .as_ref()
+            .ok_or(Error::StreamError(FfiError::new("No stream funcs")))?;
 
         let mut resp_len: i32 = 0;
         let mut status: i32 = 0;
@@ -354,20 +438,18 @@ impl<'a> PluginStream<'a> {
 
         match status {
             0 => {
-                // Data
-                if resp.is_null() || resp_len == 0 {
-                    return Err(Error::StreamError("Empty stream response".into()));
+                if resp.is_null() {
+                    if resp_len == 0 {
+                        return Ok(Vec::new());
+                    }
+                    return Err(Error::StreamError(FfiError::new(
+                        "Plugin returned null for stream recv",
+                    )));
                 }
                 let result =
                     unsafe { std::slice::from_raw_parts(resp, resp_len as usize).to_vec() };
                 unsafe { (self.plugin.free_ptr)(resp) };
-
-                if result[0] == 1 {
-                    return Err(Error::PluginError(
-                        String::from_utf8_lossy(&result[1..]).into(),
-                    ));
-                }
-                Ok(result[1..].to_vec())
+                Ok(result)
             }
             1 => {
                 // EOF
@@ -376,17 +458,29 @@ impl<'a> PluginStream<'a> {
                 }
                 Err(Error::Eof)
             }
-            _ => {
-                // Error
-                let msg = if !resp.is_null() && resp_len > 0 {
-                    let s = unsafe { std::slice::from_raw_parts(resp, resp_len as usize) };
-                    let msg = String::from_utf8_lossy(s).into_owned();
+            s if s < 0 => {
+                if !resp.is_null() && resp_len > 0 {
+                    let result =
+                        unsafe { std::slice::from_raw_parts(resp, resp_len as usize).to_vec() };
                     unsafe { (self.plugin.free_ptr)(resp) };
-                    msg
-                } else {
-                    format!("Stream error with status {}", status)
-                };
-                Err(Error::StreamError(msg))
+                    return Err(Error::PluginError(decode_ffi_error_payload(&result)));
+                }
+                if !resp.is_null() {
+                    unsafe { (self.plugin.free_ptr)(resp) };
+                }
+                Err(Error::PluginError(FfiError::new(format!(
+                    "Stream error with status {}",
+                    status
+                ))))
+            }
+            _ => {
+                if !resp.is_null() {
+                    unsafe { (self.plugin.free_ptr)(resp) };
+                }
+                Err(Error::StreamError(FfiError::new(format!(
+                    "Stream error with status {}",
+                    status
+                ))))
             }
         }
     }

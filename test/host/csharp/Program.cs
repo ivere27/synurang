@@ -18,6 +18,8 @@ using System.Threading.Tasks;
 using Grpc.Core;
 using Synurang;
 
+const string ErrorTriggerName = "trigger_error";
+
 // =============================================================================
 // Proto Helpers (manual serialization, same as C++/Java/Rust tests)
 // =============================================================================
@@ -67,6 +69,98 @@ bool IsRpcStatus(Exception ex, StatusCode code)
     if (ex is AggregateException agg && agg.InnerException != null)
         ex = agg.InnerException;
     return ex is RpcException rpc && rpc.StatusCode == code;
+}
+
+(string Message, int Code, int GrpcCode) ExpectedFfiError(string pluginName, string rpcKind)
+{
+    return (pluginName, rpcKind) switch
+    {
+        ("Go", "unary") => ("go unary ffi error", 4101, 10),
+        ("Go", "server") => ("go server stream ffi error", 4102, 10),
+        ("Go", "client") => ("go client stream ffi error", 4103, 10),
+        ("Go", "bidi") => ("go bidi stream ffi error", 4104, 10),
+        ("C++", "unary") => ("cpp unary ffi error", 4201, 10),
+        ("C++", "server") => ("cpp server stream ffi error", 4202, 10),
+        ("C++", "client") => ("cpp client stream ffi error", 4203, 10),
+        ("C++", "bidi") => ("cpp bidi stream ffi error", 4204, 10),
+        ("Rust", "unary") => ("rust unary ffi error", 4301, 10),
+        ("Rust", "server") => ("rust server stream ffi error", 4302, 10),
+        ("Rust", "client") => ("rust client stream ffi error", 4303, 10),
+        ("Rust", "bidi") => ("rust bidi stream ffi error", 4304, 10),
+        _ => throw new InvalidOperationException($"Unknown plugin/rpc expectation: {pluginName}/{rpcKind}")
+    };
+}
+
+void AssertFfiError(string label, FfiError error, (string Message, int Code, int GrpcCode) expected)
+{
+    if (error.Message != expected.Message)
+        throw new Exception($"{label} message mismatch: expected={expected.Message} got={error.Message}");
+    if (error.Code != expected.Code)
+        throw new Exception($"{label} code mismatch: expected={expected.Code} got={error.Code}");
+    if (error.GrpcCode != expected.GrpcCode)
+        throw new Exception($"{label} grpcCode mismatch: expected={expected.GrpcCode} got={error.GrpcCode}");
+}
+
+void TestStructuredFfiErrors(PluginHost plugin, string pluginName)
+{
+    var unaryExpected = ExpectedFfiError(pluginName, "unary");
+    try
+    {
+        plugin.Invoke("GoGreeterService", "/example.v1.GoGreeterService/Bar", MakeHelloRequest(ErrorTriggerName));
+        throw new Exception("unary expected FfiError");
+    }
+    catch (FfiError e)
+    {
+        AssertFfiError("unary", e, unaryExpected);
+    }
+
+    var serverExpected = ExpectedFfiError(pluginName, "server");
+    using (var stream = plugin.OpenStream("GoGreeterService", "/example.v1.GoGreeterService/BarServerStream"))
+    {
+        try
+        {
+            stream.Send(MakeHelloRequest(ErrorTriggerName));
+            stream.CloseSend();
+            byte[]? data = stream.Recv();
+            throw new Exception($"server-stream expected FfiError, got {(data == null ? "EOF" : "data")}");
+        }
+        catch (FfiError e)
+        {
+            AssertFfiError("server-stream", e, serverExpected);
+        }
+    }
+
+    var clientExpected = ExpectedFfiError(pluginName, "client");
+    using (var stream = plugin.OpenStream("GoGreeterService", "/example.v1.GoGreeterService/BarClientStream"))
+    {
+        try
+        {
+            stream.Send(MakeHelloRequest(ErrorTriggerName));
+            stream.CloseSend();
+            byte[]? data = stream.Recv();
+            throw new Exception($"client-stream expected FfiError, got {(data == null ? "EOF" : "data")}");
+        }
+        catch (FfiError e)
+        {
+            AssertFfiError("client-stream", e, clientExpected);
+        }
+    }
+
+    var bidiExpected = ExpectedFfiError(pluginName, "bidi");
+    using (var stream = plugin.OpenStream("GoGreeterService", "/example.v1.GoGreeterService/BarBidiStream"))
+    {
+        try
+        {
+            stream.Send(MakeHelloRequest(ErrorTriggerName));
+            stream.CloseSend();
+            byte[]? data = stream.Recv();
+            throw new Exception($"bidi expected FfiError, got {(data == null ? "EOF" : "data")}");
+        }
+        catch (FfiError e)
+        {
+            AssertFfiError("bidi", e, bidiExpected);
+        }
+    }
 }
 
 // =============================================================================
@@ -214,6 +308,20 @@ void TestPlugin(string path, string name)
                 count++;
             }
             Console.WriteLine($"OK echoed {count} messages");
+            passed++;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("FAIL " + e.Message);
+            failed++;
+        }
+
+        // Test 5: Structured FFI errors on all 4 RPC types
+        Console.Write("  [5/5] Structured FFI Errors... ");
+        try
+        {
+            TestStructuredFfiErrors(plugin, name);
+            Console.WriteLine("OK unary/server/client/bidi");
             passed++;
         }
         catch (Exception e)

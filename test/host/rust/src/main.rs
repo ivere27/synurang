@@ -7,40 +7,176 @@
 
 use std::path::Path;
 
+const ERROR_TRIGGER_NAME: &str = "trigger_error";
+
+struct Counters {
+    passed: usize,
+    failed: usize,
+    skipped: usize,
+}
+
+struct ExpectedPluginError {
+    message: &'static str,
+    code: i32,
+    grpc_code: i32,
+}
+
+fn expected_plugin_error(plugin_name: &str, rpc_kind: &str) -> ExpectedPluginError {
+    match (plugin_name, rpc_kind) {
+        ("Go", "unary") => ExpectedPluginError {
+            message: "go unary ffi error",
+            code: 4101,
+            grpc_code: 10,
+        },
+        ("Go", "server") => ExpectedPluginError {
+            message: "go server stream ffi error",
+            code: 4102,
+            grpc_code: 10,
+        },
+        ("Go", "client") => ExpectedPluginError {
+            message: "go client stream ffi error",
+            code: 4103,
+            grpc_code: 10,
+        },
+        ("Go", "bidi") => ExpectedPluginError {
+            message: "go bidi stream ffi error",
+            code: 4104,
+            grpc_code: 10,
+        },
+        ("C++", "unary") => ExpectedPluginError {
+            message: "cpp unary ffi error",
+            code: 4201,
+            grpc_code: 10,
+        },
+        ("C++", "server") => ExpectedPluginError {
+            message: "cpp server stream ffi error",
+            code: 4202,
+            grpc_code: 10,
+        },
+        ("C++", "client") => ExpectedPluginError {
+            message: "cpp client stream ffi error",
+            code: 4203,
+            grpc_code: 10,
+        },
+        ("C++", "bidi") => ExpectedPluginError {
+            message: "cpp bidi stream ffi error",
+            code: 4204,
+            grpc_code: 10,
+        },
+        ("Rust", "unary") => ExpectedPluginError {
+            message: "rust unary ffi error",
+            code: 4301,
+            grpc_code: 10,
+        },
+        ("Rust", "server") => ExpectedPluginError {
+            message: "rust server stream ffi error",
+            code: 4302,
+            grpc_code: 10,
+        },
+        ("Rust", "client") => ExpectedPluginError {
+            message: "rust client stream ffi error",
+            code: 4303,
+            grpc_code: 10,
+        },
+        ("Rust", "bidi") => ExpectedPluginError {
+            message: "rust bidi stream ffi error",
+            code: 4304,
+            grpc_code: 10,
+        },
+        _ => panic!("unknown plugin/rpc expectation: {plugin_name}/{rpc_kind}"),
+    }
+}
+
+fn assert_plugin_error(
+    label: &str,
+    err: &synurang_host::FfiError,
+    expected: &ExpectedPluginError,
+) -> Result<(), String> {
+    if err.message != expected.message {
+        return Err(format!(
+            "{label} message mismatch: expected={} got={}",
+            expected.message, err.message
+        ));
+    }
+    if err.code != expected.code {
+        return Err(format!(
+            "{label} code mismatch: expected={} got={}",
+            expected.code, err.code
+        ));
+    }
+    if err.grpc_code != expected.grpc_code {
+        return Err(format!(
+            "{label} grpc_code mismatch: expected={} got={}",
+            expected.grpc_code, err.grpc_code
+        ));
+    }
+    Ok(())
+}
+
+fn expect_plugin_error(
+    label: &str,
+    result: Result<Vec<u8>, synurang_host::Error>,
+    expected: &ExpectedPluginError,
+) -> Result<(), String> {
+    match result {
+        Err(synurang_host::Error::PluginError(err))
+        | Err(synurang_host::Error::StreamError(err)) => assert_plugin_error(label, &err, expected),
+        Err(synurang_host::Error::Eof) => Err(format!("{label} expected FfiError, got EOF")),
+        Err(other) => Err(format!("{label} expected FfiError, got {other}")),
+        Ok(_) => Err(format!("{label} expected FfiError, got data")),
+    }
+}
+
 // For this test, we need synurang-host from parent crate
 // In a real project, you'd add it as a dependency
 fn main() {
+    let mut counters = Counters {
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+    };
     println!("═══════════════════════════════════════════════════════════════");
     println!("  Rust Host Test (All 4 RPC Types × 3 Plugin Languages)");
     println!("═══════════════════════════════════════════════════════════════");
 
-    test_plugin("bin/libplugin_go.so", "Go");
-    test_plugin("bin/libplugin_cpp.so", "C++");
-    test_plugin("bin/libplugin_rust.so", "Rust");
+    test_plugin("bin/libplugin_go.so", "Go", &mut counters);
+    test_plugin("bin/libplugin_cpp.so", "C++", &mut counters);
+    test_plugin("bin/libplugin_rust.so", "Rust", &mut counters);
 
     println!("\n═══════════════════════════════════════════════════════════════");
     println!("  Rust Host Test Complete");
+    println!(
+        "  Passed: {}  Failed: {}  Skipped: {}",
+        counters.passed, counters.failed, counters.skipped
+    );
     println!("═══════════════════════════════════════════════════════════════");
+
+    if counters.failed > 0 {
+        std::process::exit(1);
+    }
 }
 
-fn test_plugin(path: &str, name: &str) {
+fn test_plugin(path: &str, name: &str, counters: &mut Counters) {
     println!("\n▶ Testing {} plugin: {}", name, path);
 
     if !Path::new(path).exists() {
         println!("  ⚠ SKIP: Plugin not found");
+        counters.skipped += 1;
         return;
     }
 
     match synurang_host::PluginHost::load(path) {
         Ok(plugin) => {
-            test_unary(&plugin);
-            test_server_stream(&plugin);
-            test_client_stream(&plugin);
-            test_bidi_stream(&plugin);
+            test_unary(&plugin, counters);
+            test_server_stream(&plugin, counters);
+            test_client_stream(&plugin, counters);
+            test_bidi_stream(&plugin, counters);
+            test_structured_ffi_errors(&plugin, name, counters);
             plugin.close();
         }
         Err(e) => {
             println!("  ✗ Failed: {}", e);
+            counters.failed += 1;
         }
     }
 }
@@ -79,24 +215,34 @@ fn extract_message(data: &[u8]) -> String {
     String::from_utf8_lossy(&data[offset..offset + len]).to_string()
 }
 
-fn test_unary(plugin: &synurang_host::PluginHost) {
+fn test_unary(plugin: &synurang_host::PluginHost, counters: &mut Counters) {
     print!("  [1/4] Unary RPC... ");
     match plugin.invoke(
         "GoGreeterService",
         "/example.v1.GoGreeterService/Bar",
         &make_hello_request("RustHost"),
     ) {
-        Ok(resp) => println!("✓ {}", extract_message(&resp)),
-        Err(e) => println!("✗ {}", e),
+        Ok(resp) => {
+            println!("✓ {}", extract_message(&resp));
+            counters.passed += 1;
+        }
+        Err(e) => {
+            println!("✗ {}", e);
+            counters.failed += 1;
+        }
     }
 }
 
-fn test_server_stream(plugin: &synurang_host::PluginHost) {
+fn test_server_stream(plugin: &synurang_host::PluginHost, counters: &mut Counters) {
     print!("  [2/4] Server Streaming... ");
-    match plugin.open_stream("GoGreeterService", "/example.v1.GoGreeterService/BarServerStream") {
-        Ok(mut stream) => {
+    match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarServerStream",
+    ) {
+        Ok(stream) => {
             if let Err(e) = stream.send(&make_hello_request("StreamTest")) {
                 println!("✗ send: {}", e);
+                counters.failed += 1;
                 return;
             }
             stream.close_send();
@@ -113,39 +259,60 @@ fn test_server_stream(plugin: &synurang_host::PluginHost) {
                 }
             }
             println!("✓ received {} messages", count);
+            counters.passed += 1;
         }
-        Err(e) => println!("✗ {}", e),
+        Err(e) => {
+            println!("✗ {}", e);
+            counters.failed += 1;
+        }
     }
 }
 
-fn test_client_stream(plugin: &synurang_host::PluginHost) {
+fn test_client_stream(plugin: &synurang_host::PluginHost, counters: &mut Counters) {
     print!("  [3/4] Client Streaming... ");
-    match plugin.open_stream("GoGreeterService", "/example.v1.GoGreeterService/BarClientStream") {
-        Ok(mut stream) => {
+    match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarClientStream",
+    ) {
+        Ok(stream) => {
             for i in 0..3 {
                 if let Err(e) = stream.send(&make_hello_request(&format!("Msg{}", i))) {
                     println!("✗ send: {}", e);
+                    counters.failed += 1;
                     return;
                 }
             }
             stream.close_send();
 
             match stream.recv() {
-                Ok(resp) => println!("✓ {}", extract_message(&resp)),
-                Err(e) => println!("✗ recv: {}", e),
+                Ok(resp) => {
+                    println!("✓ {}", extract_message(&resp));
+                    counters.passed += 1;
+                }
+                Err(e) => {
+                    println!("✗ recv: {}", e);
+                    counters.failed += 1;
+                }
             }
         }
-        Err(e) => println!("✗ {}", e),
+        Err(e) => {
+            println!("✗ {}", e);
+            counters.failed += 1;
+        }
     }
 }
 
-fn test_bidi_stream(plugin: &synurang_host::PluginHost) {
+fn test_bidi_stream(plugin: &synurang_host::PluginHost, counters: &mut Counters) {
     print!("  [4/4] Bidi Streaming... ");
-    match plugin.open_stream("GoGreeterService", "/example.v1.GoGreeterService/BarBidiStream") {
-        Ok(mut stream) => {
+    match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarBidiStream",
+    ) {
+        Ok(stream) => {
             for i in 0..3 {
                 if let Err(e) = stream.send(&make_hello_request(&format!("Ping{}", i))) {
                     println!("✗ send: {}", e);
+                    counters.failed += 1;
                     return;
                 }
             }
@@ -163,7 +330,109 @@ fn test_bidi_stream(plugin: &synurang_host::PluginHost) {
                 }
             }
             println!("✓ echoed {} messages", count);
+            counters.passed += 1;
         }
-        Err(e) => println!("✗ {}", e),
+        Err(e) => {
+            println!("✗ {}", e);
+            counters.failed += 1;
+        }
     }
+}
+
+fn test_structured_ffi_errors(
+    plugin: &synurang_host::PluginHost,
+    plugin_name: &str,
+    counters: &mut Counters,
+) {
+    print!("  [5/5] Structured FFI Errors... ");
+
+    let unary_expected = expected_plugin_error(plugin_name, "unary");
+    if let Err(msg) = expect_plugin_error(
+        "unary",
+        plugin.invoke(
+            "GoGreeterService",
+            "/example.v1.GoGreeterService/Bar",
+            &make_hello_request(ERROR_TRIGGER_NAME),
+        ),
+        &unary_expected,
+    ) {
+        println!("✗ {}", msg);
+        counters.failed += 1;
+        return;
+    }
+
+    let server_expected = expected_plugin_error(plugin_name, "server");
+    let server_stream = match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarServerStream",
+    ) {
+        Ok(stream) => stream,
+        Err(e) => {
+            println!("✗ {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+    if let Err(e) = server_stream.send(&make_hello_request(ERROR_TRIGGER_NAME)) {
+        println!("✗ {}", e);
+        counters.failed += 1;
+        return;
+    }
+    server_stream.close_send();
+    if let Err(msg) = expect_plugin_error("server-stream", server_stream.recv(), &server_expected) {
+        println!("✗ {}", msg);
+        counters.failed += 1;
+        return;
+    }
+
+    let client_expected = expected_plugin_error(plugin_name, "client");
+    let client_stream = match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarClientStream",
+    ) {
+        Ok(stream) => stream,
+        Err(e) => {
+            println!("✗ {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+    if let Err(e) = client_stream.send(&make_hello_request(ERROR_TRIGGER_NAME)) {
+        println!("✗ {}", e);
+        counters.failed += 1;
+        return;
+    }
+    client_stream.close_send();
+    if let Err(msg) = expect_plugin_error("client-stream", client_stream.recv(), &client_expected) {
+        println!("✗ {}", msg);
+        counters.failed += 1;
+        return;
+    }
+
+    let bidi_expected = expected_plugin_error(plugin_name, "bidi");
+    let bidi_stream = match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarBidiStream",
+    ) {
+        Ok(stream) => stream,
+        Err(e) => {
+            println!("✗ {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+    if let Err(e) = bidi_stream.send(&make_hello_request(ERROR_TRIGGER_NAME)) {
+        println!("✗ {}", e);
+        counters.failed += 1;
+        return;
+    }
+    bidi_stream.close_send();
+    if let Err(msg) = expect_plugin_error("bidi", bidi_stream.recv(), &bidi_expected) {
+        println!("✗ {}", msg);
+        counters.failed += 1;
+        return;
+    }
+
+    println!("✓ unary/server/client/bidi");
+    counters.passed += 1;
 }

@@ -264,7 +264,12 @@ fn is_expected_error(err: &OpError) -> bool {
         OpError::Status(st) => {
             matches!(
                 st.code(),
-                Code::Cancelled | Code::DeadlineExceeded | Code::Unavailable | Code::Aborted | Code::Unknown | Code::Internal
+                Code::Cancelled
+                    | Code::DeadlineExceeded
+                    | Code::Unavailable
+                    | Code::Aborted
+                    | Code::Unknown
+                    | Code::Internal
             ) || {
                 let m = st.message().to_lowercase();
                 m.contains("deadline")

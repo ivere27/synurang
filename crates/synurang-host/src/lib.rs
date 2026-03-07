@@ -36,6 +36,25 @@ use thiserror::Error;
 /// Environment variable name for IPC address
 pub const ENV_VAR_IPC: &str = "SYNURANG_IPC";
 
+#[derive(Debug, Clone)]
+pub struct FfiError {
+    pub message: String,
+    pub code: i32,
+    pub grpc_code: i32,
+    pub payload: Vec<u8>,
+}
+
+impl FfiError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: 0,
+            grpc_code: 2, // UNKNOWN
+            payload: Vec::new(),
+        }
+    }
+}
+
 /// Error type for synurang-host operations
 #[derive(Error, Debug)]
 pub enum Error {
@@ -51,11 +70,11 @@ pub enum Error {
     #[error("Service not found: {0}")]
     ServiceNotFound(String),
 
-    #[error("Plugin error: {0}")]
-    PluginError(String),
+    #[error("Plugin error: {}", .0.message)]
+    PluginError(FfiError),
 
-    #[error("Stream error: {0}")]
-    StreamError(String),
+    #[error("Stream error: {}", .0.message)]
+    StreamError(FfiError),
 
     #[error("Process error: {0}")]
     ProcessError(String),

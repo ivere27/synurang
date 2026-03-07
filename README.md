@@ -503,6 +503,10 @@ dart run example/console_main.dart --mode=uds --socket=/tmp/synurang.sock
 grpcurl -plaintext localhost:18000 api.Greeter/SayHello
 ```
 
+### Testing Structured FFI Errors
+
+Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end-to-end testing are documented in [FFI-API.md](FFI-API.md).
+
 ---
 
 ## Features

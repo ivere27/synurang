@@ -51,18 +51,18 @@ public class PluginHost implements AutoCloseable {
      *
      * @param path path to .so/.dylib/.dll file
      * @return loaded plugin host
-     * @throws PluginError if loading fails or Synurang_Free symbol is missing
+     * @throws FfiError if loading fails or Synurang_Free symbol is missing
      */
-    public static PluginHost load(String path) throws PluginError {
+    public static PluginHost load(String path) throws FfiError {
         long handle = SynurangJni.nativeOpen(path);
         if (handle == 0) {
-            throw new PluginError("Failed to load plugin: " + path);
+            throw new FfiError("Failed to load plugin: " + path);
         }
 
         long freePtr = SynurangJni.nativeLookupSymbol(handle, "Synurang_Free");
         if (freePtr == 0) {
             SynurangJni.nativeClose(handle);
-            throw new PluginError("Plugin missing Synurang_Free symbol: " + path);
+            throw new FfiError("Plugin missing Synurang_Free symbol: " + path);
         }
 
         return new PluginHost(handle, freePtr);
@@ -71,35 +71,20 @@ public class PluginHost implements AutoCloseable {
     /**
      * Invoke a unary RPC method on a service.
      * <p>
-     * Response format from plugin: [status:1byte][payload...]
-     * status=0: success, payload is protobuf response
-     * status=1: error, payload is error message
+     * Success returns raw protobuf bytes. Negative native lengths are decoded as {@link FfiError}.
      *
      * @param serviceName the service name (e.g., "GoGreeterService")
      * @param method      the full gRPC method path (e.g., "/pkg.Service/Method")
      * @param data        the serialized protobuf request
-     * @return the protobuf response bytes (status byte stripped)
-     * @throws PluginError on error
+     * @return the protobuf response bytes
+     * @throws FfiError on error
      */
-    public byte[] invoke(String serviceName, String method, byte[] data) throws PluginError {
+    public byte[] invoke(String serviceName, String method, byte[] data) throws FfiError {
         ensureOpen();
 
         long invokePtr = getInvoker(serviceName);
         byte[] result = SynurangJni.nativeInvoke(invokePtr, freePtr, method, data);
-
-        if (result == null || result.length == 0) {
-            throw new PluginError("Empty response from plugin for " + method);
-        }
-
-        // Check status byte
-        if (result[0] == 1) {
-            throw new PluginError(new String(result, 1, result.length - 1));
-        }
-
-        // Strip status byte
-        byte[] payload = new byte[result.length - 1];
-        System.arraycopy(result, 1, payload, 0, payload.length);
-        return payload;
+        return result == null ? new byte[0] : result;
     }
 
     /**
@@ -108,9 +93,9 @@ public class PluginHost implements AutoCloseable {
      * @param serviceName the service name
      * @param method      the full gRPC method path
      * @return a stream handle for send/recv operations
-     * @throws PluginError on error
+     * @throws FfiError on error
      */
-    public PluginStream openStream(String serviceName, String method) throws PluginError {
+    public PluginStream openStream(String serviceName, String method) throws FfiError {
         ensureOpen();
 
         StreamFuncs sf = ensureStreamFuncs();
@@ -118,7 +103,7 @@ public class PluginHost implements AutoCloseable {
 
         long streamHandle = SynurangJni.nativeStreamOpen(openPtr, method);
         if (streamHandle == 0) {
-            throw new PluginError("Failed to open stream for " + method);
+            throw new FfiError("Failed to open stream for " + method);
         }
 
         return new PluginStream(this, streamHandle, sf);
@@ -135,41 +120,41 @@ public class PluginHost implements AutoCloseable {
     // Internal
     // -------------------------------------------------------------------------
 
-    private void ensureOpen() throws PluginError.ClosedError {
+    private void ensureOpen() throws FfiError.ClosedError {
         if (closed.get()) {
-            throw new PluginError.ClosedError();
+            throw new FfiError.ClosedError();
         }
     }
 
-    private long getInvoker(String serviceName) throws PluginError {
+    private long getInvoker(String serviceName) throws FfiError {
         Long cached = invokers.get(serviceName);
         if (cached != null) return cached;
 
         String symName = "Synurang_Invoke_" + serviceName;
         long ptr = SynurangJni.nativeLookupSymbol(handle, symName);
         if (ptr == 0) {
-            throw new PluginError("Service not found: " + serviceName + " (missing " + symName + ")");
+            throw new FfiError("Service not found: " + serviceName + " (missing " + symName + ")");
         }
 
         invokers.put(serviceName, ptr);
         return ptr;
     }
 
-    private long getStreamOpener(String serviceName) throws PluginError {
+    private long getStreamOpener(String serviceName) throws FfiError {
         Long cached = streamOpeners.get(serviceName);
         if (cached != null) return cached;
 
         String symName = "Synurang_Stream_" + serviceName + "_Open";
         long ptr = SynurangJni.nativeLookupSymbol(handle, symName);
         if (ptr == 0) {
-            throw new PluginError("Streaming not supported for " + serviceName + " (missing " + symName + ")");
+            throw new FfiError("Streaming not supported for " + serviceName + " (missing " + symName + ")");
         }
 
         streamOpeners.put(serviceName, ptr);
         return ptr;
     }
 
-    private StreamFuncs ensureStreamFuncs() throws PluginError {
+    private StreamFuncs ensureStreamFuncs() throws FfiError {
         StreamFuncs sf = streamFuncs;
         if (sf != null) return sf;
 
@@ -183,7 +168,7 @@ public class PluginHost implements AutoCloseable {
             long close = SynurangJni.nativeLookupSymbol(handle, "Synurang_Stream_Close");
 
             if (send == 0 || recv == 0 || closeSend == 0 || close == 0) {
-                throw new PluginError("Incomplete streaming support in plugin");
+                throw new FfiError("Incomplete streaming support in plugin");
             }
 
             sf = new StreamFuncs(send, recv, closeSend, close);
@@ -204,9 +189,9 @@ public class PluginHost implements AutoCloseable {
      *
      * @param buffer a direct ByteBuffer (e.g., from Camera2 Image planes)
      * @return the native pointer address
-     * @throws PluginError if the buffer is not a direct buffer
+     * @throws FfiError if the buffer is not a direct buffer
      */
-    public static long getDirectBufferAddress(java.nio.Buffer buffer) throws PluginError {
+    public static long getDirectBufferAddress(java.nio.Buffer buffer) throws FfiError {
         return SynurangJni.nativeGetDirectBufferAddress(buffer);
     }
 }

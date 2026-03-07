@@ -60,13 +60,13 @@ PluginHost PluginHost::load(const std::string& path) {
     HMODULE handle = LoadLibraryW(wide_path.c_str());
     if (!handle) {
         DWORD error = GetLastError();
-        throw PluginError("Failed to load plugin: error code " + std::to_string(error));
+        throw FfiError("Failed to load plugin: error code " + std::to_string(error));
     }
 
     void* free_ptr = reinterpret_cast<void*>(GetProcAddress(handle, "Synurang_Free"));
     if (!free_ptr) {
         FreeLibrary(handle);
-        throw PluginError("Plugin missing Synurang_Free symbol");
+        throw FfiError("Plugin missing Synurang_Free symbol");
     }
 
     auto state = std::make_shared<PluginState>(handle, reinterpret_cast<FreeFunc>(free_ptr));
@@ -87,7 +87,7 @@ std::vector<uint8_t> PluginHost::invoke(
     const std::string& method,
     const std::vector<uint8_t>& data
 ) {
-    if (!state_) throw PluginError("Plugin not initialized");
+    if (!state_) throw FfiError("Plugin not initialized");
 
     InvokeFunc invoke_fn = nullptr;
     FreeFunc free_fn = state_->free_ptr;
@@ -103,7 +103,7 @@ std::vector<uint8_t> PluginHost::invoke(
             std::string sym_name = "Synurang_Invoke_" + service_name;
             void* ptr = state_->lookup(sym_name.c_str());
             if (!ptr) {
-                throw PluginError("Service not found: " + service_name);
+                throw FfiError("Service not found: " + service_name);
             }
             invoke_fn = reinterpret_cast<InvokeFunc>(ptr);
             state_->invokers[service_name] = invoke_fn;
@@ -121,24 +121,25 @@ std::vector<uint8_t> PluginHost::invoke(
     int resp_len = 0;
     char* resp = invoke_fn(method_buf.data(), data_ptr, static_cast<int>(data.size()), &resp_len);
 
-    if (!resp) throw PluginError("Plugin returned null");
-
-    std::vector<uint8_t> result(resp, resp + resp_len);
-    free_fn(resp);
-
-    if (result.empty()) throw PluginError("Empty response");
-    if (result[0] == 1) {
-        throw PluginError(std::string(result.begin() + 1, result.end()));
+    if (!resp) {
+        if (resp_len == 0) return {};
+        throw FfiError("Plugin returned null");
     }
 
-    return std::vector<uint8_t>(result.begin() + 1, result.end());
+    std::vector<uint8_t> result(resp, resp + detail::abs_len(resp_len));
+    free_fn(resp);
+
+    if (resp_len < 0) {
+        throw detail::decode_ffi_error(result);
+    }
+    return result;
 }
 
 std::unique_ptr<PluginStream> PluginHost::open_stream(
     const std::string& service_name,
     const std::string& method
 ) {
-    if (!state_) throw PluginError("Plugin not initialized");
+    if (!state_) throw FfiError("Plugin not initialized");
 
     StreamOpenFunc open_fn = nullptr;
     {
@@ -152,7 +153,7 @@ std::unique_ptr<PluginStream> PluginHost::open_stream(
             auto close = state_->lookup("Synurang_Stream_Close");
 
             if (!send || !recv || !close_send || !close) {
-                throw PluginError("Incomplete streaming support");
+                throw FfiError("Incomplete streaming support");
             }
 
             state_->stream_funcs = std::make_unique<StreamFuncs>();
@@ -169,7 +170,7 @@ std::unique_ptr<PluginStream> PluginHost::open_stream(
             std::string sym_name = "Synurang_Stream_" + service_name + "_Open";
             void* ptr = state_->lookup(sym_name.c_str());
             if (!ptr) {
-                throw PluginError("Streaming not supported for " + service_name);
+                throw FfiError("Streaming not supported for " + service_name);
             }
             open_fn = reinterpret_cast<StreamOpenFunc>(ptr);
             state_->stream_openers[service_name] = open_fn;
@@ -180,7 +181,7 @@ std::unique_ptr<PluginStream> PluginHost::open_stream(
     method_buf.push_back('\0');
 
     uint64_t handle = open_fn(method_buf.data());
-    if (handle == 0) throw PluginError("Failed to open stream");
+    if (handle == 0) throw FfiError("Failed to open stream");
 
     return std::unique_ptr<PluginStream>(new PluginStream(state_, handle));
 }
@@ -202,7 +203,7 @@ void PluginStream::send(const std::vector<uint8_t>& data) {
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (state_->stream_funcs) send_fn = state_->stream_funcs->send;
     }
-    if (!send_fn) throw PluginError("Stream functions missing");
+    if (!send_fn) throw FfiError("Stream functions missing");
 
     char* data_ptr = nullptr;
     if (!data.empty()) {
@@ -210,7 +211,7 @@ void PluginStream::send(const std::vector<uint8_t>& data) {
     }
 
     int result = send_fn(handle_, data_ptr, static_cast<int>(data.size()));
-    if (result != 0) throw PluginError("Stream send failed: " + std::to_string(result));
+    if (result != 0) throw FfiError("Stream send failed: " + std::to_string(result));
 }
 
 std::vector<uint8_t> PluginStream::recv(bool& eof) {
@@ -222,7 +223,7 @@ std::vector<uint8_t> PluginStream::recv(bool& eof) {
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (state_->stream_funcs) recv_fn = state_->stream_funcs->recv;
     }
-    if (!recv_fn) throw PluginError("Stream functions missing");
+    if (!recv_fn) throw FfiError("Stream functions missing");
 
     int resp_len = 0;
     int status = 0;
@@ -235,25 +236,29 @@ std::vector<uint8_t> PluginStream::recv(bool& eof) {
         return {};
     }
 
-    if (status != 0) {
-        std::string msg = "Stream error: " + std::to_string(status);
+    if (status < 0) {
         if (resp && resp_len > 0) {
-            msg = std::string(resp, resp_len);
+            std::vector<uint8_t> payload(resp, resp + resp_len);
             free_fn(resp);
+            throw detail::decode_ffi_error(payload);
         }
-        throw PluginError(msg);
+        if (resp) free_fn(resp);
+        throw FfiError("Stream error: " + std::to_string(status));
     }
 
-    if (!resp || resp_len == 0) throw PluginError("Empty stream response");
+    if (status != 0) {
+        if (resp) free_fn(resp);
+        throw FfiError("Stream error: " + std::to_string(status));
+    }
+
+    if (!resp) {
+        if (resp_len == 0) return {};
+        throw FfiError("Plugin returned null");
+    }
 
     std::vector<uint8_t> result(resp, resp + resp_len);
     free_fn(resp);
-
-    if (result[0] == 1) {
-        throw PluginError(std::string(result.begin() + 1, result.end()));
-    }
-
-    return std::vector<uint8_t>(result.begin() + 1, result.end());
+    return result;
 }
 
 void PluginStream::close_send() {

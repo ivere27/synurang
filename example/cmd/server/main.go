@@ -60,14 +60,13 @@ import (
 
 	pb "github.com/ivere27/synurang/pkg/api"
 	pkg_debug "github.com/ivere27/synurang/pkg/debug"
+	"github.com/ivere27/synurang/pkg/ffierror"
 	"github.com/ivere27/synurang/pkg/service"
 
 	example_service "github.com/ivere27/synurang/example/go/service"
 	example_pb "github.com/ivere27/synurang/example/pkg/api"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -350,21 +349,7 @@ func InvokeBackend(method *C.char, data unsafe.Pointer, dataLen C.longlong) C.Ff
 
 	if err != nil {
 		log.Printf("Invoke error: %v", err)
-		st, ok := status.FromError(err)
-		var pbErr *pb.Error
-		if ok {
-			pbErr = &pb.Error{
-				Message:  err.Error(),
-				GrpcCode: int32(st.Code()),
-			}
-		}
-		if pbErr == nil {
-			pbErr = &pb.Error{
-				Message:  err.Error(),
-				GrpcCode: int32(st.Code()),
-			}
-		}
-		errBytes, _ := proto.Marshal(pbErr)
+		errBytes := ffierror.Marshal(err)
 		cErr := C.CBytes(errBytes)
 		return C.FfiData{
 			data: cErr,

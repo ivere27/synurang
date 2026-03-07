@@ -10,6 +10,4 @@ crate-type = ["cdylib"]
 prost = "0.12"
 synurang_service = { path = "../service" }
 ctor = "0.2"
-lazy_static = "1.5"
-
 

@@ -18,7 +18,7 @@
 
 import io.github.ivere27.synurang.PluginHost;
 import io.github.ivere27.synurang.PluginStream;
-import io.github.ivere27.synurang.PluginError;
+import io.github.ivere27.synurang.FfiError;
 import io.github.ivere27.synurang.SynurangChannel;
 
 import io.grpc.CallOptions;
@@ -40,6 +40,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public class JavaHostTest {
+    static final String ERROR_TRIGGER_NAME = "trigger_error";
 
     // =========================================================================
     // Proto Helpers (manual serialization, same as C++ test)
@@ -110,6 +111,142 @@ public class JavaHostTest {
     static int passed = 0;
     static int failed = 0;
     static int skipped = 0;
+
+    static final class ExpectedFfiError {
+        final String message;
+        final int code;
+        final int grpcCode;
+
+        ExpectedFfiError(String message, int code, int grpcCode) {
+            this.message = message;
+            this.code = code;
+            this.grpcCode = grpcCode;
+        }
+    }
+
+    static ExpectedFfiError expectedFfiError(String pluginName, String rpcKind) {
+        switch (pluginName) {
+            case "Go":
+                switch (rpcKind) {
+                    case "unary":
+                        return new ExpectedFfiError("go unary ffi error", 4101, 10);
+                    case "server":
+                        return new ExpectedFfiError("go server stream ffi error", 4102, 10);
+                    case "client":
+                        return new ExpectedFfiError("go client stream ffi error", 4103, 10);
+                    case "bidi":
+                        return new ExpectedFfiError("go bidi stream ffi error", 4104, 10);
+                    default:
+                        break;
+                }
+                break;
+            case "C++":
+                switch (rpcKind) {
+                    case "unary":
+                        return new ExpectedFfiError("cpp unary ffi error", 4201, 10);
+                    case "server":
+                        return new ExpectedFfiError("cpp server stream ffi error", 4202, 10);
+                    case "client":
+                        return new ExpectedFfiError("cpp client stream ffi error", 4203, 10);
+                    case "bidi":
+                        return new ExpectedFfiError("cpp bidi stream ffi error", 4204, 10);
+                    default:
+                        break;
+                }
+                break;
+            case "Rust":
+                switch (rpcKind) {
+                    case "unary":
+                        return new ExpectedFfiError("rust unary ffi error", 4301, 10);
+                    case "server":
+                        return new ExpectedFfiError("rust server stream ffi error", 4302, 10);
+                    case "client":
+                        return new ExpectedFfiError("rust client stream ffi error", 4303, 10);
+                    case "bidi":
+                        return new ExpectedFfiError("rust bidi stream ffi error", 4304, 10);
+                    default:
+                        break;
+                }
+                break;
+            default:
+                break;
+        }
+        throw new IllegalArgumentException("unknown plugin/rpc expectation: " + pluginName + "/" + rpcKind);
+    }
+
+    static void assertFfiError(String label, FfiError error, ExpectedFfiError expected) throws Exception {
+        if (!expected.message.equals(error.getMessage())) {
+            throw new Exception(label + " message mismatch: expected=" + expected.message + " got=" + error.getMessage());
+        }
+        if (error.getCode() != expected.code) {
+            throw new Exception(label + " code mismatch: expected=" + expected.code + " got=" + error.getCode());
+        }
+        if (error.getGrpcCode() != expected.grpcCode) {
+            throw new Exception(label + " grpcCode mismatch: expected=" + expected.grpcCode + " got=" + error.getGrpcCode());
+        }
+    }
+
+    static void testStructuredFfiErrors(PluginHost plugin, String pluginName) throws Exception {
+        ExpectedFfiError unaryExpected = expectedFfiError(pluginName, "unary");
+        try {
+            plugin.invoke(
+                    "GoGreeterService",
+                    "/example.v1.GoGreeterService/Bar",
+                    makeHelloRequest(ERROR_TRIGGER_NAME)
+            );
+            throw new Exception("unary expected FfiError");
+        } catch (FfiError e) {
+            assertFfiError("unary", e, unaryExpected);
+        }
+
+        ExpectedFfiError serverExpected = expectedFfiError(pluginName, "server");
+        PluginStream serverStream = plugin.openStream(
+                "GoGreeterService",
+                "/example.v1.GoGreeterService/BarServerStream"
+        );
+        try {
+            serverStream.send(makeHelloRequest(ERROR_TRIGGER_NAME));
+            serverStream.closeSend();
+            byte[] data = serverStream.recv();
+            throw new Exception("server-stream expected FfiError, got " + (data == null ? "EOF" : "data"));
+        } catch (FfiError e) {
+            assertFfiError("server-stream", e, serverExpected);
+        } finally {
+            serverStream.close();
+        }
+
+        ExpectedFfiError clientExpected = expectedFfiError(pluginName, "client");
+        PluginStream clientStream = plugin.openStream(
+                "GoGreeterService",
+                "/example.v1.GoGreeterService/BarClientStream"
+        );
+        try {
+            clientStream.send(makeHelloRequest(ERROR_TRIGGER_NAME));
+            clientStream.closeSend();
+            byte[] data = clientStream.recv();
+            throw new Exception("client-stream expected FfiError, got " + (data == null ? "EOF" : "data"));
+        } catch (FfiError e) {
+            assertFfiError("client-stream", e, clientExpected);
+        } finally {
+            clientStream.close();
+        }
+
+        ExpectedFfiError bidiExpected = expectedFfiError(pluginName, "bidi");
+        PluginStream bidiStream = plugin.openStream(
+                "GoGreeterService",
+                "/example.v1.GoGreeterService/BarBidiStream"
+        );
+        try {
+            bidiStream.send(makeHelloRequest(ERROR_TRIGGER_NAME));
+            bidiStream.closeSend();
+            byte[] data = bidiStream.recv();
+            throw new Exception("bidi expected FfiError, got " + (data == null ? "EOF" : "data"));
+        } catch (FfiError e) {
+            assertFfiError("bidi", e, bidiExpected);
+        } finally {
+            bidiStream.close();
+        }
+    }
 
     static void testPlugin(String path, String name) {
         System.out.println("\n\u25b6 Testing " + name + " plugin: " + path);
@@ -205,6 +342,17 @@ public class JavaHostTest {
                 }
                 stream.close();
                 System.out.println("\u2713 echoed " + count + " messages");
+                passed++;
+            } catch (Exception e) {
+                System.out.println("\u2717 " + e.getMessage());
+                failed++;
+            }
+
+            // Test 5: Structured FFI errors on all 4 RPC types
+            System.out.print("  [5/5] Structured FFI Errors... ");
+            try {
+                testStructuredFfiErrors(plugin, name);
+                System.out.println("\u2713 unary/server/client/bidi");
                 passed++;
             } catch (Exception e) {
                 System.out.println("\u2717 " + e.getMessage());

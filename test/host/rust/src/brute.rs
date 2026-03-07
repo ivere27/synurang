@@ -27,7 +27,7 @@ fn make_hello_request(name: &str) -> Vec<u8> {
         return vec![];
     }
     let mut data = vec![0x0a]; // field 1, wire type 2
-    // Varint encoding for length
+                               // Varint encoding for length
     let len = name.len();
     if len < 128 {
         data.push(len as u8);
@@ -136,20 +136,20 @@ fn is_expected_error(e: &Error) -> bool {
     match e {
         Error::PluginClosed => true,
         Error::Eof => true,
-        Error::StreamError(msg) => {
-            msg.contains("stream send failed")
-                || msg.contains("Stream send failed")
-                || msg.contains("Empty stream response")
-                || msg.contains("stream is closed")
-                || msg.contains("Failed to open stream")
+        Error::StreamError(err) => {
+            err.message.contains("stream send failed")
+                || err.message.contains("Stream send failed")
+                || err.message.contains("Empty stream response")
+                || err.message.contains("stream is closed")
+                || err.message.contains("Failed to open stream")
         }
-        Error::PluginError(msg) => {
-            msg.contains("plugin is closed")
-                || msg.contains("Empty response")
-                || msg.contains("Plugin returned null")
-                || msg.contains("Stream error")
-                || msg.contains("stream send failed")
-                || msg.contains("Stream send failed")
+        Error::PluginError(err) => {
+            err.message.contains("plugin is closed")
+                || err.message.contains("Empty response")
+                || err.message.contains("Plugin returned null")
+                || err.message.contains("Stream error")
+                || err.message.contains("stream send failed")
+                || err.message.contains("Stream send failed")
         }
         _ => false,
     }
@@ -201,7 +201,9 @@ fn op_unary(plugin: &PluginHost, rng: &mut Rng, worker_id: i32) -> Result<(), Er
     let resp = plugin.invoke(SERVICE, METHOD_UNARY, &req)?;
     let msg = extract_message(&resp);
     if msg.is_empty() && name.len() <= 127 {
-        return Err(Error::PluginError("unary response mismatch".into()));
+        return Err(Error::PluginError(synurang_host::FfiError::new(
+            "unary response mismatch",
+        )));
     }
     Ok(())
 }
@@ -235,9 +237,9 @@ fn op_server_stream(plugin: &PluginHost, rng: &mut Rng, worker_id: i32) -> Resul
     }
 
     if received == 0 {
-        return Err(Error::PluginError(
-            "server-stream returned zero messages".into(),
-        ));
+        return Err(Error::PluginError(synurang_host::FfiError::new(
+            "server-stream returned zero messages",
+        )));
     }
     Ok(())
 }
@@ -255,7 +257,9 @@ fn op_client_stream(plugin: &PluginHost, rng: &mut Rng, worker_id: i32) -> Resul
     let resp = stream.recv()?;
     let msg = extract_message(&resp);
     if msg.is_empty() {
-        return Err(Error::PluginError("client-stream empty response".into()));
+        return Err(Error::PluginError(synurang_host::FfiError::new(
+            "client-stream empty response",
+        )));
     }
     Ok(())
 }
@@ -279,9 +283,9 @@ fn op_bidi_stream(plugin: &PluginHost, rng: &mut Rng, worker_id: i32) -> Result<
     stream.close_send();
 
     if received == 0 {
-        return Err(Error::PluginError(
-            "bidi received zero responses".into(),
-        ));
+        return Err(Error::PluginError(synurang_host::FfiError::new(
+            "bidi received zero responses",
+        )));
     }
     Ok(())
 }
@@ -317,7 +321,7 @@ fn chaos_send_after_close_send(
 
     // Attempt send after close_send
     match stream.send(&make_hello_request("after-close")) {
-        Ok(_) => {} // Some transports may buffer
+        Ok(_) => {}  // Some transports may buffer
         Err(_) => {} // Expected
     }
     Ok(())
@@ -367,11 +371,7 @@ fn chaos_boundary_payloads(
     Ok(())
 }
 
-fn chaos_mismatched_bidi(
-    plugin: &PluginHost,
-    rng: &mut Rng,
-    worker_id: i32,
-) -> Result<(), Error> {
+fn chaos_mismatched_bidi(plugin: &PluginHost, rng: &mut Rng, worker_id: i32) -> Result<(), Error> {
     let stream = plugin.open_stream(SERVICE, METHOD_BIDI)?;
 
     let send_count = rng.next_range(3, 10);
@@ -398,11 +398,7 @@ fn chaos_immediate_close(plugin: &PluginHost, _rng: &mut Rng) -> Result<(), Erro
     Ok(())
 }
 
-fn run_chaos(
-    plugin: &PluginHost,
-    rng: &mut Rng,
-    worker_id: i32,
-) -> Result<(), Error> {
+fn run_chaos(plugin: &PluginHost, rng: &mut Rng, worker_id: i32) -> Result<(), Error> {
     let x = rng.next_int(100);
     if x < 15 {
         chaos_open_and_abandon(plugin, rng)
@@ -427,11 +423,7 @@ fn run_chaos(
 // Main operation router
 // ---------------------------------------------------------------------------
 
-fn run_random_op(
-    plugin: &PluginHost,
-    rng: &mut Rng,
-    worker_id: i32,
-) -> Result<(), Error> {
+fn run_random_op(plugin: &PluginHost, rng: &mut Rng, worker_id: i32) -> Result<(), Error> {
     let x = rng.next_int(100);
     if x < 40 {
         op_unary(plugin, rng, worker_id)

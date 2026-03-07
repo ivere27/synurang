@@ -9,12 +9,19 @@ import (
 	"time"
 )
 
+func testFfiErrorPayload(message string) []byte {
+	payload := []byte{0x12, byte(len(message))}
+	payload = append(payload, []byte(message)...)
+	payload = append(payload, 0x18, 0x02)
+	return payload
+}
+
 // mockPlatform provides mock implementations for testing
 type mockPlatform struct {
 	openFunc            func(path string) (uintptr, error)
 	symFunc             func(handle uintptr, name string) (uintptr, error)
 	closeFunc           func(handle uintptr) error
-	invokeFunc          func(fn, freePtr uintptr, method string, data []byte) ([]byte, error)
+	invokeFunc          func(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error)
 	streamOpenFunc      func(fn uintptr, method string) uint64
 	streamSendFunc      func(fn uintptr, handle uint64, data []byte) int
 	streamRecvFunc      func(fn, freePtr uintptr, handle uint64) ([]byte, int, int)
@@ -39,9 +46,8 @@ func newMockPlatform() *mockPlatform {
 		closeFunc: func(handle uintptr) error {
 			return nil
 		},
-		invokeFunc: func(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
-			// Return success with status byte 0
-			return append([]byte{0}, []byte("response")...), nil
+		invokeFunc: func(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
+			return []byte("response"), len("response"), nil
 		},
 		streamOpenFunc: func(fn uintptr, method string) uint64 {
 			return 1
@@ -50,7 +56,7 @@ func newMockPlatform() *mockPlatform {
 			return 0 // success
 		},
 		streamRecvFunc: func(fn, freePtr uintptr, handle uint64) ([]byte, int, int) {
-			return []byte{0, 'h', 'i'}, 3, 0 // data with status 0
+			return []byte("hi"), 2, 0
 		},
 		streamCloseSendFunc: func(fn uintptr, handle uint64) {},
 		streamCloseFunc:     func(fn uintptr, handle uint64) {},
@@ -80,7 +86,7 @@ func (m *mockPlatform) install() func() {
 		atomic.AddInt64(&m.closeCalls, 1)
 		return m.closeFunc(handle)
 	}
-	platformInvoke = func(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
+	platformInvoke = func(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
 		atomic.AddInt64(&m.invokeCalls, 1)
 		return m.invokeFunc(fn, freePtr, method, data)
 	}
@@ -192,9 +198,8 @@ func TestPlugin_Close_Idempotent(t *testing.T) {
 
 func TestPlugin_Invoke_Success(t *testing.T) {
 	mock := newMockPlatform()
-	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
-		// Return success: status=0 + response data
-		return []byte{0, 'o', 'k'}, nil
+	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
+		return []byte("ok"), 2, nil
 	}
 	restore := mock.install()
 	defer restore()
@@ -214,11 +219,11 @@ func TestPlugin_Invoke_Success(t *testing.T) {
 	}
 }
 
-func TestPlugin_Invoke_PluginError(t *testing.T) {
+func TestPlugin_Invoke_FfiError(t *testing.T) {
 	mock := newMockPlatform()
-	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
-		// Return error: status=1 + error message
-		return []byte{1, 'f', 'a', 'i', 'l', 'e', 'd'}, nil
+	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
+		errPayload := testFfiErrorPayload("failed")
+		return errPayload, -len(errPayload), nil
 	}
 	restore := mock.install()
 	defer restore()
@@ -234,12 +239,15 @@ func TestPlugin_Invoke_PluginError(t *testing.T) {
 		t.Fatal("expected error from plugin")
 	}
 
-	var pluginErr *PluginError
-	if !errors.As(err, &pluginErr) {
-		t.Errorf("expected PluginError, got %T", err)
+	var ffiErr *FfiError
+	if !errors.As(err, &ffiErr) {
+		t.Errorf("expected FfiError, got %T", err)
 	}
-	if pluginErr.Message != "failed" {
-		t.Errorf("expected 'failed', got %q", pluginErr.Message)
+	if ffiErr.Message != "failed" {
+		t.Errorf("expected 'failed', got %q", ffiErr.Message)
+	}
+	if ffiErr.GrpcCode == 0 {
+		t.Errorf("expected grpc code to be populated, got %d", ffiErr.GrpcCode)
 	}
 }
 
@@ -337,10 +345,10 @@ func TestPlugin_GetInvoker_Caching(t *testing.T) {
 func TestPlugin_ConcurrentAccess(t *testing.T) {
 	mock := newMockPlatform()
 	var invokeCount int64
-	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
+	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
 		atomic.AddInt64(&invokeCount, 1)
 		time.Sleep(time.Millisecond) // Simulate work
-		return []byte{0, 'o', 'k'}, nil
+		return []byte("ok"), 2, nil
 	}
 	restore := mock.install()
 	defer restore()
@@ -392,10 +400,10 @@ func TestPlugin_Close_WaitsForOperations(t *testing.T) {
 	mock := newMockPlatform()
 	invokeCh := make(chan struct{})
 	invokeStarted := make(chan struct{})
-	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
+	mock.invokeFunc = func(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
 		close(invokeStarted)
 		<-invokeCh // Block until signal
-		return []byte{0, 'o', 'k'}, nil
+		return []byte("ok"), 2, nil
 	}
 	restore := mock.install()
 	defer restore()
@@ -509,14 +517,14 @@ func TestPlugin_StreamRecv_EOF(t *testing.T) {
 	}
 }
 
-func TestPlugin_StreamRecv_PluginError(t *testing.T) {
+func TestPlugin_StreamRecv_FfiError(t *testing.T) {
 	mock := newMockPlatform()
 	callCount := 0
 	mock.streamRecvFunc = func(fn, freePtr uintptr, handle uint64) ([]byte, int, int) {
 		callCount++
 		if callCount == 1 {
-			// Return error: status=0 with error flag in data
-			return []byte{1, 'e', 'r', 'r', 'o', 'r'}, 6, 0
+			errPayload := testFfiErrorPayload("error")
+			return errPayload, len(errPayload), -1
 		}
 		return nil, 0, 1 // EOF
 	}
@@ -539,9 +547,12 @@ func TestPlugin_StreamRecv_PluginError(t *testing.T) {
 		t.Fatal("expected error from stream")
 	}
 
-	var pluginErr *PluginError
-	if !errors.As(err, &pluginErr) {
-		t.Errorf("expected PluginError, got %T: %v", err, err)
+	var ffiErr *FfiError
+	if !errors.As(err, &ffiErr) {
+		t.Errorf("expected FfiError, got %T: %v", err, err)
+	}
+	if ffiErr == nil || ffiErr.Message != "error" {
+		t.Errorf("expected decoded ffi error message, got %v", ffiErr)
 	}
 }
 
@@ -590,11 +601,14 @@ func TestPlugin_Close_ClosesActiveStreams(t *testing.T) {
 	}
 }
 
-func TestPluginError_Error(t *testing.T) {
-	err := &PluginError{Message: "test error"}
-	expected := "plugin error: test error"
+func TestFfiError_Error(t *testing.T) {
+	err := &FfiError{Message: "test error", Code: 7, GrpcCode: 13}
+	expected := "test error"
 	if err.Error() != expected {
 		t.Errorf("expected %q, got %q", expected, err.Error())
+	}
+	if err.Code != 7 || err.GrpcCode != 13 {
+		t.Errorf("expected structured codes to be preserved, got code=%d grpc=%d", err.Code, err.GrpcCode)
 	}
 }
 

@@ -8,8 +8,72 @@ use prost::Message;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::ptr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+unsafe extern "C" {
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct CoreFfiError {
+    #[prost(int32, tag="1")]
+    code: i32,
+    #[prost(string, tag="2")]
+    message: String,
+    #[prost(int32, tag="3")]
+    grpc_code: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FfiError {
+    pub message: String,
+    pub code: i32,
+    pub grpc_code: i32,
+}
+
+impl FfiError {
+    pub fn new(message: impl Into<String>, code: i32, grpc_code: i32) -> Self {
+        Self {
+            message: message.into(),
+            code,
+            grpc_code,
+        }
+    }
+}
+
+impl std::fmt::Display for FfiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(f)
+    }
+}
+
+impl std::error::Error for FfiError {}
+
+impl From<String> for FfiError {
+    fn from(message: String) -> Self {
+        Self::new(message, 0, 2)
+    }
+}
+
+impl From<&str> for FfiError {
+    fn from(message: &str) -> Self {
+        Self::new(message, 0, 2)
+    }
+}
+
+impl From<&String> for FfiError {
+    fn from(message: &String) -> Self {
+        Self::from(message.as_str())
+    }
+}
+
+impl From<&FfiError> for FfiError {
+    fn from(error: &FfiError) -> Self {
+        error.clone()
+    }
+}
 
 // =============================================================================
 // Stream Infrastructure
@@ -17,11 +81,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 struct StreamContext {
     send_queue: Mutex<Vec<Vec<u8>>>,  // host -> plugin
-    recv_queue: Mutex<Vec<Vec<u8>>>,  // plugin -> host
+    recv_queue: Mutex<Vec<StreamResult>>,  // plugin -> host
     send_cv: std::sync::Condvar,
     recv_cv: std::sync::Condvar,
     closed: std::sync::atomic::AtomicBool,
     send_closed: std::sync::atomic::AtomicBool,
+}
+
+struct StreamResult {
+    status: i32,
+    payload: Vec<u8>,
 }
 
 impl StreamContext {
@@ -43,7 +112,14 @@ impl StreamContext {
         }
     }
     
-    fn recv_from_plugin(&self) -> Option<Vec<u8>> {
+    fn push_recv_result(&self, status: i32, payload: Vec<u8>) {
+        if let Ok(mut queue) = self.recv_queue.lock() {
+            queue.push(StreamResult { status, payload });
+            self.recv_cv.notify_one();
+        }
+    }
+
+    fn recv_from_plugin(&self) -> Option<StreamResult> {
         let mut queue = self.recv_queue.lock().ok()?;
         loop {
             if !queue.is_empty() {
@@ -75,13 +151,19 @@ impl StreamContext {
     }
 }
 
-lazy_static::lazy_static! {
-    static ref STREAMS: RwLock<HashMap<u64, Arc<StreamContext>>> = RwLock::new(HashMap::new());
-    static ref NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+static STREAMS: OnceLock<RwLock<HashMap<u64, Arc<StreamContext>>>> = OnceLock::new();
+static NEXT_HANDLE: OnceLock<AtomicU64> = OnceLock::new();
+
+fn streams() -> &'static RwLock<HashMap<u64, Arc<StreamContext>>> {
+    STREAMS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn next_handle() -> &'static AtomicU64 {
+    NEXT_HANDLE.get_or_init(|| AtomicU64::new(1))
 }
 
 fn get_stream(handle: u64) -> Option<Arc<StreamContext>> {
-    STREAMS.read().ok()?.get(&handle).cloned()
+    streams().read().ok()?.get(&handle).cloned()
 }
 
 // =============================================================================
@@ -90,15 +172,15 @@ fn get_stream(handle: u64) -> Option<Arc<StreamContext>> {
 
 
 pub trait GoGreeterServicePlugin: Send + Sync + 'static {
-    fn bar(&self, request: HelloRequest) -> Result<HelloResponse, String>;
-    fn bar_server_stream(&self, request: HelloRequest, stream: &dyn PluginStreamSender<HelloResponse>) -> Result<(), String>;
-    fn bar_client_stream(&self, stream: &dyn PluginStreamReceiver<HelloRequest>) -> Result<HelloResponse, String>;
-    fn bar_bidi_stream(&self, stream: &dyn PluginStreamBidi<HelloRequest, HelloResponse>) -> Result<(), String>;
-    fn upload_file(&self, stream: &dyn PluginStreamReceiver<FileChunk>) -> Result<FileStatus, String>;
-    fn download_file(&self, request: DownloadFileRequest, stream: &dyn PluginStreamSender<FileChunk>) -> Result<(), String>;
-    fn bidi_file(&self, stream: &dyn PluginStreamBidi<FileChunk, FileChunk>) -> Result<(), String>;
-    fn trigger(&self, request: TriggerRequest) -> Result<HelloResponse, String>;
-    fn get_goroutines(&self, request: GoroutinesRequest) -> Result<GoroutinesResponse, String>;
+    fn bar(&self, request: HelloRequest) -> Result<HelloResponse, FfiError>;
+    fn bar_server_stream(&self, request: HelloRequest, stream: &dyn PluginStreamSender<HelloResponse>) -> Result<(), FfiError>;
+    fn bar_client_stream(&self, stream: &dyn PluginStreamReceiver<HelloRequest>) -> Result<HelloResponse, FfiError>;
+    fn bar_bidi_stream(&self, stream: &dyn PluginStreamBidi<HelloRequest, HelloResponse>) -> Result<(), FfiError>;
+    fn upload_file(&self, stream: &dyn PluginStreamReceiver<FileChunk>) -> Result<FileStatus, FfiError>;
+    fn download_file(&self, request: DownloadFileRequest, stream: &dyn PluginStreamSender<FileChunk>) -> Result<(), FfiError>;
+    fn bidi_file(&self, stream: &dyn PluginStreamBidi<FileChunk, FileChunk>) -> Result<(), FfiError>;
+    fn trigger(&self, request: TriggerRequest) -> Result<HelloResponse, FfiError>;
+    fn get_goroutines(&self, request: GoroutinesRequest) -> Result<GoroutinesResponse, FfiError>;
 }
 
 static PLUGIN_GO_GREETER_SERVICE: std::sync::OnceLock<Box<dyn GoGreeterServicePlugin>> = std::sync::OnceLock::new();
@@ -142,13 +224,7 @@ impl<T: Message + Default> PluginStreamSender<T> for StreamSender<T> {
         if msg.encode(&mut buf).is_err() {
             return false;
         }
-        // Format: [status:1][payload]
-        let mut result = vec![0u8]; // success
-        result.extend(buf);
-        if let Ok(mut queue) = self.ctx.recv_queue.lock() {
-            queue.push(result);
-            self.ctx.recv_cv.notify_one();
-        }
+        self.ctx.push_recv_result(0, buf);
         true
     }
     
@@ -217,9 +293,7 @@ impl<Req: Message + Default, Resp: Message + Default> PluginStreamBidi<Req, Resp
 #[no_mangle]
 pub extern "C" fn Synurang_Free(ptr: *mut c_void) {
     if !ptr.is_null() {
-        unsafe {
-            let _ = Box::from_raw(ptr as *mut u8);
-        }
+        unsafe { free(ptr) };
     }
 }
 
@@ -324,10 +398,10 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
     };
     
     let ctx = Arc::new(StreamContext::new());
-    let handle = NEXT_HANDLE.fetch_add(1, Ordering::SeqCst);
+    let handle = next_handle().fetch_add(1, Ordering::SeqCst);
     
     {
-        let mut streams = STREAMS.write().unwrap();
+        let mut streams = streams().write().unwrap();
         streams.insert(handle, ctx.clone());
     }
     
@@ -358,7 +432,11 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
                         ctx: ctx_clone.clone(),
                         _marker: std::marker::PhantomData,
                     };
-                    let _ = plugin.bar_server_stream(req, &sender);
+                    if let Err(e) = plugin.bar_server_stream(req, &sender) {
+                        push_stream_error(&ctx_clone, &e);
+                    }
+                } else {
+                    push_stream_error(&ctx_clone, "failed to parse stream request");
                 }
                 ctx_clone.close();
             }
@@ -367,12 +445,15 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
                     ctx: ctx_clone.clone(),
                     _marker: std::marker::PhantomData,
                 };
-                if let Ok(resp) = plugin.bar_client_stream(&receiver) {
-                    let sender = StreamSender::<HelloResponse> {
-                        ctx: ctx_clone.clone(),
-                        _marker: std::marker::PhantomData,
-                    };
-                    let _ = sender.send(resp);
+                match plugin.bar_client_stream(&receiver) {
+                    Ok(resp) => {
+                        let sender = StreamSender::<HelloResponse> {
+                            ctx: ctx_clone.clone(),
+                            _marker: std::marker::PhantomData,
+                        };
+                        let _ = sender.send(resp);
+                    }
+                    Err(e) => push_stream_error(&ctx_clone, &e),
                 }
                 ctx_clone.close();
             }
@@ -387,7 +468,9 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
                         _marker: std::marker::PhantomData,
                     },
                 };
-                let _ = plugin.bar_bidi_stream(&bidi);
+                if let Err(e) = plugin.bar_bidi_stream(&bidi) {
+                    push_stream_error(&ctx_clone, &e);
+                }
                 ctx_clone.close();
             }
             "/example.v1.GoGreeterService/UploadFile" => {
@@ -395,12 +478,15 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
                     ctx: ctx_clone.clone(),
                     _marker: std::marker::PhantomData,
                 };
-                if let Ok(resp) = plugin.upload_file(&receiver) {
-                    let sender = StreamSender::<FileStatus> {
-                        ctx: ctx_clone.clone(),
-                        _marker: std::marker::PhantomData,
-                    };
-                    let _ = sender.send(resp);
+                match plugin.upload_file(&receiver) {
+                    Ok(resp) => {
+                        let sender = StreamSender::<FileStatus> {
+                            ctx: ctx_clone.clone(),
+                            _marker: std::marker::PhantomData,
+                        };
+                        let _ = sender.send(resp);
+                    }
+                    Err(e) => push_stream_error(&ctx_clone, &e),
                 }
                 ctx_clone.close();
             }
@@ -427,7 +513,11 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
                         ctx: ctx_clone.clone(),
                         _marker: std::marker::PhantomData,
                     };
-                    let _ = plugin.download_file(req, &sender);
+                    if let Err(e) = plugin.download_file(req, &sender) {
+                        push_stream_error(&ctx_clone, &e);
+                    }
+                } else {
+                    push_stream_error(&ctx_clone, "failed to parse stream request");
                 }
                 ctx_clone.close();
             }
@@ -442,10 +532,15 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
                         _marker: std::marker::PhantomData,
                     },
                 };
-                let _ = plugin.bidi_file(&bidi);
+                if let Err(e) = plugin.bidi_file(&bidi) {
+                    push_stream_error(&ctx_clone, &e);
+                }
                 ctx_clone.close();
             }
-            _ => {}
+            _ => {
+                push_stream_error(&ctx_clone, format!("unknown method: {}", method_str));
+                ctx_clone.close();
+            }
         }
     });
     
@@ -485,20 +580,23 @@ pub extern "C" fn Synurang_Stream_Recv(
     let ctx = match get_stream(handle) {
         Some(c) => c,
         None => {
-            unsafe { *status = 2; *resp_len = 0; }
-            return ptr::null_mut();
+            let payload = encode_ffi_error_payload(&FfiError::new("stream not found", 0, 2));
+            unsafe {
+                *status = -1;
+                *resp_len = payload.len() as c_int;
+            }
+            return alloc_payload(&payload);
         }
     };
     
     // Block for data using Condvar (no busy-wait polling)
     match ctx.recv_from_plugin() {
-        Some(data) => {
-            let ptr = Box::into_raw(data.clone().into_boxed_slice()) as *mut c_char;
+        Some(result) => {
             unsafe {
-                *resp_len = data.len() as c_int;
-                *status = 0;
+                *resp_len = result.payload.len() as c_int;
+                *status = result.status;
             }
-            ptr
+            alloc_payload(&result.payload)
         }
         None => {
             unsafe {
@@ -526,7 +624,7 @@ pub extern "C" fn Synurang_Stream_Close(handle: u64) {
     if let Some(ctx) = get_stream(handle) {
         ctx.close();  // This now notifies all waiters
     }
-    if let Ok(mut streams) = STREAMS.write() {
+    if let Ok(mut streams) = streams().write() {
         streams.remove(&handle);
     }
 }
@@ -536,18 +634,57 @@ pub extern "C" fn Synurang_Stream_Close(handle: u64) {
 // Helper Functions
 // =============================================================================
 
-fn error_response(resp_len: *mut c_int, msg: &str) -> *mut c_char {
-    let mut result = vec![1u8]; // error status
-    result.extend(msg.as_bytes());
-    unsafe { *resp_len = result.len() as c_int; }
-    Box::into_raw(result.into_boxed_slice()) as *mut c_char
+fn encode_ffi_error_payload(error: &FfiError) -> Vec<u8> {
+    let pb_err = CoreFfiError {
+        code: error.code,
+        message: error.message.clone(),
+        grpc_code: error.grpc_code,
+    };
+    let mut payload = Vec::new();
+    if pb_err.encode(&mut payload).is_ok() {
+        if payload.is_empty() {
+            vec![0x12, 0x00]
+        } else {
+            payload
+        }
+    } else {
+        if error.message.is_empty() {
+            vec![0x12, 0x00]
+        } else {
+            error.message.as_bytes().to_vec()
+        }
+    }
+}
+
+fn alloc_payload(data: &[u8]) -> *mut c_char {
+    if data.is_empty() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        let raw = malloc(data.len()) as *mut u8;
+        if raw.is_null() {
+            return ptr::null_mut();
+        }
+        ptr::copy_nonoverlapping(data.as_ptr(), raw, data.len());
+        raw as *mut c_char
+    }
+}
+
+fn push_stream_error<E: Into<FfiError>>(ctx: &Arc<StreamContext>, error: E) {
+    let error = error.into();
+    ctx.push_recv_result(-1, encode_ffi_error_payload(&error));
+}
+
+fn error_response<E: Into<FfiError>>(resp_len: *mut c_int, error: E) -> *mut c_char {
+    let error = error.into();
+    let payload = encode_ffi_error_payload(&error);
+    unsafe { *resp_len = -(payload.len() as c_int); }
+    alloc_payload(&payload)
 }
 
 fn success_response(resp_len: *mut c_int, data: &[u8]) -> *mut c_char {
-    let mut result = vec![0u8]; // success status
-    result.extend(data);
-    unsafe { *resp_len = result.len() as c_int; }
-    Box::into_raw(result.into_boxed_slice()) as *mut c_char
+    unsafe { *resp_len = data.len() as c_int; }
+    alloc_payload(data)
 }
 
 // Module: example_v1

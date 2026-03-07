@@ -404,8 +404,8 @@ public class SynurangCallInvoker : CallInvoker
         if (callToken.IsCancellationRequested || ex is OperationCanceledException)
             return new RpcException(CancellationStatus(options));
 
-        if (ex is PluginError pluginError)
-            return new RpcException(new Status(StatusCode.Internal, pluginError.Message));
+        if (ex is FfiError ffiError)
+            return new RpcException(new Status(StatusCode.Internal, ffiError.Message));
 
         return new RpcException(new Status(StatusCode.Unknown, ex.Message));
     }

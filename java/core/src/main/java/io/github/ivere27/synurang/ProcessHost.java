@@ -213,7 +213,7 @@ public class ProcessHost implements AutoCloseable {
             // nativeForkExec closes childFd in parent
 
             return new ProcessHost(pid, parentFd);
-        } catch (PluginError e) {
+        } catch (FfiError e) {
             throw new IOException("Failed to start child process via socketpair", e);
         }
     }

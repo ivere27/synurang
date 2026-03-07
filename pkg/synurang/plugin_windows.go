@@ -9,10 +9,10 @@ import (
 )
 
 var (
-	kernel32        = syscall.NewLazyDLL("kernel32.dll")
-	loadLibraryW    = kernel32.NewProc("LoadLibraryW")
-	freeLibrary     = kernel32.NewProc("FreeLibrary")
-	getProcAddress  = kernel32.NewProc("GetProcAddress")
+	kernel32       = syscall.NewLazyDLL("kernel32.dll")
+	loadLibraryW   = kernel32.NewProc("LoadLibraryW")
+	freeLibrary    = kernel32.NewProc("FreeLibrary")
+	getProcAddress = kernel32.NewProc("GetProcAddress")
 )
 
 func init() {
@@ -65,7 +65,7 @@ func cstring(s string) (uintptr, func()) {
 	return uintptr(unsafe.Pointer(&b[0])), func() { /* prevent GC during call */ _ = b }
 }
 
-func windowsInvoke(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
+func windowsInvoke(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
 	methodPtr, methodCleanup := cstring(method)
 	defer methodCleanup()
 
@@ -90,19 +90,27 @@ func windowsInvoke(fn, freePtr uintptr, method string, data []byte) ([]byte, err
 	)
 
 	if ret == 0 {
-		return nil, fmt.Errorf("plugin returned nil")
+		if respLen == 0 {
+			return nil, 0, nil
+		}
+		return nil, int(respLen), fmt.Errorf("plugin returned nil")
+	}
+
+	copyLen := respLen
+	if copyLen < 0 {
+		copyLen = -copyLen
 	}
 
 	// Copy result before freeing
-	result := make([]byte, respLen)
-	for i := int32(0); i < respLen; i++ {
+	result := make([]byte, copyLen)
+	for i := int32(0); i < copyLen; i++ {
 		result[i] = *(*byte)(unsafe.Pointer(ret + uintptr(i)))
 	}
 
 	// Free the response using plugin's free function
 	syscall.SyscallN(freePtr, ret)
 
-	return result, nil
+	return result, int(respLen), nil
 }
 
 func windowsStreamOpen(fn uintptr, method string) uint64 {

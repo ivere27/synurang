@@ -10,6 +10,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:grpc/grpc.dart' as grpc;
+import 'package:synurang/synurang.dart' show FfiError;
 import 'package:synurang/src/process.dart';
 import 'package:test/test.dart';
 
@@ -23,7 +24,8 @@ void main() {
         return;
       }
 
-      final duration = _envDuration('SYNURANG_BRUTE_DURATION', const Duration(minutes: 1));
+      final duration =
+          _envDuration('SYNURANG_BRUTE_DURATION', const Duration(minutes: 1));
       final workers = _envInt('SYNURANG_BRUTE_WORKERS', 4);
       final maxFdDelta = _envInt('SYNURANG_BRUTE_MAX_FD_DELTA', 48);
       final maxRssMbDelta = _envInt('SYNURANG_BRUTE_MAX_RSS_MB_DELTA', 256);
@@ -36,7 +38,8 @@ void main() {
 
       final missing = specs.where((s) => !File(s.$2).existsSync()).toList();
       if (missing.isNotEmpty) {
-        fail('missing plugin(s): ${missing.map((m) => m.$2).join(', ')} (run `make build_plugin_all`)');
+        fail(
+            'missing plugin(s): ${missing.map((m) => m.$2).join(', ')} (run `make build_plugin_all`)');
       }
 
       final perPlugin = Duration(
@@ -64,7 +67,8 @@ void main() {
           totalExpected += phase.expectedErrors;
           totalUnexpected += phase.unexpectedErrors;
           if (phase.unexpectedErrors > 0) {
-            fail('plugin brute-force ($name) had ${phase.unexpectedErrors} unexpected errors');
+            fail(
+                'plugin brute-force ($name) had ${phase.unexpectedErrors} unexpected errors');
           }
         } finally {
           plugin.closeAllStreamsBestEffort();
@@ -96,15 +100,18 @@ void main() {
         return;
       }
 
-      final totalDuration = _envDuration('SYNURANG_BRUTE_DURATION', const Duration(minutes: 1));
-      final phaseDuration = _envDuration('SYNURANG_BRUTE_PHASE', const Duration(seconds: 20));
+      final totalDuration =
+          _envDuration('SYNURANG_BRUTE_DURATION', const Duration(minutes: 1));
+      final phaseDuration =
+          _envDuration('SYNURANG_BRUTE_PHASE', const Duration(seconds: 20));
       final workers = _envInt('SYNURANG_BRUTE_WORKERS', 4);
       final maxFdDelta = _envInt('SYNURANG_BRUTE_MAX_FD_DELTA', 48);
       final maxRssMbDelta = _envInt('SYNURANG_BRUTE_MAX_RSS_MB_DELTA', 256);
 
       final executable = _resolvePath(_exeName('bin/process_child_tcp'));
       if (!File(executable).existsSync()) {
-        fail('process child not found: $executable (run `make build_process_tcp_child`)');
+        fail(
+            'process child not found: $executable (run `make build_process_tcp_child`)');
       }
 
       final baseline = await _captureResources();
@@ -137,7 +144,8 @@ void main() {
           totalExpected += result.expectedErrors;
           totalUnexpected += result.unexpectedErrors;
           if (result.unexpectedErrors > 0) {
-            fail('process brute-force round $rounds had ${result.unexpectedErrors} unexpected errors');
+            fail(
+                'process brute-force round $rounds had ${result.unexpectedErrors} unexpected errors');
           }
         } finally {
           if (proc != null) {
@@ -196,7 +204,9 @@ Future<_PhaseResult> _runPluginPhase({
 
   for (var w = 0; w < workers; w++) {
     futures.add(Future<void>(() async {
-      final rnd = Random(DateTime.now().microsecondsSinceEpoch ^ (w * 100103) ^ (seedBase * 9973));
+      final rnd = Random(DateTime.now().microsecondsSinceEpoch ^
+          (w * 100103) ^
+          (seedBase * 9973));
       while (!stop && DateTime.now().isBefore(deadline)) {
         try {
           _runPluginRandomOp(plugin, pluginName, w, rnd);
@@ -207,7 +217,8 @@ Future<_PhaseResult> _runPluginPhase({
           } else {
             unexpected++;
             if (unexpected <= 5) {
-              stdout.writeln('dart plugin unexpected [$pluginName worker $w]: $e');
+              stdout.writeln(
+                  'dart plugin unexpected [$pluginName worker $w]: $e');
             }
             stop = true;
             return;
@@ -219,10 +230,12 @@ Future<_PhaseResult> _runPluginPhase({
   }
 
   await Future.wait(futures);
-  return _PhaseResult(ops: ops, expectedErrors: expected, unexpectedErrors: unexpected);
+  return _PhaseResult(
+      ops: ops, expectedErrors: expected, unexpectedErrors: unexpected);
 }
 
-void _runPluginRandomOp(_PluginBindings plugin, String pluginName, int workerId, Random rnd) {
+void _runPluginRandomOp(
+    _PluginBindings plugin, String pluginName, int workerId, Random rnd) {
   final x = rnd.nextInt(100);
   if (x < 40) {
     _pluginUnary(plugin, pluginName, workerId, rnd);
@@ -237,17 +250,21 @@ void _runPluginRandomOp(_PluginBindings plugin, String pluginName, int workerId,
   }
 }
 
-void _pluginUnary(_PluginBindings plugin, String pluginName, int workerId, Random rnd) {
+void _pluginUnary(
+    _PluginBindings plugin, String pluginName, int workerId, Random rnd) {
   final marker = 'u-$pluginName-$workerId-${rnd.nextInt(1 << 30)}';
-  final resp = plugin.invoke('/example.v1.GoGreeterService/Bar', _encodeHelloRequest(marker));
+  final resp = plugin.invoke(
+      '/example.v1.GoGreeterService/Bar', _encodeHelloRequest(marker));
   final msg = _decodeHelloMessage(resp);
   if (msg.isEmpty || msg.startsWith('<') || !msg.contains(marker)) {
     throw StateError('unary mismatch');
   }
 }
 
-void _pluginServerStream(_PluginBindings plugin, String pluginName, int workerId, Random rnd) {
-  final stream = plugin.openStream('/example.v1.GoGreeterService/BarServerStream');
+void _pluginServerStream(
+    _PluginBindings plugin, String pluginName, int workerId, Random rnd) {
+  final stream =
+      plugin.openStream('/example.v1.GoGreeterService/BarServerStream');
   try {
     final marker = 'ss-$pluginName-$workerId-${rnd.nextInt(1 << 30)}';
     stream.send(_encodeHelloRequest(marker));
@@ -271,12 +288,15 @@ void _pluginServerStream(_PluginBindings plugin, String pluginName, int workerId
   }
 }
 
-void _pluginClientStream(_PluginBindings plugin, String pluginName, int workerId, Random rnd) {
-  final stream = plugin.openStream('/example.v1.GoGreeterService/BarClientStream');
+void _pluginClientStream(
+    _PluginBindings plugin, String pluginName, int workerId, Random rnd) {
+  final stream =
+      plugin.openStream('/example.v1.GoGreeterService/BarClientStream');
   try {
     final count = 1 + rnd.nextInt(20);
     for (var i = 0; i < count; i++) {
-      stream.send(_encodeHelloRequest('cs-$pluginName-$workerId-$i-${rnd.nextInt(1 << 30)}'));
+      stream.send(_encodeHelloRequest(
+          'cs-$pluginName-$workerId-$i-${rnd.nextInt(1 << 30)}'));
     }
     stream.closeSend();
     final packet = stream.recv();
@@ -292,13 +312,16 @@ void _pluginClientStream(_PluginBindings plugin, String pluginName, int workerId
   }
 }
 
-void _pluginBidi(_PluginBindings plugin, String pluginName, int workerId, Random rnd) {
-  final stream = plugin.openStream('/example.v1.GoGreeterService/BarBidiStream');
+void _pluginBidi(
+    _PluginBindings plugin, String pluginName, int workerId, Random rnd) {
+  final stream =
+      plugin.openStream('/example.v1.GoGreeterService/BarBidiStream');
   try {
     final count = 1 + rnd.nextInt(12);
     var received = 0;
     for (var i = 0; i < count; i++) {
-      stream.send(_encodeHelloRequest('bs-$pluginName-$workerId-$i-${rnd.nextInt(1 << 30)}'));
+      stream.send(_encodeHelloRequest(
+          'bs-$pluginName-$workerId-$i-${rnd.nextInt(1 << 30)}'));
       final packet = stream.recv();
       if (packet.eof) break;
       final msg = _decodeHelloMessage(packet.data!);
@@ -316,7 +339,8 @@ void _pluginBidi(_PluginBindings plugin, String pluginName, int workerId, Random
   }
 }
 
-void _pluginChaos(_PluginBindings plugin, String pluginName, int workerId, Random rnd) {
+void _pluginChaos(
+    _PluginBindings plugin, String pluginName, int workerId, Random rnd) {
   final x = rnd.nextInt(100);
   if (x < 15) {
     final s = plugin.openStream('/example.v1.GoGreeterService/BarBidiStream');
@@ -405,7 +429,9 @@ Future<_PhaseResult> _runProcessPhase({
 
   for (var w = 0; w < workers; w++) {
     futures.add(Future<void>(() async {
-      final rnd = Random(DateTime.now().microsecondsSinceEpoch ^ (w * 100003) ^ (seedBase * 7919));
+      final rnd = Random(DateTime.now().microsecondsSinceEpoch ^
+          (w * 100003) ^
+          (seedBase * 7919));
       while (!stop && DateTime.now().isBefore(deadline)) {
         try {
           await _runProcessRandomOp(client, rnd, w);
@@ -428,10 +454,12 @@ Future<_PhaseResult> _runProcessPhase({
   }
 
   await Future.wait(futures);
-  return _PhaseResult(ops: ops, expectedErrors: expected, unexpectedErrors: unexpected);
+  return _PhaseResult(
+      ops: ops, expectedErrors: expected, unexpectedErrors: unexpected);
 }
 
-Future<void> _runProcessRandomOp(pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
+Future<void> _runProcessRandomOp(
+    pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
   final x = rnd.nextInt(100);
   if (x < 35) {
     await _processUnary(client, rnd, workerId);
@@ -455,7 +483,8 @@ Duration _randomTimeout(Random rnd) {
   return Duration(milliseconds: 100 + rnd.nextInt(350));
 }
 
-Future<void> _processUnary(pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
+Future<void> _processUnary(
+    pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
   final marker = 'u-$workerId-${rnd.nextInt(1 << 30)}';
   final resp = await client.bar(
     pb.HelloRequest()..name = marker,
@@ -466,7 +495,8 @@ Future<void> _processUnary(pbgrpc.GoGreeterServiceClient client, Random rnd, int
   }
 }
 
-Future<void> _processServerStream(pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
+Future<void> _processServerStream(
+    pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
   final marker = 'ss-$workerId-${rnd.nextInt(1 << 30)}';
   final stream = client.barServerStream(
     pb.HelloRequest()..name = marker,
@@ -485,7 +515,8 @@ Future<void> _processServerStream(pbgrpc.GoGreeterServiceClient client, Random r
   }
 }
 
-Future<void> _processClientStream(pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
+Future<void> _processClientStream(
+    pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
   final count = 1 + rnd.nextInt(20);
   final reqs = List<pb.HelloRequest>.generate(
     count,
@@ -500,7 +531,8 @@ Future<void> _processClientStream(pbgrpc.GoGreeterServiceClient client, Random r
   }
 }
 
-Future<void> _processBidi(pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
+Future<void> _processBidi(
+    pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
   final count = 1 + rnd.nextInt(12);
   final reqs = List<pb.HelloRequest>.generate(
     count,
@@ -522,7 +554,8 @@ Future<void> _processBidi(pbgrpc.GoGreeterServiceClient client, Random rnd, int 
   }
 }
 
-Future<void> _processChaos(pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
+Future<void> _processChaos(
+    pbgrpc.GoGreeterServiceClient client, Random rnd, int workerId) async {
   final x = rnd.nextInt(100);
   if (x < 25) {
     try {
@@ -539,7 +572,8 @@ Future<void> _processChaos(pbgrpc.GoGreeterServiceClient client, Random rnd, int
     final count = 1 + rnd.nextInt(4);
     final reqs = List<pb.HelloRequest>.generate(
       count,
-      (i) => pb.HelloRequest()..name = 'chaos-cs-$workerId-$i-${rnd.nextInt(1 << 30)}',
+      (i) => pb.HelloRequest()
+        ..name = 'chaos-cs-$workerId-$i-${rnd.nextInt(1 << 30)}',
     );
     try {
       await client.barClientStream(
@@ -640,7 +674,8 @@ Future<_ResourceSnapshot> _captureResources() async {
     // ignore
   }
 
-  return _ResourceSnapshot(fdCount: fdCount, rssBytes: rssBytes, hasFd: hasFd, hasRss: hasRss);
+  return _ResourceSnapshot(
+      fdCount: fdCount, rssBytes: rssBytes, hasFd: hasFd, hasRss: hasRss);
 }
 
 void _assertNoResourceLeak({
@@ -660,7 +695,8 @@ void _assertNoResourceLeak({
   }
 
   if (baseline.hasRss && finalRes.hasRss) {
-    final rssDeltaMb = ((finalRes.rssBytes - baseline.rssBytes) / (1024 * 1024)).floor();
+    final rssDeltaMb =
+        ((finalRes.rssBytes - baseline.rssBytes) / (1024 * 1024)).floor();
     if (rssDeltaMb > maxRssMbDelta) {
       fail(
         'rss leak suspected: baseline_mb=${(baseline.rssBytes / (1024 * 1024)).floor()} '
@@ -671,7 +707,8 @@ void _assertNoResourceLeak({
   }
 }
 
-int _deltaIfKnown(int base, int fin) => (base >= 0 && fin >= 0) ? (fin - base) : -1;
+int _deltaIfKnown(int base, int fin) =>
+    (base >= 0 && fin >= 0) ? (fin - base) : -1;
 int _deltaMbIfKnown(int base, int fin) =>
     (base >= 0 && fin >= 0) ? ((fin - base) ~/ (1024 * 1024)) : -1;
 
@@ -822,8 +859,10 @@ typedef _FreeDart = void Function(Pointer<Int8> ptr);
 typedef _StreamOpenNative = Uint64 Function(Pointer<Int8> method);
 typedef _StreamOpenDart = int Function(Pointer<Int8> method);
 
-typedef _StreamSendNative = Int32 Function(Uint64 handle, Pointer<Int8> data, Int32 dataLen);
-typedef _StreamSendDart = int Function(int handle, Pointer<Int8> data, int dataLen);
+typedef _StreamSendNative = Int32 Function(
+    Uint64 handle, Pointer<Int8> data, Int32 dataLen);
+typedef _StreamSendDart = int Function(
+    int handle, Pointer<Int8> data, int dataLen);
 
 typedef _StreamRecvNative = Pointer<Int8> Function(
   Uint64 handle,
@@ -868,13 +907,19 @@ class _PluginBindings {
     final lib = DynamicLibrary.open(path);
     return _PluginBindings._(
       lib,
-      lib.lookupFunction<_InvokeNative, _InvokeDart>('Synurang_Invoke_GoGreeterService'),
+      lib.lookupFunction<_InvokeNative, _InvokeDart>(
+          'Synurang_Invoke_GoGreeterService'),
       lib.lookupFunction<_FreeNative, _FreeDart>('Synurang_Free'),
-      lib.lookupFunction<_StreamOpenNative, _StreamOpenDart>('Synurang_Stream_GoGreeterService_Open'),
-      lib.lookupFunction<_StreamSendNative, _StreamSendDart>('Synurang_Stream_Send'),
-      lib.lookupFunction<_StreamRecvNative, _StreamRecvDart>('Synurang_Stream_Recv'),
-      lib.lookupFunction<_StreamCloseSendNative, _StreamCloseSendDart>('Synurang_Stream_CloseSend'),
-      lib.lookupFunction<_StreamCloseNative, _StreamCloseDart>('Synurang_Stream_Close'),
+      lib.lookupFunction<_StreamOpenNative, _StreamOpenDart>(
+          'Synurang_Stream_GoGreeterService_Open'),
+      lib.lookupFunction<_StreamSendNative, _StreamSendDart>(
+          'Synurang_Stream_Send'),
+      lib.lookupFunction<_StreamRecvNative, _StreamRecvDart>(
+          'Synurang_Stream_Recv'),
+      lib.lookupFunction<_StreamCloseSendNative, _StreamCloseSendDart>(
+          'Synurang_Stream_CloseSend'),
+      lib.lookupFunction<_StreamCloseNative, _StreamCloseDart>(
+          'Synurang_Stream_Close'),
     );
   }
 
@@ -888,11 +933,18 @@ class _PluginBindings {
       }
       final respPtr = _invoke(methodPtr, dataPtr, req.length, respLen);
       if (respPtr.address == 0) {
+        if (respLen.value == 0) {
+          return Uint8List(0);
+        }
         throw StateError('plugin returned null');
       }
-      final raw = _copy(respPtr, respLen.value);
+      final copyLen = respLen.value < 0 ? -respLen.value : respLen.value;
+      final raw = _copy(respPtr, copyLen);
       _free(respPtr);
-      return _decodePluginResponse(raw);
+      if (respLen.value < 0) {
+        throw FfiError.fromBuffer(raw);
+      }
+      return raw;
     } finally {
       calloc.free(methodPtr);
       calloc.free(dataPtr);
@@ -933,16 +985,6 @@ class _PluginBindings {
   Uint8List _copy(Pointer<Int8> ptr, int len) {
     if (len <= 0) return Uint8List(0);
     return Uint8List.fromList(ptr.cast<Uint8>().asTypedList(len));
-  }
-
-  Uint8List _decodePluginResponse(Uint8List raw) {
-    if (raw.isEmpty) {
-      throw StateError('empty plugin response');
-    }
-    if (raw[0] == 1) {
-      throw StateError(utf8.decode(raw.sublist(1), allowMalformed: true));
-    }
-    return Uint8List.fromList(raw.sublist(1));
   }
 }
 
@@ -990,25 +1032,27 @@ class _PluginStream {
       }
       if (status.value != 0) {
         String msg = 'stream error: ${status.value}';
-        if (ptr.address != 0 && respLen.value > 0) {
+        if (status.value < 0 && ptr.address != 0 && respLen.value > 0) {
           final raw = ptr.cast<Uint8>().asTypedList(respLen.value);
-          msg = utf8.decode(raw, allowMalformed: true);
+          final err = FfiError.fromBuffer(Uint8List.fromList(raw));
+          _plugin._free(ptr);
+          throw err;
+        }
+        if (ptr.address != 0) {
           _plugin._free(ptr);
         }
         throw StateError(msg);
       }
-      if (ptr.address == 0 || respLen.value <= 0) {
-        throw StateError('empty stream response');
+      if (ptr.address == 0) {
+        if (respLen.value == 0) {
+          return _StreamPacket(Uint8List(0), false);
+        }
+        throw StateError('plugin returned null');
       }
-      final raw = Uint8List.fromList(ptr.cast<Uint8>().asTypedList(respLen.value));
+      final raw =
+          Uint8List.fromList(ptr.cast<Uint8>().asTypedList(respLen.value));
       _plugin._free(ptr);
-      if (raw.isEmpty) {
-        throw StateError('empty stream packet');
-      }
-      if (raw[0] == 1) {
-        throw StateError(utf8.decode(raw.sublist(1), allowMalformed: true));
-      }
-      return _StreamPacket(Uint8List.fromList(raw.sublist(1)), false);
+      return _StreamPacket(raw, false);
     } finally {
       calloc.free(respLen);
       calloc.free(status);

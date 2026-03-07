@@ -43,7 +43,7 @@ func (s *Server) GetGoroutines(ctx context.Context, req *pb.GoroutinesRequest) (
 }
 
 // Server streaming: single request, stream of responses
-func (s *Server) BarServerStream(req *pb.HelloRequest, stream pb.GoGreeterService_BarServerStreamServer) error {
+func (s *Server) BarServerStream(req *pb.HelloRequest, stream pb.GoGreeterService_BarServerStreamPluginStream) error {
 	s.logic.BarServerStream(req.Name, func(message, from string, index, total int) bool {
 		err := stream.Send(&pb.HelloResponse{
 			Message:   message,
@@ -56,7 +56,7 @@ func (s *Server) BarServerStream(req *pb.HelloRequest, stream pb.GoGreeterServic
 }
 
 // Client streaming: stream of requests, single response
-func (s *Server) BarClientStream(stream pb.GoGreeterService_BarClientStreamServer) (*pb.HelloResponse, error) {
+func (s *Server) BarClientStream(stream pb.GoGreeterService_BarClientStreamPluginStream) (*pb.HelloResponse, error) {
 	var names []string
 	for {
 		req, err := stream.Recv()
@@ -76,7 +76,7 @@ func (s *Server) BarClientStream(stream pb.GoGreeterService_BarClientStreamServe
 }
 
 // Bidi streaming: stream of requests, stream of responses
-func (s *Server) BarBidiStream(stream pb.GoGreeterService_BarBidiStreamServer) error {
+func (s *Server) BarBidiStream(stream pb.GoGreeterService_BarBidiStreamPluginStream) error {
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -97,7 +97,7 @@ func (s *Server) BarBidiStream(stream pb.GoGreeterService_BarBidiStreamServer) e
 }
 
 // File upload (client streaming)
-func (s *Server) UploadFile(stream pb.GoGreeterService_UploadFileServer) (*pb.FileStatus, error) {
+func (s *Server) UploadFile(stream pb.GoGreeterService_UploadFilePluginStream) (*pb.FileStatus, error) {
 	fmt.Println("[test-plugin] UploadFile started")
 	var totalSize int64
 	for {
@@ -113,7 +113,7 @@ func (s *Server) UploadFile(stream pb.GoGreeterService_UploadFileServer) (*pb.Fi
 }
 
 // File download (server streaming)
-func (s *Server) DownloadFile(req *pb.DownloadFileRequest, stream pb.GoGreeterService_DownloadFileServer) error {
+func (s *Server) DownloadFile(req *pb.DownloadFileRequest, stream pb.GoGreeterService_DownloadFilePluginStream) error {
 	fmt.Printf("[test-plugin] DownloadFile requested size: %d\n", req.Size)
 	chunkSize := int64(1024)
 	remaining := req.Size
@@ -131,7 +131,7 @@ func (s *Server) DownloadFile(req *pb.DownloadFileRequest, stream pb.GoGreeterSe
 }
 
 // Bidi file streaming
-func (s *Server) BidiFile(stream pb.GoGreeterService_BidiFileServer) error {
+func (s *Server) BidiFile(stream pb.GoGreeterService_BidiFilePluginStream) error {
 	fmt.Println("[test-plugin] BidiFile started")
 	for {
 		chunk, err := stream.Recv()

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 
 namespace Synurang;
@@ -65,7 +64,7 @@ public class PluginHost : IDisposable
 
     /// <summary>
     /// Invoke a unary RPC method on a service.
-    /// Response format from plugin: [status:1byte][payload...]
+    /// Success returns raw protobuf bytes. Negative respLen carries a serialized FfiError payload.
     /// </summary>
     public byte[] Invoke(string serviceName, string method, byte[] data)
     {
@@ -87,30 +86,24 @@ public class PluginHost : IDisposable
 
             IntPtr resultPtr = invoke(methodPtr, dataPtr, data.Length, out int respLen);
             if (resultPtr == IntPtr.Zero)
-                throw new PluginError($"Empty response from plugin for {method}");
+            {
+                if (respLen == 0)
+                    return Array.Empty<byte>();
+                throw new FfiError($"Plugin returned null for {method}");
+            }
 
             try
             {
-                if (respLen <= 0)
-                    throw new PluginError($"Empty response from plugin for {method}");
-
-                // Check status byte directly from native memory
-                byte status = Marshal.ReadByte(resultPtr);
-                if (status == 1)
+                int copyLen = respLen < 0 ? -respLen : respLen;
+                byte[] payload = new byte[copyLen];
+                if (copyLen > 0)
                 {
-                    // Error: copy remaining bytes as string
-                    int errLen = respLen - 1;
-                    byte[] errBytes = new byte[errLen];
-                    if (errLen > 0)
-                        Marshal.Copy(IntPtr.Add(resultPtr, 1), errBytes, 0, errLen);
-                    string errMsg = Encoding.UTF8.GetString(errBytes);
-                    throw new PluginError(errMsg);
+                    Marshal.Copy(resultPtr, payload, 0, copyLen);
                 }
 
-                // Success: copy payload (skip status byte)
-                byte[] payload = new byte[respLen - 1];
-                if (payload.Length > 0)
-                    Marshal.Copy(IntPtr.Add(resultPtr, 1), payload, 0, payload.Length);
+                if (respLen < 0)
+                    throw FfiError.FromPayload(payload);
+
                 return payload;
             }
             finally
@@ -145,7 +138,7 @@ public class PluginHost : IDisposable
             methodPtr = NativeLoader.StringToCoTaskMemUTF8(method);
             ulong streamHandle = open(methodPtr);
             if (streamHandle == 0)
-                throw new PluginError($"Failed to open stream for {method}");
+                throw new FfiError($"Failed to open stream for {method}");
 
             var stream = new PluginStream(this, streamHandle, sf);
             _openStreams[streamHandle] = stream;

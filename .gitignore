@@ -37,8 +37,10 @@
 
 # Java build artifacts
 /java/build/
+/java/core/bin/
 /java/core/build/
 /java/grpc/build/
+/java/grpc/bin/
 /java/libs/
 /java/core/src/main/c/build/
 /java/core/src/main/c/build-*/

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/ivere27/synurang/pkg/ffierror"
 )
 
 // Synurang_Free frees memory allocated by C.CBytes.
@@ -76,6 +78,23 @@ func cToBytes(data *C.char, dataLen C.int) []byte {
 	return []byte{}
 }
 
+func cBytesOrNil(data []byte) *C.char {
+	if len(data) == 0 {
+		return nil
+	}
+	return (*C.char)(C.CBytes(data))
+}
+
+func setStreamPayload(payload []byte, respLen *C.int, status *C.int, code C.int) *C.char {
+	*respLen = C.int(len(payload))
+	*status = code
+	return cBytesOrNil(payload)
+}
+
+func setStreamError(err error, respLen *C.int, status *C.int) *C.char {
+	return setStreamPayload(ffierror.Marshal(err), respLen, status, -1)
+}
+
 //export Synurang_Stream_Send
 func Synurang_Stream_Send(handle C.ulonglong, data *C.char, dataLen C.int) (result C.int) {
 	stream := getStream(handle)
@@ -111,8 +130,7 @@ func Synurang_Stream_Send(handle C.ulonglong, data *C.char, dataLen C.int) (resu
 func Synurang_Stream_Recv(handle C.ulonglong, respLen *C.int, status *C.int) *C.char {
 	stream := getStream(handle)
 	if stream == nil {
-		*status = 2
-		return nil
+		return setStreamError(ffierror.New(0, "stream not found", 2), respLen, status)
 	}
 
 	// Priority 1: Check for data in RecvCh (non-blocking)
@@ -123,24 +141,14 @@ func Synurang_Stream_Recv(handle C.ulonglong, respLen *C.int, status *C.int) *C.
 			// Channel closed - check for pending error
 			select {
 			case err := <-stream.ErrCh:
-				errBytes := []byte(err.Error())
-				result := make([]byte, 1+len(errBytes))
-				result[0] = 1
-				copy(result[1:], errBytes)
-				*respLen = C.int(len(result))
-				*status = 0
-				return (*C.char)(C.CBytes(result))
+				return setStreamError(err, respLen, status)
 			default:
 				*status = 1 // EOF - no error pending
+				*respLen = 0
 				return nil
 			}
 		}
-		result := make([]byte, 1+len(data))
-		result[0] = 0
-		copy(result[1:], data)
-		*respLen = C.int(len(result))
-		*status = 0
-		return (*C.char)(C.CBytes(result))
+		return setStreamPayload(data, respLen, status, 0)
 	default:
 		// No data immediately available, fall through to blocking select
 	}
@@ -148,13 +156,7 @@ func Synurang_Stream_Recv(handle C.ulonglong, respLen *C.int, status *C.int) *C.
 	// Priority 2: Check for error (non-blocking)
 	select {
 	case err := <-stream.ErrCh:
-		errBytes := []byte(err.Error())
-		result := make([]byte, 1+len(errBytes))
-		result[0] = 1
-		copy(result[1:], errBytes)
-		*respLen = C.int(len(result))
-		*status = 0
-		return (*C.char)(C.CBytes(result))
+		return setStreamError(err, respLen, status)
 	default:
 	}
 
@@ -165,47 +167,27 @@ func Synurang_Stream_Recv(handle C.ulonglong, respLen *C.int, status *C.int) *C.
 			// Channel closed - check for pending error
 			select {
 			case err := <-stream.ErrCh:
-				errBytes := []byte(err.Error())
-				result := make([]byte, 1+len(errBytes))
-				result[0] = 1
-				copy(result[1:], errBytes)
-				*respLen = C.int(len(result))
-				*status = 0
-				return (*C.char)(C.CBytes(result))
+				return setStreamError(err, respLen, status)
 			default:
 				*status = 1 // EOF - no error pending
+				*respLen = 0
 				return nil
 			}
 		}
-		result := make([]byte, 1+len(data))
-		result[0] = 0
-		copy(result[1:], data)
-		*respLen = C.int(len(result))
-		*status = 0
-		return (*C.char)(C.CBytes(result))
+		return setStreamPayload(data, respLen, status, 0)
 	case err := <-stream.ErrCh:
-		errBytes := []byte(err.Error())
-		result := make([]byte, 1+len(errBytes))
-		result[0] = 1
-		copy(result[1:], errBytes)
-		*respLen = C.int(len(result))
-		*status = 0
-		return (*C.char)(C.CBytes(result))
+		return setStreamError(err, respLen, status)
 	case <-stream.Ctx.Done():
 		// Context cancelled - but check one more time for data that arrived
 		select {
 		case data, ok := <-stream.RecvCh:
 			if ok {
-				result := make([]byte, 1+len(data))
-				result[0] = 0
-				copy(result[1:], data)
-				*respLen = C.int(len(result))
-				*status = 0
-				return (*C.char)(C.CBytes(result))
+				return setStreamPayload(data, respLen, status, 0)
 			}
 		default:
 		}
 		*status = 1 // EOF due to cancellation
+		*respLen = 0
 		return nil
 	}
 }

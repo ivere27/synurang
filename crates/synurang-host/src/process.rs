@@ -67,13 +67,14 @@ impl ProcessHost {
         drop(child_fd);
 
         // Convert parent fd to tokio UnixStream (into_raw_fd transfers ownership)
-        let std_stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(parent_fd.into_raw_fd()) };
+        let std_stream =
+            unsafe { std::os::unix::net::UnixStream::from_raw_fd(parent_fd.into_raw_fd()) };
         std_stream
             .set_nonblocking(true)
             .map_err(|e| Error::ProcessError(e.to_string()))?;
 
-        let tokio_stream = UnixStream::from_std(std_stream)
-            .map_err(|e| Error::ProcessError(e.to_string()))?;
+        let tokio_stream =
+            UnixStream::from_std(std_stream).map_err(|e| Error::ProcessError(e.to_string()))?;
 
         // Wrap in Arc<Mutex> for sharing in connector
         let stream = std::sync::Arc::new(tokio::sync::Mutex::new(Some(tokio_stream)));
@@ -86,7 +87,9 @@ impl ProcessHost {
                 guard
                     .take()
                     .map(|s| hyper_util::rt::TokioIo::new(s))
-                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "stream already used"))
+                    .ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::Other, "stream already used")
+                    })
             }
         });
 
@@ -194,7 +197,7 @@ impl Drop for ProcessHost {
     fn drop(&mut self) {
         // Kill and wait to prevent zombie processes
         let _ = self.child.kill();
-        let _ = self.child.wait();  // Reap the zombie
+        let _ = self.child.wait(); // Reap the zombie
     }
 }
 
@@ -203,10 +206,6 @@ impl Drop for ProcessHost {
 /// On Unix: Returns the FD number as a string
 /// On Windows: Returns the TCP address
 pub fn new_ipc_listener() -> Result<String> {
-    std::env::var(ENV_VAR_IPC).map_err(|_| {
-        Error::ProcessError(format!(
-            "{} environment variable not set",
-            ENV_VAR_IPC
-        ))
-    })
+    std::env::var(ENV_VAR_IPC)
+        .map_err(|_| Error::ProcessError(format!("{} environment variable not set", ENV_VAR_IPC)))
 }

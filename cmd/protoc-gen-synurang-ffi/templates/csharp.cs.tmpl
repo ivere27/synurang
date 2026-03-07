@@ -48,7 +48,7 @@ public class {{$svc.GoName}}Ffi
         stream.CloseSend();
         byte[]? result = stream.Recv();
         if (result == null)
-            throw new PluginError("No response from client streaming RPC");
+            throw new FfiError("No response from client streaming RPC");
         return {{$m.OutputType}}.Parser.ParseFrom(result);
     }
 {{else}}

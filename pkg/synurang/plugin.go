@@ -35,15 +35,6 @@ var ErrDataTooLarge = errors.New("data too large for C interop (max 2GB)")
 // ErrPluginClosed is returned when operations are attempted on a closed plugin.
 var ErrPluginClosed = errors.New("plugin is closed")
 
-// PluginError represents an error returned from a plugin.
-type PluginError struct {
-	Message string
-}
-
-func (e *PluginError) Error() string {
-	return "plugin error: " + e.Message
-}
-
 // Plugin represents a loaded shared library plugin.
 type Plugin struct {
 	handle  uintptr
@@ -82,7 +73,7 @@ var (
 	platformOpen   func(path string) (uintptr, error)
 	platformSym    func(handle uintptr, name string) (uintptr, error)
 	platformClose  func(handle uintptr) error
-	platformInvoke func(fn, freePtr uintptr, method string, data []byte) ([]byte, error)
+	platformInvoke func(fn, freePtr uintptr, method string, data []byte) (dataOut []byte, respLen int, err error)
 
 	// Streaming platform functions
 	platformStreamOpen      func(fn uintptr, method string) uint64
@@ -202,11 +193,11 @@ func (p *Plugin) getInvoker(serviceName string) (uintptr, error) {
 }
 
 // invokeInternal performs the actual FFI call and returns raw bytes.
-func (p *Plugin) invokeInternal(serviceName, method string, data []byte) ([]byte, error) {
+func (p *Plugin) invokeInternal(serviceName, method string, data []byte) ([]byte, int, error) {
 	p.mu.RLock()
 	if p.closed {
 		p.mu.RUnlock()
-		return nil, ErrPluginClosed
+		return nil, 0, ErrPluginClosed
 	}
 	p.wg.Add(1)
 	p.mu.RUnlock()
@@ -214,11 +205,11 @@ func (p *Plugin) invokeInternal(serviceName, method string, data []byte) ([]byte
 
 	invokePtr, err := p.getInvoker(serviceName)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	if len(data) > math.MaxInt32 {
-		return nil, ErrDataTooLarge
+		return nil, 0, ErrDataTooLarge
 	}
 
 	return platformInvoke(invokePtr, p.freePtr, method, data)
@@ -228,21 +219,18 @@ func (p *Plugin) invokeInternal(serviceName, method string, data []byte) ([]byte
 // Returns the response bytes or an error.
 //
 // The method should be the full gRPC method name, e.g., "/pkg.ServiceName/MethodName".
-// Response format from plugin: [status:1byte][payload...]
-//   - status=0: success, payload is protobuf response
-//   - status=1: error, payload is error message string
+// Response format from plugin:
+//   - resp_len >= 0: success, payload is raw protobuf response bytes
+//   - resp_len < 0: error, payload is serialized core.v1.Error
 func (p *Plugin) Invoke(serviceName, method string, data []byte) ([]byte, error) {
-	result, err := p.invokeInternal(serviceName, method, data)
+	result, respLen, err := p.invokeInternal(serviceName, method, data)
 	if err != nil {
 		return nil, err
 	}
-	if len(result) == 0 {
-		return nil, fmt.Errorf("empty response from plugin for %s", method)
+	if respLen < 0 {
+		return nil, decodeFfiErrorPayload(result)
 	}
-	if result[0] == 1 {
-		return nil, &PluginError{Message: string(result[1:])}
-	}
-	return result[1:], nil
+	return result, nil
 }
 
 // =============================================================================
@@ -395,18 +383,12 @@ func (p *Plugin) StreamRecv(handle uintptr) ([]byte, error) {
 
 	switch status {
 	case 0: // data
-		if len(data) == 0 {
-			return nil, fmt.Errorf("empty stream response")
-		}
-		if data[0] == 1 {
-			return nil, &PluginError{Message: string(data[1:])}
-		}
-		return data[1:], nil
+		return data, nil
 	case 1: // EOF
 		return nil, io.EOF
 	default: // error
-		if respLen > 0 && len(data) > 0 {
-			return nil, fmt.Errorf("stream error: %s", string(data))
+		if status < 0 && respLen > 0 && len(data) > 0 {
+			return nil, decodeFfiErrorPayload(data)
 		}
 		return nil, fmt.Errorf("stream error with status %d", status)
 	}

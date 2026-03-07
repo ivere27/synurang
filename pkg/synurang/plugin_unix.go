@@ -58,6 +58,13 @@ import (
 	"unsafe"
 )
 
+func absCInt(v C.int) C.int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func init() {
 	platformOpen = unixOpen
 	platformSym = unixSym
@@ -97,7 +104,7 @@ func unixClose(handle uintptr) error {
 	return nil
 }
 
-func unixInvoke(fn, freePtr uintptr, method string, data []byte) ([]byte, error) {
+func unixInvoke(fn, freePtr uintptr, method string, data []byte) ([]byte, int, error) {
 	cMethod := C.CString(method)
 	defer C.free(unsafe.Pointer(cMethod))
 
@@ -110,11 +117,14 @@ func unixInvoke(fn, freePtr uintptr, method string, data []byte) ([]byte, error)
 	var respLen C.int
 	cResp := C.call_invoke(unsafe.Pointer(fn), cMethod, cData, C.int(len(data)), &respLen)
 	if cResp == nil {
-		return nil, fmt.Errorf("plugin returned nil")
+		if respLen == 0 {
+			return nil, 0, nil
+		}
+		return nil, int(respLen), fmt.Errorf("plugin returned nil")
 	}
 	defer C.call_free(unsafe.Pointer(freePtr), cResp)
 
-	return C.GoBytes(unsafe.Pointer(cResp), respLen), nil
+	return C.GoBytes(unsafe.Pointer(cResp), absCInt(respLen)), int(respLen), nil
 }
 
 func unixStreamOpen(fn uintptr, method string) uint64 {

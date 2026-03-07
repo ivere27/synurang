@@ -17,7 +17,7 @@
 
 import io.github.ivere27.synurang.PluginHost;
 import io.github.ivere27.synurang.PluginStream;
-import io.github.ivere27.synurang.PluginError;
+import io.github.ivere27.synurang.FfiError;
 // No io.grpc imports
 
 import java.io.File;
@@ -146,7 +146,7 @@ public class FfiApiTest {
                     stream.send(encodeHelloRequest("Ping" + i));
                 }
                 stream.closeSend();
-            } catch (PluginError e) {
+            } catch (FfiError e) {
                 throw new RuntimeException(e);
             }
         });
@@ -197,7 +197,7 @@ public class FfiApiTest {
             run("[4/4] Bidi Streaming", () -> testBidiStream(plugin));
 
             plugin.close();
-        } catch (PluginError e) {
+        } catch (FfiError e) {
             System.err.println("Fatal: " + e.getMessage());
             System.exit(1);
         }

@@ -181,7 +181,7 @@ class SocketPairSocket extends Socket {
             try {
                 int n = SynurangJni.nativeReadFd(fd, b, off, len);
                 return n == 0 ? -1 : n;  // 0 from read() = EOF = -1 in Java
-            } catch (PluginError e) {
+            } catch (FfiError e) {
                 throw new IOException(e.getMessage(), e);
             }
         }
@@ -207,7 +207,7 @@ class SocketPairSocket extends Socket {
             if (len == 0) return;
             try {
                 SynurangJni.nativeWriteFd(fd, b, off, len);
-            } catch (PluginError e) {
+            } catch (FfiError e) {
                 throw new IOException(e.getMessage(), e);
             }
         }

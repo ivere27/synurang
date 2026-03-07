@@ -59,11 +59,10 @@ import (
 	"unsafe"
 
 	pb "github.com/ivere27/synurang/pkg/api"
+	"github.com/ivere27/synurang/pkg/ffierror"
 	"github.com/ivere27/synurang/pkg/service"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -284,23 +283,7 @@ func InvokeBackend(method *C.char, data unsafe.Pointer, dataLen C.longlong) C.Ff
 
 	if err != nil {
 		log.Printf("Invoke error: %v", err)
-		st, ok := status.FromError(err)
-		var pbErr *pb.Error
-		if ok {
-			for _, detail := range st.Details() {
-				if e, ok := detail.(*pb.Error); ok {
-					pbErr = e
-					break
-				}
-			}
-		}
-		if pbErr == nil {
-			pbErr = &pb.Error{
-				Message:  err.Error(),
-				GrpcCode: int32(st.Code()),
-			}
-		}
-		errBytes, _ := proto.Marshal(pbErr)
+		errBytes := ffierror.Marshal(err)
 		cErr := C.CBytes(errBytes)
 		return C.FfiData{
 			data: cErr,
@@ -403,23 +386,7 @@ func InvokeBackendWithMeta(method *C.char, data unsafe.Pointer, dataLen C.longlo
 	cPtr, size, err := invokeCoreFfiByMethod(localImpl, ctx, goMethod, goData)
 
 	if err != nil {
-		st, ok := status.FromError(err)
-		var pbErr *pb.Error
-		if ok {
-			for _, detail := range st.Details() {
-				if e, ok := detail.(*pb.Error); ok {
-					pbErr = e
-					break
-				}
-			}
-		}
-		if pbErr == nil {
-			pbErr = &pb.Error{
-				Message:  err.Error(),
-				GrpcCode: int32(st.Code()),
-			}
-		}
-		errBytes, _ := proto.Marshal(pbErr)
+		errBytes := ffierror.Marshal(err)
 		cErr := C.CBytes(errBytes)
 		return C.FfiData{data: cErr, len: C.longlong(-len(errBytes))}
 	}

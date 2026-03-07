@@ -20,19 +20,19 @@ class SynurangJni {
     static native long nativeLookupSymbol(long handle, String name);
 
     // =========================================================================
-    // Unary RPC — response format: [status:1byte][payload...]
+    // Unary RPC — success returns raw protobuf bytes, negative native lengths throw FfiError
     // =========================================================================
 
-    static native byte[] nativeInvoke(long invokePtr, long freePtr, String method, byte[] data) throws PluginError;
+    static native byte[] nativeInvoke(long invokePtr, long freePtr, String method, byte[] data) throws FfiError;
 
     // =========================================================================
     // Streaming
     // =========================================================================
 
     static native long nativeStreamOpen(long openPtr, String method);
-    static native int nativeStreamSend(long sendPtr, long handle, byte[] data) throws PluginError;
-    // Returns null on EOF, throws on error
-    static native byte[] nativeStreamRecv(long recvPtr, long freePtr, long handle) throws PluginError;
+    static native int nativeStreamSend(long sendPtr, long handle, byte[] data) throws FfiError;
+    // Returns null on EOF, raw protobuf bytes on data, throws on error
+    static native byte[] nativeStreamRecv(long recvPtr, long freePtr, long handle) throws FfiError;
     static native void nativeStreamCloseSend(long closeSendPtr, long handle);
     static native void nativeStreamClose(long closePtr, long handle);
 
@@ -41,7 +41,7 @@ class SynurangJni {
     // =========================================================================
 
     /** Creates a Unix socketpair. Returns int[2] = {parentFd, childFd}. */
-    static native int[] nativeSocketpair() throws PluginError;
+    static native int[] nativeSocketpair() throws FfiError;
 
     /**
      * Fork + exec a child process with the given socketpair fd.
@@ -51,7 +51,7 @@ class SynurangJni {
      *
      * @return child pid
      */
-    static native int nativeForkExec(String executable, String[] args, int childFd) throws PluginError;
+    static native int nativeForkExec(String executable, String[] args, int childFd) throws FfiError;
 
     /** Send a signal to a process. */
     static native void nativeKill(int pid, int signal);
@@ -71,10 +71,10 @@ class SynurangJni {
      * @return bytes read, 0 on EOF
      * @throws java.net.SocketTimeoutException on timeout
      */
-    static native int nativeReadFd(int fd, byte[] buf, int offset, int len) throws PluginError;
+    static native int nativeReadFd(int fd, byte[] buf, int offset, int len) throws FfiError;
 
     /** Write all bytes to a file descriptor. */
-    static native void nativeWriteFd(int fd, byte[] buf, int offset, int len) throws PluginError;
+    static native void nativeWriteFd(int fd, byte[] buf, int offset, int len) throws FfiError;
 
     /** Close a file descriptor. */
     static native void nativeCloseFd(int fd);
@@ -105,5 +105,5 @@ class SynurangJni {
     // =========================================================================
 
     /** Get the native address of a direct ByteBuffer (JNI GetDirectBufferAddress). */
-    static native long nativeGetDirectBufferAddress(Object buffer) throws PluginError;
+    static native long nativeGetDirectBufferAddress(Object buffer) throws FfiError;
 }

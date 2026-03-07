@@ -1,6 +1,8 @@
 # Low-Level FFI API
 
-This document covers using Synurang plugins **without** a gRPC library dependency. Instead of routing calls through generated gRPC stubs and a `ClientConn`/`ClientChannel`, you call the plugin's C ABI functions directly with raw protobuf bytes.
+This document covers using Synurang plugins through the low-level FFI/plugin boundary with raw protobuf bytes instead of generated gRPC stubs and channels. In FFI mode, the goal is minimal dependency: protobuf (or protobuf-lite) plus the host loader/stream API for your language.
+
+The FFI wire format itself is protobuf-only. Some language packages still bundle gRPC/process helpers in the same artifact today, but the FFI call path shown here does not require gRPC APIs.
 
 ## When to use this
 
@@ -16,7 +18,7 @@ This document covers using Synurang plugins **without** a gRPC library dependenc
 | **Codegen** (`protoc-gen-synurang-ffi`) | Typed client classes with methods matching your `.proto` | Automatic |
 | **Manual** (raw bytes) | Direct `invoke()` / `openStream()` calls on the plugin host | You call `proto.Marshal` / `parseFrom` yourself |
 
-Both skip the gRPC library entirely. The codegen approach is recommended unless you need custom serialization or want to avoid the codegen step.
+Both skip generated gRPC stubs and channels in the actual call path. The codegen approach is recommended unless you need custom serialization or want to avoid the codegen step.
 
 ---
 
@@ -28,8 +30,8 @@ Both skip the gRPC library entirely. The codegen approach is recommended unless 
 # Required
 google.golang.org/protobuf   # proto.Marshal / proto.Unmarshal
 
-# NOT required
-google.golang.org/grpc       # only needed for the gRPC-stub path
+# Optional compatibility only
+# google.golang.org/grpc     # low-level host calls do not need it
 ```
 
 ### With codegen
@@ -81,7 +83,7 @@ defer plugin.Close()
 reqBytes, _ := proto.Marshal(&pb.HelloRequest{Name: "World"})
 respBytes, err := plugin.Invoke("Greeter", "/mypackage.Greeter/SayHello", reqBytes)
 if err != nil {
-    log.Fatal(err) // includes PluginError for application errors
+    log.Fatal(err) // includes FfiError for application errors
 }
 resp := &pb.HelloReply{}
 proto.Unmarshal(respBytes, resp)
@@ -182,12 +184,11 @@ for {
 
 ```yaml
 dependencies:
-  synurang: ...          # FFI host library
+  synurang: ...          # FFI host library; current package also bundles grpc-based process/stub helpers
   protobuf: ...          # writeToBuffer / fromBuffer
-
-# NOT required:
-#   grpc: ...            # only needed for the gRPC-stub path
 ```
+
+Your FFI/plugin code only needs protobuf bytes. You do not need to use grpc APIs in the call path shown below.
 
 ### With codegen
 
@@ -433,11 +434,10 @@ stream->close();
 ```toml
 [dependencies]
 synurang-host = { ... }   # PluginHost, PluginStream
-prost = "0.12"             # encode_to_vec / decode
-
-# NOT required:
-# tonic = ...              # only needed for the gRPC-stub path
+prost = "0.12"            # encode_to_vec / decode
 ```
+
+The low-level `PluginHost` / `PluginStream` / `FfiError` path is protobuf-only. The current crate also bundles tonic-based process helpers in the same artifact.
 
 ### With codegen
 
@@ -681,7 +681,7 @@ Thread sender = new Thread(() -> {
             stream.send(msg.toByteArray());
         }
         stream.closeSend();
-    } catch (PluginError e) {
+    } catch (FfiError e) {
         e.printStackTrace();
     }
 });
@@ -700,11 +700,174 @@ stream.close();
 
 ---
 
+## Structured FFI Errors
+
+Synurang carries `core.v1.Error` over FFI/plugin boundaries. The canonical structured error is `FfiError`.
+
+In FFI mode, think in terms of protobuf payloads, not gRPC packages. `core.v1.Error` is just a protobuf message, so host/plugin code can work with only protobuf or protobuf-lite support. `grpc_code` is just the integer field in that message.
+
+Hosts should assert both the user message and the structured fields:
+
+- `code`: app-specific error code
+- `message`: human-readable error
+- `grpc_code`: gRPC status code
+
+Start with the existing codec/unit checks:
+
+```bash
+dart test test/ffi_error_test.dart
+go test ./pkg/ffierror ./pkg/synurang
+```
+
+For end-to-end testing, add a deterministic trigger to one service implementation and return a structured protobuf-backed error. No `grpc/status` or `grpc/codes` import is required:
+
+```go
+import (
+    "github.com/ivere27/synurang/pkg/ffierror"
+)
+
+func ffiTestError(code int32, message string) error {
+    return ffierror.New(code, message, 10) // 10 = ABORTED
+}
+```
+
+Use the same deterministic trigger input across all 4 RPC types:
+
+- Unary: `if req.Name == "trigger_error" { return nil, ffiTestError(4101, "unary failed") }`
+- Server stream: `if req.Name == "trigger_error" { return ffiTestError(4102, "server stream failed") }`
+- Client stream: if any received item has `Name == "trigger_error"`, return `ffiTestError(4103, "client stream failed")`
+- Bidi stream: if any received item has `Name == "trigger_error"`, return `ffiTestError(4104, "bidi failed")`
+
+Then assert the decoded `FfiError` fields in each host:
+
+- Dart: catch `FfiError` and check `e.code` / `e.grpcCode`
+- Go: `var ffiErr *synurang.FfiError; errors.As(err, &ffiErr)`
+- Java/C#: catch `FfiError` and inspect `getCode()` / `Code` and `getGrpcCode()` / `GrpcCode`
+- C++: catch `synurang::FfiError` and inspect `code()` / `grpc_code()`
+- Rust: match `Error::PluginError(err)` or `Error::StreamError(err)` and inspect the inner `FfiError`
+
+Example host-side usage:
+
+```dart
+try {
+  await synurang.invokeBackendAsync(method, requestBytes);
+} on synurang.FfiError catch (e) {
+  print('code=${e.code} grpc=${e.grpcCode} message=${e.message}');
+}
+```
+
+```go
+resp, err := plugin.Invoke("GoGreeterService", "/example.v1.GoGreeterService/Bar", reqBytes)
+if err != nil {
+    var ffiErr *synurang.FfiError
+    if errors.As(err, &ffiErr) {
+        fmt.Printf("code=%d grpc=%d message=%s\n", ffiErr.Code, ffiErr.GrpcCode, ffiErr.Message)
+    }
+    return err
+}
+_ = resp
+```
+
+```java
+try {
+    plugin.invoke("GoGreeterService", "/example.v1.GoGreeterService/Bar", reqBytes);
+} catch (FfiError e) {
+    System.out.println("code=" + e.getCode() + " grpc=" + e.getGrpcCode() + " message=" + e.getMessage());
+}
+```
+
+```csharp
+try
+{
+    plugin.Invoke("GoGreeterService", "/example.v1.GoGreeterService/Bar", reqBytes);
+}
+catch (FfiError e)
+{
+    Console.WriteLine($"code={e.Code} grpc={e.GrpcCode} message={e.Message}");
+}
+```
+
+```cpp
+try {
+    plugin.invoke("GoGreeterService", "/example.v1.GoGreeterService/Bar", req_bytes);
+} catch (const synurang::FfiError& e) {
+    std::cout << "code=" << e.code() << " grpc=" << e.grpc_code()
+              << " message=" << e.what() << std::endl;
+}
+```
+
+```rust
+match plugin.invoke("GoGreeterService", "/example.v1.GoGreeterService/Bar", &req_bytes) {
+    Err(synurang_host::Error::PluginError(err))
+    | Err(synurang_host::Error::StreamError(err)) => {
+        println!(
+            "code={} grpc={} message={}",
+            err.code, err.grpc_code, err.message
+        );
+    }
+    other => {
+        let _ = other?;
+    }
+}
+```
+
+Unary plugin return path (`host -> unary call -> plugin`):
+
+If the host calls `/example.v1.GoGreeterService/Bar`, the plugin method should return or throw `FfiError` like this.
+
+```go
+func (p *MyPlugin) Bar(ctx context.Context, req *examplepb.HelloRequest) (*examplepb.HelloResponse, error) {
+    if req.Name == "trigger_error" {
+        return nil, ffiTestError(4101, "go unary ffi error")
+    }
+    // ...
+}
+```
+
+```cpp
+HelloResponse Bar(const HelloRequest& request) override {
+    if (request.name() == "trigger_error") {
+        throw FfiError("cpp unary ffi error", 4201, 10);
+    }
+    // ...
+}
+```
+
+```rust
+fn bar(&self, request: HelloRequest) -> Result<HelloResponse, FfiError> {
+    if request.name == "trigger_error" {
+        return Err(FfiError::new("rust unary ffi error", 4301, 10));
+    }
+    // ...
+}
+```
+
+For streaming plugin methods, use the same pattern in the plugin implementation:
+
+- Go: `return ffiTestError(code, "...")`
+- C++: `throw FfiError("...", code, 10)`
+- Rust: `return Err(FfiError::new("...", code, 10))`
+
+If you already use gRPC status values in Go, those still work for compatibility. But the FFI wire format itself is only `core.v1.Error`, so low-level FFI examples in this document avoid requiring any gRPC package.
+
+The existing host runners are a good place to wire this in:
+
+```bash
+make test_host_csharp
+make test_host_java
+make test_host_rust
+make test_host_all
+```
+
+The example plugins in `example/go/plugin/main.go`, `example/cpp/plugin/main.cpp`, and `example/rust/plugin/src/lib.rs` already use this trigger value for `Bar`, `BarServerStream`, `BarClientStream`, and `BarBidiStream`.
+
+---
+
 ## Comparison
 
 | | gRPC stubs | FFI codegen | FFI manual |
 |---|---|---|---|
-| **Dependencies** | protobuf + grpc | protobuf only | protobuf only |
+| **Dependencies** | protobuf + grpc | protobuf API on the call path; package deps vary by lang | protobuf API on the call path; package deps vary by lang |
 | **Marshalling** | Automatic | Automatic | Manual |
 | **Streaming** | All 4 types | All 4 types (varies by lang) | All 4 types |
 | **Type safety** | Full | Full | Bytes in / bytes out |
@@ -728,7 +891,14 @@ void     Synurang_Stream_CloseSend(uint64_t handle);
 void     Synurang_Stream_Close(uint64_t handle);
 ```
 
-**Response format:** `[status:1byte][payload...]`
+**Response format:**
 
-- Invoke: status `0` = success (payload is protobuf), status `1` = error (payload is message string)
-- Stream Recv status out-param: `0` = data, `1` = EOF, `2+` = error
+- Invoke:
+  - `resp_len >= 0`: success, payload is raw protobuf bytes
+  - `resp_len < 0`: error, payload is serialized `core.v1.Error`
+- Stream Recv:
+  - `status == 0`: success, payload is raw protobuf bytes
+  - `status == 1`: EOF
+  - `status < 0`: error, payload is serialized `core.v1.Error`
+
+Empty protobuf payloads are valid successes. That means `resp_len == 0` for unary or `status == 0` with `resp_len == 0` for streaming is not an error by itself.

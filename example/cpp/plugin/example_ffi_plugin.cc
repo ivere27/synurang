@@ -32,12 +32,17 @@ GoGreeterServicePlugin* GetGoGreeterServicePlugin() {
 // Stream Handle Management
 // =============================================================================
 
+struct StreamResult {
+    int status = 0;
+    std::string payload;
+};
+
 struct StreamContext {
     std::mutex mutex;
     std::condition_variable send_cv;
     std::condition_variable recv_cv;
     std::queue<std::string> send_queue;  // host -> plugin
-    std::queue<std::string> recv_queue;  // plugin -> host
+    std::queue<StreamResult> recv_queue;  // plugin -> host
     std::atomic<bool> closed{false};
     std::atomic<bool> send_closed{false};
     std::thread handler_thread;
@@ -53,6 +58,83 @@ static StreamContext* get_stream(uint64_t handle) {
     return it != g_streams.end() ? it->second.get() : nullptr;
 }
 
+static void append_varint(std::string* out, uint64_t value) {
+    while (value >= 0x80) {
+        out->push_back(static_cast<char>((value & 0x7f) | 0x80));
+        value >>= 7;
+    }
+    out->push_back(static_cast<char>(value));
+}
+
+static std::string encode_ffi_error_payload(const std::string& message, int32_t code = 0, int32_t grpc_code = 2) {
+    std::string payload;
+    if (code != 0) {
+        append_varint(&payload, 8);
+        append_varint(&payload, static_cast<uint32_t>(code));
+    }
+    append_varint(&payload, 18);
+    append_varint(&payload, static_cast<uint64_t>(message.size()));
+    payload.append(message);
+    if (grpc_code != 0) {
+        append_varint(&payload, 24);
+        append_varint(&payload, static_cast<uint32_t>(grpc_code));
+    }
+    return payload;
+}
+
+static std::string encode_ffi_error_payload(const FfiError& error) {
+    return encode_ffi_error_payload(error.what(), error.code(), error.grpc_code());
+}
+
+static char* alloc_payload(const std::string& payload) {
+    if (payload.empty()) {
+        return nullptr;
+    }
+    char* result = static_cast<char*>(malloc(payload.size()));
+    memcpy(result, payload.data(), payload.size());
+    return result;
+}
+
+static char* make_unary_response(const std::string& payload, int* resp_len, bool is_error) {
+    *resp_len = is_error ? -static_cast<int>(payload.size()) : static_cast<int>(payload.size());
+    return alloc_payload(payload);
+}
+
+static char* make_success_response(const std::string& payload, int* resp_len) {
+    return make_unary_response(payload, resp_len, false);
+}
+
+static char* make_error_response(const std::string& message, int* resp_len) {
+    return make_unary_response(encode_ffi_error_payload(message), resp_len, true);
+}
+
+static char* make_error_response(const FfiError& error, int* resp_len) {
+    return make_unary_response(encode_ffi_error_payload(error), resp_len, true);
+}
+
+static void push_stream_result(StreamContext* ctx, int status, std::string payload) {
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+    ctx->recv_queue.push(StreamResult{status, std::move(payload)});
+    ctx->recv_cv.notify_one();
+}
+
+static void close_stream_context(StreamContext* ctx) {
+    {
+        std::lock_guard<std::mutex> lock(ctx->mutex);
+        ctx->closed = true;
+    }
+    ctx->send_cv.notify_all();
+    ctx->recv_cv.notify_all();
+}
+
+static void push_stream_error(StreamContext* ctx, const std::string& message) {
+    push_stream_result(ctx, -1, encode_ffi_error_payload(message));
+}
+
+static void push_stream_error(StreamContext* ctx, const FfiError& error) {
+    push_stream_result(ctx, -1, encode_ffi_error_payload(error));
+}
+
 // =============================================================================
 // Stream Wrapper Implementation
 // =============================================================================
@@ -66,14 +148,7 @@ public:
         if (ctx_->closed) return false;
         std::string data;
         if (!response.SerializeToString(&data)) return false;
-        
-        std::lock_guard<std::mutex> lock(ctx_->mutex);
-        // Format: [status:1][payload]
-        std::string result(1 + data.size(), '\0');
-        result[0] = 0; // success
-        std::memcpy(&result[1], data.data(), data.size());
-        ctx_->recv_queue.push(std::move(result));
-        ctx_->recv_cv.notify_one();
+        push_stream_result(ctx_, 0, std::move(data));
         return true;
     }
     
@@ -123,19 +198,17 @@ void Synurang_Free(void* ptr) {
 __attribute__((visibility("default")))
 char* Synurang_Invoke_GoGreeterService(const char* method, const char* data, int data_len, int* resp_len) {
     auto* plugin = example::v1::GetGoGreeterServicePlugin();
-    if (!plugin) {
-        const char* err = "plugin not registered";
-        char* result = static_cast<char*>(malloc(1 + strlen(err)));
-        result[0] = 1; // error
-        memcpy(result + 1, err, strlen(err));
-        *resp_len = 1 + strlen(err);
-        return result;
-    }
+    using namespace example::v1;
+    if (!plugin) return make_error_response("plugin not registered", resp_len);
     
     std::string method_str(method);
-    std::string input(data, data_len);
+    std::string input;
+    if (data != nullptr && data_len > 0) {
+        input.assign(data, data_len);
+    }
     std::string output;
     bool success = false;
+    try {
     if (method_str == "/example.v1.GoGreeterService/Bar") {
         ::example::v1::HelloRequest req;
         if (req.ParseFromString(input)) {
@@ -157,21 +230,14 @@ char* Synurang_Invoke_GoGreeterService(const char* method, const char* data, int
             success = resp.SerializeToString(&output);
         }
     }
-
-    if (success) {
-        char* result = static_cast<char*>(malloc(1 + output.size()));
-        result[0] = 0; // success
-        memcpy(result + 1, output.data(), output.size());
-        *resp_len = 1 + output.size();
-        return result;
-    } else {
-        std::string err = "invoke failed for method: " + method_str;
-        char* result = static_cast<char*>(malloc(1 + err.size()));
-        result[0] = 1; // error
-        memcpy(result + 1, err.data(), err.size());
-        *resp_len = 1 + err.size();
-        return result;
+    } catch (const FfiError& e) {
+        return make_error_response(e, resp_len);
+    } catch (const std::exception& e) {
+        return make_error_response(e.what(), resp_len);
     }
+
+    if (success) return make_success_response(output, resp_len);
+    return make_error_response("invoke failed for method: " + method_str, resp_len);
 }
 
 
@@ -190,6 +256,7 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
     
     // Start handler thread
     ctx->handler_thread = std::thread([plugin, method_str, ctx_ptr]() {
+        try {
         if (method_str == "/example.v1.GoGreeterService/BarServerStream") {
             // Wait for initial request
             std::unique_lock<std::mutex> lock(ctx_ptr->mutex);
@@ -206,48 +273,30 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             if (req.ParseFromString(data)) {
                 StreamWrapper<::example::v1::HelloRequest, ::example::v1::HelloResponse> wrapper(ctx_ptr);
                 plugin->BarServerStream(req, &wrapper);
+            } else {
+                push_stream_error(ctx_ptr, "failed to parse stream request");
             }
-            // Signal EOF after streaming completes
-            {
-                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
-                ctx_ptr->closed = true;
-            }
-            ctx_ptr->recv_cv.notify_all();
+            close_stream_context(ctx_ptr);
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/BarClientStream") {
             StreamWrapper<::example::v1::HelloRequest, ::example::v1::HelloResponse> wrapper(ctx_ptr);
             auto resp = plugin->BarClientStream(&wrapper);
             wrapper.Send(resp);
-            // Signal EOF after response sent
-            {
-                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
-                ctx_ptr->closed = true;
-            }
-            ctx_ptr->recv_cv.notify_all();
+            close_stream_context(ctx_ptr);
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/BarBidiStream") {
             StreamWrapper<::example::v1::HelloRequest, ::example::v1::HelloResponse> wrapper(ctx_ptr);
             plugin->BarBidiStream(&wrapper);
-            // Signal EOF after bidi streaming completes
-            {
-                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
-                ctx_ptr->closed = true;
-            }
-            ctx_ptr->recv_cv.notify_all();
+            close_stream_context(ctx_ptr);
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/UploadFile") {
             StreamWrapper<::example::v1::FileChunk, ::example::v1::FileStatus> wrapper(ctx_ptr);
             auto resp = plugin->UploadFile(&wrapper);
             wrapper.Send(resp);
-            // Signal EOF after response sent
-            {
-                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
-                ctx_ptr->closed = true;
-            }
-            ctx_ptr->recv_cv.notify_all();
+            close_stream_context(ctx_ptr);
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/DownloadFile") {
@@ -266,25 +315,26 @@ uint64_t Synurang_Stream_GoGreeterService_Open(const char* method) {
             if (req.ParseFromString(data)) {
                 StreamWrapper<::example::v1::DownloadFileRequest, ::example::v1::FileChunk> wrapper(ctx_ptr);
                 plugin->DownloadFile(req, &wrapper);
+            } else {
+                push_stream_error(ctx_ptr, "failed to parse stream request");
             }
-            // Signal EOF after streaming completes
-            {
-                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
-                ctx_ptr->closed = true;
-            }
-            ctx_ptr->recv_cv.notify_all();
+            close_stream_context(ctx_ptr);
             return;
         }
         if (method_str == "/example.v1.GoGreeterService/BidiFile") {
             StreamWrapper<::example::v1::FileChunk, ::example::v1::FileChunk> wrapper(ctx_ptr);
             plugin->BidiFile(&wrapper);
-            // Signal EOF after bidi streaming completes
-            {
-                std::lock_guard<std::mutex> lock(ctx_ptr->mutex);
-                ctx_ptr->closed = true;
-            }
-            ctx_ptr->recv_cv.notify_all();
+            close_stream_context(ctx_ptr);
             return;
+        }
+            push_stream_error(ctx_ptr, "unknown method: " + method_str);
+            close_stream_context(ctx_ptr);
+        } catch (const FfiError& e) {
+            push_stream_error(ctx_ptr, e);
+            close_stream_context(ctx_ptr);
+        } catch (const std::exception& e) {
+            push_stream_error(ctx_ptr, e.what());
+            close_stream_context(ctx_ptr);
         }
     });
 
@@ -318,9 +368,10 @@ char* Synurang_Stream_Recv(uint64_t handle, int* resp_len, int* status) {
     using namespace example::v1;
     auto* ctx = get_stream(handle);
     if (!ctx) {
-        *status = 2; // error
-        *resp_len = 0;
-        return nullptr;
+        std::string error = encode_ffi_error_payload("stream not found");
+        *status = -1;
+        *resp_len = static_cast<int>(error.size());
+        return alloc_payload(error);
     }
     
     std::unique_lock<std::mutex> lock(ctx->mutex);
@@ -334,14 +385,12 @@ char* Synurang_Stream_Recv(uint64_t handle, int* resp_len, int* status) {
         return nullptr;
     }
     
-    std::string data = std::move(ctx->recv_queue.front());
+    StreamResult result = std::move(ctx->recv_queue.front());
     ctx->recv_queue.pop();
-    
-    char* result = static_cast<char*>(malloc(data.size()));
-    memcpy(result, data.data(), data.size());
-    *resp_len = data.size();
-    *status = 0; // data
-    return result;
+
+    *resp_len = static_cast<int>(result.payload.size());
+    *status = result.status;
+    return alloc_payload(result.payload);
 }
 
 __attribute__((visibility("default")))

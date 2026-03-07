@@ -13,9 +13,8 @@ import (
 	"unsafe"
 {{if .HasStreaming}}
 	"io"
-
-	"google.golang.org/grpc/metadata"
 {{end}}
+	"github.com/ivere27/synurang/pkg/ffierror"
 	"github.com/ivere27/synurang/pkg/plugin"
 	"google.golang.org/protobuf/proto"
 {{- range .GoImports}}
@@ -31,6 +30,39 @@ func trySendErr(ch chan<- error, err error) {
 	}
 }
 
+{{if .HasStreaming}}
+// =============================================================================
+// Plugin Stream Interfaces
+// =============================================================================
+{{range $svc := .Services}}
+{{- range $m := .Methods}}
+{{- if $m.IsServerStreaming}}
+
+// {{$svc.GoName}}_{{$m.GoName}}PluginStream is the minimal stream surface exposed to FFI plugins.
+type {{$svc.GoName}}_{{$m.GoName}}PluginStream interface {
+	Send(*{{$m.OutputGoIdent}}) error
+	Context() context.Context
+}
+{{- else if $m.IsClientStreaming}}
+
+// {{$svc.GoName}}_{{$m.GoName}}PluginStream is the minimal stream surface exposed to FFI plugins.
+type {{$svc.GoName}}_{{$m.GoName}}PluginStream interface {
+	Recv() (*{{$m.InputGoIdent}}, error)
+	Context() context.Context
+}
+{{- else if $m.IsBidiStreaming}}
+
+// {{$svc.GoName}}_{{$m.GoName}}PluginStream is the minimal stream surface exposed to FFI plugins.
+type {{$svc.GoName}}_{{$m.GoName}}PluginStream interface {
+	Send(*{{$m.OutputGoIdent}}) error
+	Recv() (*{{$m.InputGoIdent}}, error)
+	Context() context.Context
+}
+{{- end}}
+{{- end}}
+{{end}}
+{{end}}
+
 // =============================================================================
 // Plugin Interfaces and Registration
 // =============================================================================
@@ -41,11 +73,11 @@ func trySendErr(ch chan<- error, err error) {
 type {{$svc.GoName}}Plugin interface {
 {{- range $m := .Methods}}
 {{- if $m.IsServerStreaming}}
-	{{$m.GoName}}(*{{$m.InputGoIdent}}, {{$svc.GoName}}_{{$m.GoName}}Server) error
+	{{$m.GoName}}(*{{$m.InputGoIdent}}, {{$svc.GoName}}_{{$m.GoName}}PluginStream) error
 {{- else if $m.IsClientStreaming}}
-	{{$m.GoName}}({{$svc.GoName}}_{{$m.GoName}}Server) (*{{$m.OutputGoIdent}}, error)
+	{{$m.GoName}}({{$svc.GoName}}_{{$m.GoName}}PluginStream) (*{{$m.OutputGoIdent}}, error)
 {{- else if $m.IsBidiStreaming}}
-	{{$m.GoName}}({{$svc.GoName}}_{{$m.GoName}}Server) error
+	{{$m.GoName}}({{$svc.GoName}}_{{$m.GoName}}PluginStream) error
 {{- else}}
 	{{$m.GoName}}(context.Context, *{{$m.InputGoIdent}}) (*{{$m.OutputGoIdent}}, error)
 {{- end}}
@@ -95,9 +127,9 @@ func invoke{{$svc.GoName}}(ctx context.Context, method string, data []byte) ([]b
 // C-Exported Functions
 // =============================================================================
 
-// Response format: [status:1][payload...]
-// status=0: success, payload=protobuf response
-// status=1: error, payload=error string
+// Response format:
+//   success: resp_len >= 0, payload is raw protobuf bytes
+//   error:   resp_len < 0, payload is serialized core.v1.Error
 {{range $svc := .Services}}
 
 //export Synurang_Invoke_{{$svc.GoName}}
@@ -113,21 +145,19 @@ func Synurang_Invoke_{{$svc.GoName}}(method *C.char, data *C.char, dataLen C.int
 
 	res, err := invoke{{$svc.GoName}}(ctx, m, d)
 	if err != nil {
-		// Return error with status byte = 1
-		errBytes := []byte(err.Error())
-		result := make([]byte, 1+len(errBytes))
-		result[0] = 1 // error status
-		copy(result[1:], errBytes)
-		*respLen = C.int(len(result))
-		return (*C.char)(C.CBytes(result))
+		errBytes := ffierror.Marshal(err)
+		*respLen = -C.int(len(errBytes))
+		if len(errBytes) == 0 {
+			return nil
+		}
+		return (*C.char)(C.CBytes(errBytes))
 	}
 
-	// Return success with status byte = 0
-	result := make([]byte, 1+len(res))
-	result[0] = 0 // success status
-	copy(result[1:], res)
-	*respLen = C.int(len(result))
-	return (*C.char)(C.CBytes(result))
+	*respLen = C.int(len(res))
+	if len(res) == 0 {
+		return nil
+	}
+	return (*C.char)(C.CBytes(res))
 }
 {{end}}
 
@@ -252,25 +282,7 @@ func (s *{{pluginStreamType $svc $m}}) Recv() (*{{$m.InputGoIdent}}, error) {
 	}
 }
 {{end}}
-{{if $m.IsClientStreaming}}
-func (s *{{pluginStreamType $svc $m}}) SendAndClose(m *{{$m.OutputGoIdent}}) error {
-	data, err := proto.Marshal(m)
-	if err != nil {
-		return err
-	}
-	select {
-	case s.ps.RecvCh <- data:
-		return nil
-	case <-s.ps.Ctx.Done():
-		return s.ps.Ctx.Err()
-	}
-}
-{{end}}
-func (s *{{pluginStreamType $svc $m}}) SetHeader(metadata.MD) error { return nil }
-func (s *{{pluginStreamType $svc $m}}) SendHeader(metadata.MD) error { return nil }
-func (s *{{pluginStreamType $svc $m}}) SetTrailer(metadata.MD) {}
-func (s *{{pluginStreamType $svc $m}}) SendMsg(m any) error { return nil }
-func (s *{{pluginStreamType $svc $m}}) RecvMsg(m any) error { return nil }
+var _ {{$svc.GoName}}_{{$m.GoName}}PluginStream = (*{{pluginStreamType $svc $m}})(nil)
 {{- end}}
 {{- end}}
 {{- end}}

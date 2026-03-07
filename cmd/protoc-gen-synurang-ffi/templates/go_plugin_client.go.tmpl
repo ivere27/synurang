@@ -11,7 +11,9 @@ import (
 	"context"
 	"fmt"
 	"unsafe"
+	"unicode/utf8"
 
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 {{- range .GoImports}}
 	{{.Alias}} "{{.Path}}"
@@ -26,13 +28,73 @@ import (
 // It uses github.com/ebitengine/purego for cross-platform dynamic loading.
 // Alternatively, you can use CGO with dlopen/dlsym directly.
 
-// PluginError represents an error returned from a plugin.
-type PluginError struct {
+// FfiError represents a structured core.v1.Error returned from a plugin.
+type FfiError struct {
 	Message string
+	Code    int32
+	GrpcCode int32
+	Payload []byte
 }
 
-func (e *PluginError) Error() string {
+func (e *FfiError) Error() string {
 	return e.Message
+}
+
+func decodeFfiErrorPayload(payload []byte) *FfiError {
+	raw := append([]byte(nil), payload...)
+	var (
+		code int32
+		grpcCode int32
+		message string
+	)
+	for len(payload) > 0 {
+		num, typ, n := protowire.ConsumeTag(payload)
+		if n < 0 {
+			break
+		}
+		payload = payload[n:]
+		switch {
+		case num == 1 && typ == protowire.VarintType:
+			v, m := protowire.ConsumeVarint(payload)
+			if m < 0 {
+				payload = nil
+				break
+			}
+			code = int32(v)
+			payload = payload[m:]
+		case num == 2 && typ == protowire.BytesType:
+			v, m := protowire.ConsumeBytes(payload)
+			if m < 0 {
+				payload = nil
+				break
+			}
+			message = string(v)
+			payload = payload[m:]
+		case num == 3 && typ == protowire.VarintType:
+			v, m := protowire.ConsumeVarint(payload)
+			if m < 0 {
+				payload = nil
+				break
+			}
+			grpcCode = int32(v)
+			payload = payload[m:]
+		default:
+			m := protowire.ConsumeFieldValue(num, typ, payload)
+			if m < 0 {
+				payload = nil
+				break
+			}
+			payload = payload[m:]
+		}
+	}
+	if message == "" {
+		if utf8.Valid(raw) {
+			message = string(raw)
+		} else {
+			message = string([]rune(string(raw)))
+		}
+	}
+	return &FfiError{Message: message, Code: code, GrpcCode: grpcCode, Payload: raw}
 }
 {{range $svc := .Services}}
 
@@ -70,25 +132,29 @@ func (c *{{$svc.GoName}}PluginClient) call(method string, reqBytes []byte) ([]by
 	}
 
 	resultPtr := c.invoke(&methodBytes[0], dataPtr, int32(len(reqBytes)), &respLen)
-	if resultPtr == nil {
+	if resultPtr == nil && respLen != 0 {
 		return nil, fmt.Errorf("plugin returned nil")
 	}
-	defer c.free(resultPtr)
-
-	// Copy result before freeing
-	result := make([]byte, respLen)
-	for i := int32(0); i < respLen; i++ {
-		result[i] = *(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(resultPtr)) + uintptr(i)))
+	if resultPtr != nil {
+		defer c.free(resultPtr)
 	}
 
-	// Check status byte
-	if len(result) == 0 {
-		return nil, fmt.Errorf("empty response from plugin")
+	absLen := respLen
+	if absLen < 0 {
+		absLen = -absLen
 	}
-	if result[0] == 1 {
-		return nil, &PluginError{Message: string(result[1:])}
+
+	result := make([]byte, absLen)
+	if resultPtr != nil {
+		for i := int32(0); i < absLen; i++ {
+			result[i] = *(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(resultPtr)) + uintptr(i)))
+		}
 	}
-	return result[1:], nil
+
+	if respLen < 0 {
+		return nil, decodeFfiErrorPayload(result)
+	}
+	return result, nil
 }
 {{range $m := .Methods}}
 {{if $m.IsUnary}}

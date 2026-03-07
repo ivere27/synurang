@@ -14,8 +14,7 @@ import (
 
 	"io"
 
-	"google.golang.org/grpc/metadata"
-
+	"github.com/ivere27/synurang/pkg/ffierror"
 	"github.com/ivere27/synurang/pkg/plugin"
 	"google.golang.org/protobuf/proto"
 )
@@ -29,6 +28,48 @@ func trySendErr(ch chan<- error, err error) {
 }
 
 // =============================================================================
+// Plugin Stream Interfaces
+// =============================================================================
+
+// GoGreeterService_BarServerStreamPluginStream is the minimal stream surface exposed to FFI plugins.
+type GoGreeterService_BarServerStreamPluginStream interface {
+	Send(*HelloResponse) error
+	Context() context.Context
+}
+
+// GoGreeterService_BarClientStreamPluginStream is the minimal stream surface exposed to FFI plugins.
+type GoGreeterService_BarClientStreamPluginStream interface {
+	Recv() (*HelloRequest, error)
+	Context() context.Context
+}
+
+// GoGreeterService_BarBidiStreamPluginStream is the minimal stream surface exposed to FFI plugins.
+type GoGreeterService_BarBidiStreamPluginStream interface {
+	Send(*HelloResponse) error
+	Recv() (*HelloRequest, error)
+	Context() context.Context
+}
+
+// GoGreeterService_UploadFilePluginStream is the minimal stream surface exposed to FFI plugins.
+type GoGreeterService_UploadFilePluginStream interface {
+	Recv() (*FileChunk, error)
+	Context() context.Context
+}
+
+// GoGreeterService_DownloadFilePluginStream is the minimal stream surface exposed to FFI plugins.
+type GoGreeterService_DownloadFilePluginStream interface {
+	Send(*FileChunk) error
+	Context() context.Context
+}
+
+// GoGreeterService_BidiFilePluginStream is the minimal stream surface exposed to FFI plugins.
+type GoGreeterService_BidiFilePluginStream interface {
+	Send(*FileChunk) error
+	Recv() (*FileChunk, error)
+	Context() context.Context
+}
+
+// =============================================================================
 // Plugin Interfaces and Registration
 // =============================================================================
 
@@ -36,12 +77,12 @@ func trySendErr(ch chan<- error, err error) {
 // Only methods for this specific service are required.
 type GoGreeterServicePlugin interface {
 	Bar(context.Context, *HelloRequest) (*HelloResponse, error)
-	BarServerStream(*HelloRequest, GoGreeterService_BarServerStreamServer) error
-	BarClientStream(GoGreeterService_BarClientStreamServer) (*HelloResponse, error)
-	BarBidiStream(GoGreeterService_BarBidiStreamServer) error
-	UploadFile(GoGreeterService_UploadFileServer) (*FileStatus, error)
-	DownloadFile(*DownloadFileRequest, GoGreeterService_DownloadFileServer) error
-	BidiFile(GoGreeterService_BidiFileServer) error
+	BarServerStream(*HelloRequest, GoGreeterService_BarServerStreamPluginStream) error
+	BarClientStream(GoGreeterService_BarClientStreamPluginStream) (*HelloResponse, error)
+	BarBidiStream(GoGreeterService_BarBidiStreamPluginStream) error
+	UploadFile(GoGreeterService_UploadFilePluginStream) (*FileStatus, error)
+	DownloadFile(*DownloadFileRequest, GoGreeterService_DownloadFilePluginStream) error
+	BidiFile(GoGreeterService_BidiFilePluginStream) error
 	Trigger(context.Context, *TriggerRequest) (*HelloResponse, error)
 	GetGoroutines(context.Context, *GoroutinesRequest) (*GoroutinesResponse, error)
 }
@@ -102,9 +143,9 @@ func invokeGoGreeterService(ctx context.Context, method string, data []byte) ([]
 // C-Exported Functions
 // =============================================================================
 
-// Response format: [status:1][payload...]
-// status=0: success, payload=protobuf response
-// status=1: error, payload=error string
+// Response format:
+//   success: resp_len >= 0, payload is raw protobuf bytes
+//   error:   resp_len < 0, payload is serialized core.v1.Error
 
 //export Synurang_Invoke_GoGreeterService
 func Synurang_Invoke_GoGreeterService(method *C.char, data *C.char, dataLen C.int, respLen *C.int) *C.char {
@@ -119,21 +160,19 @@ func Synurang_Invoke_GoGreeterService(method *C.char, data *C.char, dataLen C.in
 
 	res, err := invokeGoGreeterService(ctx, m, d)
 	if err != nil {
-		// Return error with status byte = 1
-		errBytes := []byte(err.Error())
-		result := make([]byte, 1+len(errBytes))
-		result[0] = 1 // error status
-		copy(result[1:], errBytes)
-		*respLen = C.int(len(result))
-		return (*C.char)(C.CBytes(result))
+		errBytes := ffierror.Marshal(err)
+		*respLen = -C.int(len(errBytes))
+		if len(errBytes) == 0 {
+			return nil
+		}
+		return (*C.char)(C.CBytes(errBytes))
 	}
 
-	// Return success with status byte = 0
-	result := make([]byte, 1+len(res))
-	result[0] = 0 // success status
-	copy(result[1:], res)
-	*respLen = C.int(len(result))
-	return (*C.char)(C.CBytes(result))
+	*respLen = C.int(len(res))
+	if len(res) == 0 {
+		return nil
+	}
+	return (*C.char)(C.CBytes(res))
 }
 
 // =============================================================================
@@ -263,11 +302,7 @@ func (s *pluginStreamGoGreeterServiceBarServerStream) Send(m *HelloResponse) err
 	}
 }
 
-func (s *pluginStreamGoGreeterServiceBarServerStream) SetHeader(metadata.MD) error  { return nil }
-func (s *pluginStreamGoGreeterServiceBarServerStream) SendHeader(metadata.MD) error { return nil }
-func (s *pluginStreamGoGreeterServiceBarServerStream) SetTrailer(metadata.MD)       {}
-func (s *pluginStreamGoGreeterServiceBarServerStream) SendMsg(m any) error          { return nil }
-func (s *pluginStreamGoGreeterServiceBarServerStream) RecvMsg(m any) error          { return nil }
+var _ GoGreeterService_BarServerStreamPluginStream = (*pluginStreamGoGreeterServiceBarServerStream)(nil)
 
 type pluginStreamGoGreeterServiceBarClientStream struct {
 	ps *plugin.PluginStream
@@ -293,24 +328,7 @@ func (s *pluginStreamGoGreeterServiceBarClientStream) Recv() (*HelloRequest, err
 	}
 }
 
-func (s *pluginStreamGoGreeterServiceBarClientStream) SendAndClose(m *HelloResponse) error {
-	data, err := proto.Marshal(m)
-	if err != nil {
-		return err
-	}
-	select {
-	case s.ps.RecvCh <- data:
-		return nil
-	case <-s.ps.Ctx.Done():
-		return s.ps.Ctx.Err()
-	}
-}
-
-func (s *pluginStreamGoGreeterServiceBarClientStream) SetHeader(metadata.MD) error  { return nil }
-func (s *pluginStreamGoGreeterServiceBarClientStream) SendHeader(metadata.MD) error { return nil }
-func (s *pluginStreamGoGreeterServiceBarClientStream) SetTrailer(metadata.MD)       {}
-func (s *pluginStreamGoGreeterServiceBarClientStream) SendMsg(m any) error          { return nil }
-func (s *pluginStreamGoGreeterServiceBarClientStream) RecvMsg(m any) error          { return nil }
+var _ GoGreeterService_BarClientStreamPluginStream = (*pluginStreamGoGreeterServiceBarClientStream)(nil)
 
 type pluginStreamGoGreeterServiceBarBidiStream struct {
 	ps *plugin.PluginStream
@@ -349,11 +367,7 @@ func (s *pluginStreamGoGreeterServiceBarBidiStream) Recv() (*HelloRequest, error
 	}
 }
 
-func (s *pluginStreamGoGreeterServiceBarBidiStream) SetHeader(metadata.MD) error  { return nil }
-func (s *pluginStreamGoGreeterServiceBarBidiStream) SendHeader(metadata.MD) error { return nil }
-func (s *pluginStreamGoGreeterServiceBarBidiStream) SetTrailer(metadata.MD)       {}
-func (s *pluginStreamGoGreeterServiceBarBidiStream) SendMsg(m any) error          { return nil }
-func (s *pluginStreamGoGreeterServiceBarBidiStream) RecvMsg(m any) error          { return nil }
+var _ GoGreeterService_BarBidiStreamPluginStream = (*pluginStreamGoGreeterServiceBarBidiStream)(nil)
 
 type pluginStreamGoGreeterServiceUploadFile struct {
 	ps *plugin.PluginStream
@@ -379,24 +393,7 @@ func (s *pluginStreamGoGreeterServiceUploadFile) Recv() (*FileChunk, error) {
 	}
 }
 
-func (s *pluginStreamGoGreeterServiceUploadFile) SendAndClose(m *FileStatus) error {
-	data, err := proto.Marshal(m)
-	if err != nil {
-		return err
-	}
-	select {
-	case s.ps.RecvCh <- data:
-		return nil
-	case <-s.ps.Ctx.Done():
-		return s.ps.Ctx.Err()
-	}
-}
-
-func (s *pluginStreamGoGreeterServiceUploadFile) SetHeader(metadata.MD) error  { return nil }
-func (s *pluginStreamGoGreeterServiceUploadFile) SendHeader(metadata.MD) error { return nil }
-func (s *pluginStreamGoGreeterServiceUploadFile) SetTrailer(metadata.MD)       {}
-func (s *pluginStreamGoGreeterServiceUploadFile) SendMsg(m any) error          { return nil }
-func (s *pluginStreamGoGreeterServiceUploadFile) RecvMsg(m any) error          { return nil }
+var _ GoGreeterService_UploadFilePluginStream = (*pluginStreamGoGreeterServiceUploadFile)(nil)
 
 type pluginStreamGoGreeterServiceDownloadFile struct {
 	ps *plugin.PluginStream
@@ -419,11 +416,7 @@ func (s *pluginStreamGoGreeterServiceDownloadFile) Send(m *FileChunk) error {
 	}
 }
 
-func (s *pluginStreamGoGreeterServiceDownloadFile) SetHeader(metadata.MD) error  { return nil }
-func (s *pluginStreamGoGreeterServiceDownloadFile) SendHeader(metadata.MD) error { return nil }
-func (s *pluginStreamGoGreeterServiceDownloadFile) SetTrailer(metadata.MD)       {}
-func (s *pluginStreamGoGreeterServiceDownloadFile) SendMsg(m any) error          { return nil }
-func (s *pluginStreamGoGreeterServiceDownloadFile) RecvMsg(m any) error          { return nil }
+var _ GoGreeterService_DownloadFilePluginStream = (*pluginStreamGoGreeterServiceDownloadFile)(nil)
 
 type pluginStreamGoGreeterServiceBidiFile struct {
 	ps *plugin.PluginStream
@@ -462,8 +455,4 @@ func (s *pluginStreamGoGreeterServiceBidiFile) Recv() (*FileChunk, error) {
 	}
 }
 
-func (s *pluginStreamGoGreeterServiceBidiFile) SetHeader(metadata.MD) error  { return nil }
-func (s *pluginStreamGoGreeterServiceBidiFile) SendHeader(metadata.MD) error { return nil }
-func (s *pluginStreamGoGreeterServiceBidiFile) SetTrailer(metadata.MD)       {}
-func (s *pluginStreamGoGreeterServiceBidiFile) SendMsg(m any) error          { return nil }
-func (s *pluginStreamGoGreeterServiceBidiFile) RecvMsg(m any) error          { return nil }
+var _ GoGreeterService_BidiFilePluginStream = (*pluginStreamGoGreeterServiceBidiFile)(nil)
