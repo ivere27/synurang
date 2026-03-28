@@ -44,7 +44,9 @@ type FileData struct {
 	RustModPath     string
 	CSharpNamespace string
 	// Message field data (for native/wasm templates)
-	Messages map[string]MessageData
+	Messages      map[string]MessageData
+	LocalMessages []MessageData
+	Enums         []EnumData
 	// FilePrefix is a CamelCase prefix derived from the proto filename
 	// (e.g., "core.proto" → "Core", "cache.proto" → "Cache").
 	// Used to disambiguate top-level Go symbols when multiple proto files
@@ -116,6 +118,16 @@ type FieldData struct {
 	IsHandle   bool   // True when this message field's type is a handle
 	MessageFQN string // FQN of message type (e.g. "pkg.TreeNode"); empty for non-message fields
 	NeedsBox   bool   // True for recursive message fields (prost wraps in Box)
+}
+
+type EnumData struct {
+	Name   string
+	Values []EnumValueData
+}
+
+type EnumValueData struct {
+	Name   string
+	Number int32
 }
 
 // =============================================================================
@@ -556,7 +568,7 @@ func init() {
 
 func main() {
 	var flags flag.FlagSet
-	lang := flags.String("lang", "", "language to generate (go, dart, cpp, c, rust, java, or csharp)")
+	lang := flags.String("lang", "", "language to generate (go, dart, cpp, c, rust, java, csharp, or typescript)")
 	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client, native, wasm")
 	dartPackage := flags.String("dart_package", "", "Dart package name for imports")
 	javaPackage := flags.String("java_package", "", "Java package name for generated classes")
@@ -596,6 +608,9 @@ func main() {
 			}
 			if *lang == "csharp" {
 				generateFromTemplate(gen, f, serviceList, "csharp", *csharpNamespace)
+			}
+			if *lang == "typescript" || *lang == "ts" {
+				generateFromTemplate(gen, f, serviceList, "typescript", "")
 			}
 			if *lang == "c" {
 				generateFromTemplate(gen, f, serviceList, "c", *mode)
@@ -690,6 +705,8 @@ func selectTemplate(lang, modeOrOpt string) string {
 		return "java.java.tmpl"
 	case "csharp":
 		return "csharp.cs.tmpl"
+	case "typescript", "ts":
+		return "typescript.ts.tmpl"
 	}
 	return ""
 }
@@ -749,6 +766,8 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 		return base + "_ffi.java"
 	case "csharp":
 		return base + "_ffi.cs"
+	case "typescript", "ts":
+		return base + "_ffi.ts"
 	}
 	return base + "_ffi"
 }
@@ -762,18 +781,9 @@ func outputFilename(file *protogen.File, lang string) string {
 // Build Template Data
 // =============================================================================
 
-// collectMessage converts a *protogen.Message into MessageData and adds it to
-// the map. It recurses into message-typed fields so nested/imported messages
-// referenced by fields are also available for template lookup.
-func collectMessage(msgs map[string]MessageData, msg *protogen.Message, visited map[string]bool) {
-	key := string(msg.Desc.FullName())
-	if visited[key] {
-		return // already collected or in progress
-	}
-	visited[key] = true
-	name := msg.GoIdent.GoName
-	handle := isHandleMessage(msg)
-	md := MessageData{Name: name, IsHandle: handle}
+// messageDataFromProtogen converts a *protogen.Message into MessageData.
+func messageDataFromProtogen(msg *protogen.Message) MessageData {
+	md := MessageData{Name: msg.GoIdent.GoName, IsHandle: isHandleMessage(msg)}
 	for _, field := range msg.Fields {
 		fd := FieldData{
 			Name:       string(field.Desc.Name()),
@@ -812,7 +822,6 @@ func collectMessage(msgs map[string]MessageData, msg *protogen.Message, visited 
 				fd.TypeName = field.Message.GoIdent.GoName
 				fd.IsHandle = isHandleMessage(field.Message)
 				fd.MessageFQN = string(field.Message.Desc.FullName())
-				collectMessage(msgs, field.Message, visited)
 			}
 		default:
 			fd.ProtoKind = "unknown"
@@ -823,7 +832,67 @@ func collectMessage(msgs map[string]MessageData, msg *protogen.Message, visited 
 		}
 		md.Fields = append(md.Fields, fd)
 	}
-	msgs[key] = md
+	return md
+}
+
+// collectMessage converts a *protogen.Message into MessageData and adds it to
+// the map. It recurses into message-typed fields so nested/imported messages
+// referenced by fields are also available for template lookup.
+func collectMessage(msgs map[string]MessageData, msg *protogen.Message, visited map[string]bool) {
+	key := string(msg.Desc.FullName())
+	if visited[key] {
+		return // already collected or in progress
+	}
+	visited[key] = true
+	msgs[key] = messageDataFromProtogen(msg)
+	for _, field := range msg.Fields {
+		if field.Message != nil {
+			collectMessage(msgs, field.Message, visited)
+		}
+	}
+}
+
+func collectLocalMessages(out *[]MessageData, msg *protogen.Message, visited map[string]bool) {
+	if msg.Desc.IsMapEntry() {
+		return
+	}
+	key := string(msg.Desc.FullName())
+	if visited[key] {
+		return
+	}
+	visited[key] = true
+	*out = append(*out, messageDataFromProtogen(msg))
+	for _, nested := range msg.Messages {
+		collectLocalMessages(out, nested, visited)
+	}
+}
+
+func collectEnumData(out *[]EnumData, enum *protogen.Enum, visited map[string]bool) {
+	key := string(enum.Desc.FullName())
+	if visited[key] {
+		return
+	}
+	visited[key] = true
+	data := EnumData{Name: enum.GoIdent.GoName}
+	for _, value := range enum.Values {
+		data.Values = append(data.Values, EnumValueData{
+			Name:   string(value.Desc.Name()),
+			Number: int32(value.Desc.Number()),
+		})
+	}
+	*out = append(*out, data)
+}
+
+func collectLocalMessageEnums(out *[]EnumData, msg *protogen.Message, visited map[string]bool) {
+	if msg.Desc.IsMapEntry() {
+		return
+	}
+	for _, enum := range msg.Enums {
+		collectEnumData(out, enum, visited)
+	}
+	for _, nested := range msg.Messages {
+		collectLocalMessageEnums(out, nested, visited)
+	}
 }
 
 // collectMessageFiles recursively collects the parent proto file paths of
@@ -1031,6 +1100,27 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 		}
 	}
 	markBoxFields(data.Messages)
+
+	if lang == "typescript" {
+		localMsgVisited := make(map[string]bool)
+		for _, msg := range file.Messages {
+			collectLocalMessages(&data.LocalMessages, msg, localMsgVisited)
+		}
+		sort.Slice(data.LocalMessages, func(i, j int) bool {
+			return data.LocalMessages[i].Name < data.LocalMessages[j].Name
+		})
+
+		localEnumVisited := make(map[string]bool)
+		for _, enum := range file.Enums {
+			collectEnumData(&data.Enums, enum, localEnumVisited)
+		}
+		for _, msg := range file.Messages {
+			collectLocalMessageEnums(&data.Enums, msg, localEnumVisited)
+		}
+		sort.Slice(data.Enums, func(i, j int) bool {
+			return data.Enums[i].Name < data.Enums[j].Name
+		})
+	}
 
 	// Build ActiveX COM properties (for c activex mode).
 	// Must come after messages map is built so inferDispatchType can inspect field counts.

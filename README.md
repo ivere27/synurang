@@ -89,6 +89,7 @@ The `mode` parameter controls what kind of code is generated.
 | rust | `wasm` | `_wasm.rs` | WASM exports via `#[wasm_bindgen]` |
 | java | *(default)* | `_ffi.java` | Java FFI host bindings |
 | csharp | *(default)* | `_ffi.cs` | C# FFI host bindings |
+| typescript | *(default)* | `_ffi.ts` | TypeScript schema constants (enums, field numbers, method paths) |
 | c | `native` | `_ffi_native.h` | C header with flattened per-method signatures |
 | c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
 
@@ -406,6 +407,7 @@ protoc -Iapi --synurang-ffi_out=./pkg/api --synurang-ffi_opt=lang=go service.pro
 protoc -Iapi --synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart service.proto
 protoc -Iapi --synurang-ffi_out=./java/src --synurang-ffi_opt=lang=java,java_package=com.example.api service.proto
 protoc -Iapi --synurang-ffi_out=./csharp/src --synurang-ffi_opt=lang=csharp,csharp_namespace=Example.Api service.proto
+protoc -Iapi --synurang-ffi_out=./web/src/generated --synurang-ffi_opt=lang=typescript service.proto
 
 # Rust native C ABI (flattened parameters, no protobuf at call site)
 protoc -Iapi --synurang-ffi_out=./rust/src --synurang-ffi_opt=lang=rust,mode=native service.proto
@@ -539,6 +541,8 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 
 **C# (.NET Framework 4.0+ / .NET Core 3.1+)**: `--synurang-ffi_opt=lang=csharp`. Full support including all streaming types. Pure managed interop — no native bridge required.
 
+**TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants for local enums, local message field numbers, and full gRPC method paths. This is the recommended default for web/WASM hosts. A full TypeScript RPC generator is intentionally out of scope unless TypeScript becomes a primary RPC client target.
+
 #### C# .NET Version Compatibility
 
 | Target | Plugin (FFI) | CallInvoker (gRPC) | Process (TCP) | Process (named pipe) | Process (socketpair) |
@@ -661,7 +665,7 @@ make run_android_java
 synurang/
 ├── cmd/
 │   ├── server/main.go                # FFI entry point example
-│   └── protoc-gen-synurang-ffi/      # Code generator (go/dart/cpp/rust/java/csharp/c/wasm/activex)
+│   └── protoc-gen-synurang-ffi/      # Code generator (go/dart/cpp/rust/java/csharp/typescript/c/wasm/activex)
 ├── pkg/
 │   ├── synurang/                     # Runtime library
 │   │   ├── synurang.go               # FfiClientConn
