@@ -1,3 +1,7 @@
+## 0.5.5
+
+*   **TypeScript codegen**: Added lightweight TypeScript schema constants for enums, field numbers, and full gRPC method paths, with generator coverage tests.
+
 ## 0.5.4
 
 *   **Structured FFI errors**: Replaced `PluginError` with `FfiError` carrying `code`, `message`, and `grpc_code` fields across all 6 languages (Go, Dart, C++, Rust, Java, C#).

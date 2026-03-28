@@ -32,7 +32,7 @@ ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_6
 
 # Docker Android AAR packaging
 AAR_DOCKER_IMAGE ?= synurang-android-aar:latest
-AAR_VERSION ?= 0.5.4
+AAR_VERSION ?= 0.5.5
 AAR_GROUP_ID ?= io.github.ivere27
 AAR_ARTIFACT_ID_CORE ?= synurang-android
 AAR_ARTIFACT_ID_GRPC ?= synurang-android-grpc
@@ -47,7 +47,7 @@ MAVEN_REPO_URL ?= https://central.sonatype.com/api/v1/publisher/upload
 
 # Docker Desktop JAR packaging
 DESKTOP_DOCKER_IMAGE ?= synurang-desktop-jar:latest
-DESKTOP_VERSION ?= 0.5.4
+DESKTOP_VERSION ?= 0.5.5
 DESKTOP_GROUP_ID ?= io.github.ivere27
 DESKTOP_ARTIFACT_ID_CORE ?= synurang-desktop
 DESKTOP_ARTIFACT_ID_GRPC ?= synurang-desktop-grpc
@@ -1078,4 +1078,4 @@ help:
 	@echo "  make run_android MODE=release  # Flutter app"
 	@echo "  make run_android_java          # Java/Kotlin app"
 	@echo "  make test_host_java            # Java host test (desktop)"
-	@echo "  make docker_android_aar AAR_VERSION=0.5.4 # Build core + grpc AAR bundles"
+	@echo "  make docker_android_aar AAR_VERSION=0.5.5 # Build core + grpc AAR bundles"
