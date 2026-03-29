@@ -2,6 +2,7 @@ package io.github.ivere27.synurang;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Loads and communicates with Synurang plugins (Go/C++/Rust shared libraries).
@@ -18,7 +19,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class PluginHost implements AutoCloseable {
     private final long handle;
     private final long freePtr;
+    private final AtomicBoolean closeRequested = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicInteger activeLeases = new AtomicInteger(0);
 
     // Cached function pointers: serviceName -> pointer
     private final ConcurrentHashMap<String, Long> invokers = new ConcurrentHashMap<>();
@@ -80,11 +83,14 @@ public class PluginHost implements AutoCloseable {
      * @throws FfiError on error
      */
     public byte[] invoke(String serviceName, String method, byte[] data) throws FfiError {
-        ensureOpen();
-
-        long invokePtr = getInvoker(serviceName);
-        byte[] result = SynurangJni.nativeInvoke(invokePtr, freePtr, method, data);
-        return result == null ? new byte[0] : result;
+        retainLease();
+        try {
+            long invokePtr = getInvoker(serviceName);
+            byte[] result = SynurangJni.nativeInvoke(invokePtr, freePtr, method, data);
+            return result == null ? new byte[0] : result;
+        } finally {
+            releaseLease();
+        }
     }
 
     /**
@@ -96,23 +102,32 @@ public class PluginHost implements AutoCloseable {
      * @throws FfiError on error
      */
     public PluginStream openStream(String serviceName, String method) throws FfiError {
-        ensureOpen();
+        retainLease();
 
-        StreamFuncs sf = ensureStreamFuncs();
-        long openPtr = getStreamOpener(serviceName);
+        boolean success = false;
+        try {
+            StreamFuncs sf = ensureStreamFuncs();
+            long openPtr = getStreamOpener(serviceName);
 
-        long streamHandle = SynurangJni.nativeStreamOpen(openPtr, method);
-        if (streamHandle == 0) {
-            throw new FfiError("Failed to open stream for " + method);
+            long streamHandle = SynurangJni.nativeStreamOpen(openPtr, method);
+            if (streamHandle == 0) {
+                throw new FfiError("Failed to open stream for " + method);
+            }
+
+            PluginStream stream = new PluginStream(this, streamHandle, sf);
+            success = true;
+            return stream;
+        } finally {
+            if (!success) {
+                releaseLease();
+            }
         }
-
-        return new PluginStream(this, streamHandle, sf);
     }
 
     @Override
     public void close() {
-        if (closed.compareAndSet(false, true)) {
-            SynurangJni.nativeClose(handle);
+        if (closeRequested.compareAndSet(false, true)) {
+            closeIfIdle();
         }
     }
 
@@ -120,9 +135,42 @@ public class PluginHost implements AutoCloseable {
     // Internal
     // -------------------------------------------------------------------------
 
-    private void ensureOpen() throws FfiError.ClosedError {
-        if (closed.get()) {
-            throw new FfiError.ClosedError();
+    private void retainLease() throws FfiError.ClosedError {
+        while (true) {
+            if (closeRequested.get()) {
+                throw new FfiError.ClosedError();
+            }
+            int current = activeLeases.get();
+            if (activeLeases.compareAndSet(current, current + 1)) {
+                if (closeRequested.get()) {
+                    releaseLease();
+                    throw new FfiError.ClosedError();
+                }
+                return;
+            }
+        }
+    }
+
+    void releaseLease() {
+        while (true) {
+            int current = activeLeases.get();
+            if (current == 0) {
+                closeIfIdle();
+                return;
+            }
+            if (activeLeases.compareAndSet(current, current - 1)) {
+                closeIfIdle();
+                return;
+            }
+        }
+    }
+
+    private void closeIfIdle() {
+        if (!closeRequested.get() || activeLeases.get() != 0) {
+            return;
+        }
+        if (closed.compareAndSet(false, true)) {
+            SynurangJni.nativeClose(handle);
         }
     }
 

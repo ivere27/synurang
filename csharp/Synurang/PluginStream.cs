@@ -100,7 +100,7 @@ public class PluginStream : IDisposable
                 if (resultPtr == IntPtr.Zero)
                 {
                     if (respLen == 0)
-                        return Array.Empty<byte>();
+                        return new byte[0];
                     throw new FfiError("Plugin returned null for stream recv");
                 }
 

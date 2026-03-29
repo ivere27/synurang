@@ -359,9 +359,137 @@ public class JavaHostTest {
                 failed++;
             }
 
+            // Test 6-8: Close-safety regression tests
+            testCloseSafety(path);
+
             plugin.close();
         } catch (Exception e) {
             System.out.println("  \u2717 Failed: " + e.getMessage());
+            failed++;
+        }
+    }
+
+    // =========================================================================
+    // Close-with-active-streams regression tests
+    // =========================================================================
+
+    static void testCloseSafety(String path) {
+        // Test 6: Close host while stream is active — stream should still work
+        System.out.print("  [6/8] Close with active stream... ");
+        try {
+            PluginHost p = PluginHost.load(path);
+            PluginStream stream = p.openStream(
+                "GoGreeterService",
+                "/example.v1.GoGreeterService/BarBidiStream"
+            );
+
+            // Close plugin while stream is active — library must NOT unload
+            p.close();
+
+            // Stream should still work (lease keeps library loaded)
+            stream.send(makeHelloRequest("after-close"));
+            stream.closeSend();
+
+            // Drain the stream
+            while (stream.recv() != null) {}
+
+            // Close stream (triggers releaseLease → closeIfIdle → nativeClose)
+            stream.close();
+
+            System.out.println("\u2713");
+            passed++;
+        } catch (Exception e) {
+            System.out.println("\u2717 " + e.getMessage());
+            failed++;
+        }
+
+        // Test 7: Close host rejects new operations
+        System.out.print("  [7/8] Close rejects new operations... ");
+        try {
+            PluginHost p = PluginHost.load(path);
+            PluginStream stream = p.openStream(
+                "GoGreeterService",
+                "/example.v1.GoGreeterService/BarBidiStream"
+            );
+
+            p.close();
+
+            // New invoke must be rejected
+            boolean invokeRejected = false;
+            try {
+                p.invoke(
+                    "GoGreeterService",
+                    "/example.v1.GoGreeterService/Bar",
+                    makeHelloRequest("rejected")
+                );
+            } catch (FfiError.ClosedError e) {
+                invokeRejected = true;
+            }
+            if (!invokeRejected) {
+                throw new Exception("invoke should be rejected after close");
+            }
+
+            // New openStream must be rejected
+            boolean openRejected = false;
+            try {
+                p.openStream(
+                    "GoGreeterService",
+                    "/example.v1.GoGreeterService/BarBidiStream"
+                );
+            } catch (FfiError.ClosedError e) {
+                openRejected = true;
+            }
+            if (!openRejected) {
+                throw new Exception("openStream should be rejected after close");
+            }
+
+            stream.close();
+
+            System.out.println("\u2713");
+            passed++;
+        } catch (Exception e) {
+            System.out.println("\u2717 " + e.getMessage());
+            failed++;
+        }
+
+        // Test 8: Concurrent close + stream operations — must not crash
+        System.out.print("  [8/8] Concurrent close + stream ops... ");
+        try {
+            PluginHost p = PluginHost.load(path);
+
+            Thread[] workers = new Thread[4];
+            for (int i = 0; i < workers.length; i++) {
+                final PluginHost plugin = p;
+                workers[i] = new Thread(() -> {
+                    for (int j = 0; j < 10; j++) {
+                        try {
+                            PluginStream s = plugin.openStream(
+                                "GoGreeterService",
+                                "/example.v1.GoGreeterService/BarBidiStream"
+                            );
+                            s.send(makeHelloRequest("concurrent"));
+                            s.closeSend();
+                            s.recv();
+                            s.close();
+                        } catch (Exception ignored) {
+                            // Expected after close
+                        }
+                    }
+                });
+                workers[i].start();
+            }
+
+            Thread.sleep(5);
+            p.close();
+
+            for (Thread w : workers) {
+                w.join(10000);
+            }
+
+            System.out.println("\u2713 no crash");
+            passed++;
+        } catch (Exception e) {
+            System.out.println("\u2717 " + e.getMessage());
             failed++;
         }
     }

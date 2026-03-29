@@ -8,6 +8,7 @@ ARTIFACT_ID_CORE="${ARTIFACT_ID_CORE:-synurang-android}"
 ARTIFACT_ID_GRPC="${ARTIFACT_ID_GRPC:-synurang-android-grpc}"
 ANDROID_API="${ANDROID_API:-21}"
 ANDROID_ABIS="${ANDROID_ABIS:-arm64-v8a,armeabi-v7a}"
+CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 DIST_DIR="${DIST_DIR:-${REPO_ROOT}/dist/maven}"
 JOBS="${JOBS:-$(nproc)}"
 
@@ -65,7 +66,7 @@ if [[ -z "${GRPC_JAR}" || ! -f "${GRPC_JAR}" ]]; then
   exit 1
 fi
 
-echo "Building JNI libs for ABIs: ${ANDROID_ABIS}"
+echo "Building JNI libs for ABIs: ${ANDROID_ABIS} (CMake build type: ${CMAKE_BUILD_TYPE})"
 
 # ── Core AAR (classes + JNI .so) ─────────────────────────────────────────────
 CORE_AAR_DIR="${WORK_DIR}/aar-core"
@@ -89,7 +90,7 @@ for ABI in "${ABI_LIST[@]}"; do
   BUILD_DIR="${WORK_DIR}/build-${ABI}"
   cmake -S "${REPO_ROOT}/java/core/src/main/c" \
         -B "${BUILD_DIR}" \
-        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
         -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}" \
         -DANDROID_ABI="${ABI}" \
         -DANDROID_PLATFORM="android-${ANDROID_API}"

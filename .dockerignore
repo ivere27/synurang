@@ -1,0 +1,7 @@
+*
+!.dockerignore
+!Dockerfile
+!Dockerfile.desktop
+!docker/
+!docker/build_android_aar_inside.sh
+!docker/build_desktop_jar.sh

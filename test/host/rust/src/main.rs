@@ -173,6 +173,11 @@ fn test_plugin(path: &str, name: &str, counters: &mut Counters) {
             test_bidi_stream(&plugin, counters);
             test_structured_ffi_errors(&plugin, name, counters);
             plugin.close();
+
+            // Close-safety tests (each loads its own plugin instance)
+            test_close_with_active_stream(path, counters);
+            test_close_rejects_new_ops(path, counters);
+            test_concurrent_close_and_streams(path, counters);
         }
         Err(e) => {
             println!("  ✗ Failed: {}", e);
@@ -434,5 +439,177 @@ fn test_structured_ffi_errors(
     }
 
     println!("✓ unary/server/client/bidi");
+    counters.passed += 1;
+}
+
+// =============================================================================
+// Close-with-active-streams regression tests
+// =============================================================================
+
+fn test_close_with_active_stream(path: &str, counters: &mut Counters) {
+    print!("  [6/8] Close with active stream... ");
+
+    let plugin = match synurang_host::PluginHost::load(path) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("✗ load: {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+
+    let stream = match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarBidiStream",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("✗ open: {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+
+    // Close plugin while stream is still active — library must NOT unload
+    plugin.close();
+
+    // Stream should still work (lease keeps library loaded)
+    if let Err(e) = stream.send(&make_hello_request("after-close")) {
+        println!("✗ send after close: {}", e);
+        counters.failed += 1;
+        return;
+    }
+    stream.close_send();
+
+    // Drain the stream
+    loop {
+        match stream.recv() {
+            Ok(_) => {}
+            Err(synurang_host::Error::Eof) => break,
+            Err(e) => {
+                println!("✗ recv after close: {}", e);
+                counters.failed += 1;
+                return;
+            }
+        }
+    }
+
+    // Drop stream (triggers release_stream_lease → close_if_idle → dlclose)
+    // Then plugin drops (close() no-ops since already requested)
+    // Must not crash/segfault
+
+    println!("✓");
+    counters.passed += 1;
+}
+
+fn test_close_rejects_new_ops(path: &str, counters: &mut Counters) {
+    print!("  [7/8] Close rejects new operations... ");
+
+    let plugin = match synurang_host::PluginHost::load(path) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("✗ load: {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+
+    // Keep a stream alive so the library stays loaded
+    let _stream = match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarBidiStream",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("✗ open: {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+
+    plugin.close();
+
+    // New invoke must be rejected
+    match plugin.invoke(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/Bar",
+        &make_hello_request("rejected"),
+    ) {
+        Err(synurang_host::Error::PluginClosed) => {}
+        Ok(_) => {
+            println!("✗ invoke should be rejected");
+            counters.failed += 1;
+            return;
+        }
+        Err(e) => {
+            println!("✗ invoke wrong error: {}", e);
+            counters.failed += 1;
+            return;
+        }
+    }
+
+    // New open_stream must be rejected
+    match plugin.open_stream(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/BarBidiStream",
+    ) {
+        Err(synurang_host::Error::PluginClosed) => {}
+        Ok(_) => {
+            println!("✗ open_stream should be rejected");
+            counters.failed += 1;
+            return;
+        }
+        Err(e) => {
+            println!("✗ open_stream wrong error: {}", e);
+            counters.failed += 1;
+            return;
+        }
+    }
+
+    println!("✓");
+    counters.passed += 1;
+}
+
+fn test_concurrent_close_and_streams(path: &str, counters: &mut Counters) {
+    print!("  [8/8] Concurrent close + stream ops... ");
+
+    let plugin = match synurang_host::PluginHost::load(path) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("✗ load: {}", e);
+            counters.failed += 1;
+            return;
+        }
+    };
+
+    std::thread::scope(|s| {
+        // 4 workers opening/using/closing streams concurrently
+        for _ in 0..4 {
+            s.spawn(|| {
+                for _ in 0..10 {
+                    match plugin.open_stream(
+                        "GoGreeterService",
+                        "/example.v1.GoGreeterService/BarBidiStream",
+                    ) {
+                        Ok(stream) => {
+                            let _ = stream.send(&make_hello_request("concurrent"));
+                            stream.close_send();
+                            let _ = stream.recv();
+                        }
+                        Err(_) => {} // Expected after close
+                    }
+                }
+            });
+        }
+
+        // Closer thread fires after a short delay
+        s.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            plugin.close();
+        });
+    });
+
+    // If we reach here, no crash/segfault occurred
+    println!("✓ no crash");
     counters.passed += 1;
 }

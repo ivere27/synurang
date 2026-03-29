@@ -61,7 +61,11 @@ public class PluginStream implements AutoCloseable {
     @Override
     public void close() {
         if (closed.compareAndSet(false, true)) {
-            SynurangJni.nativeStreamClose(funcs.close, handle);
+            try {
+                SynurangJni.nativeStreamClose(funcs.close, handle);
+            } finally {
+                host.releaseLease();
+            }
         }
     }
 }

@@ -35,6 +35,7 @@ type PluginStream struct {
 	SendCh    chan []byte // Data from Host to Plugin
 	RecvCh    chan []byte // Data from Plugin to Host
 	ErrCh     chan error
+	Done      chan struct{} // closed when worker goroutine exits
 	CloseSend bool
 	CloseRecv bool
 	Mu        sync.Mutex
@@ -51,6 +52,7 @@ func NewStream(method string) (uint64, *PluginStream) {
 		SendCh: make(chan []byte, 16),
 		RecvCh: make(chan []byte, 16),
 		ErrCh:  make(chan error, 1),
+		Done:   make(chan struct{}),
 	}
 	handle := atomic.AddUint64(&streamHandleCounter, 1)
 	streamHandles.Store(handle, ps)
@@ -232,5 +234,5 @@ func Synurang_Stream_Close(handle C.ulonglong) {
 	}
 	stream.Cancel()
 	stream.closeSendCh()
-	stream.CloseRecvCh()
+	<-stream.Done
 }

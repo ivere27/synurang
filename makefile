@@ -33,9 +33,12 @@ ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_6
 # Docker Android AAR packaging
 AAR_DOCKER_IMAGE ?= synurang-android-aar:latest
 AAR_VERSION ?= 0.5.5
+AAR_BUILD_TYPE ?= Release
 AAR_GROUP_ID ?= io.github.ivere27
 AAR_ARTIFACT_ID_CORE ?= synurang-android
 AAR_ARTIFACT_ID_GRPC ?= synurang-android-grpc
+AAR_DEBUG_ARTIFACT_ID_CORE ?= $(AAR_ARTIFACT_ID_CORE)-debug
+AAR_DEBUG_ARTIFACT_ID_GRPC ?= $(AAR_ARTIFACT_ID_GRPC)-debug
 AAR_ANDROID_ABIS ?= arm64-v8a,armeabi-v7a
 AAR_ANDROID_API ?= 21
 DOCKER_GO_BUILD_CACHE_VOLUME ?= go-build-cache
@@ -52,7 +55,7 @@ DESKTOP_GROUP_ID ?= io.github.ivere27
 DESKTOP_ARTIFACT_ID_CORE ?= synurang-desktop
 DESKTOP_ARTIFACT_ID_GRPC ?= synurang-desktop-grpc
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen docker_android_aar_image docker_android_aar publish_maven docker_desktop_jar_image docker_desktop_jar
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar
 
 # =============================================================================
 # Default Target
@@ -214,7 +217,7 @@ docker_android_aar_image:
 	docker build -t "$(AAR_DOCKER_IMAGE)" -f Dockerfile .
 
 docker_android_aar: docker_android_aar_image
-	@echo "Packaging Android AARs (version $(AAR_VERSION), ABIs $(AAR_ANDROID_ABIS))..."
+	@echo "Packaging Android AARs (version $(AAR_VERSION), build $(AAR_BUILD_TYPE), ABIs $(AAR_ANDROID_ABIS))..."
 	docker run --rm --entrypoint bash \
 		-v "$(DOCKER_GO_BUILD_CACHE_VOLUME):$(DOCKER_GO_BUILD_CACHE_DIR)" \
 		-v "$(DOCKER_GRADLE_BUILD_CACHE_VOLUME):$(DOCKER_GRADLE_CACHE_DIR)" \
@@ -232,10 +235,18 @@ docker_android_aar: docker_android_aar_image
 		-e GROUP_ID="$(AAR_GROUP_ID)" \
 		-e ARTIFACT_ID_CORE="$(AAR_ARTIFACT_ID_CORE)" \
 		-e ARTIFACT_ID_GRPC="$(AAR_ARTIFACT_ID_GRPC)" \
+		-e CMAKE_BUILD_TYPE="$(AAR_BUILD_TYPE)" \
 		-e ANDROID_ABIS="$(AAR_ANDROID_ABIS)" \
 		-e ANDROID_API="$(AAR_ANDROID_API)" \
 		"$(AAR_DOCKER_IMAGE)"
 	@echo "AAR artifacts: dist/maven/"
+
+docker_android_aar_debug:
+	$(MAKE) docker_android_aar \
+		AAR_BUILD_TYPE=Debug \
+		AAR_ARTIFACT_ID_CORE="$(AAR_DEBUG_ARTIFACT_ID_CORE)" \
+		AAR_ARTIFACT_ID_GRPC="$(AAR_DEBUG_ARTIFACT_ID_GRPC)" \
+		AAR_VERSION="$(AAR_VERSION)"
 
 publish_maven:
 	@if [ ! -f "$(MAVEN_SETTINGS)" ]; then \
@@ -1011,6 +1022,7 @@ help:
 	@echo "  proto             - Generate Go, Dart, and FFI proto code"
 	@echo "  docker_android_aar_image - Build Docker image for Android AAR packaging"
 	@echo "  docker_android_aar - Build core + grpc AARs (JNI bridge, multi-ABI) into dist/maven"
+	@echo "  docker_android_aar_debug - Build debug core + grpc AARs into dist/maven"
 	@echo "  docker_desktop_jar_image - Build Docker image for desktop JAR packaging"
 	@echo "  docker_desktop_jar - Build desktop JARs (JNI natives + classes) into dist/maven"
 	@echo "  publish_maven     - Upload all bundles (AAR + desktop JAR) to Maven Central"
@@ -1079,3 +1091,4 @@ help:
 	@echo "  make run_android_java          # Java/Kotlin app"
 	@echo "  make test_host_java            # Java host test (desktop)"
 	@echo "  make docker_android_aar AAR_VERSION=0.5.5 # Build core + grpc AAR bundles"
+	@echo "  make docker_android_aar_debug AAR_VERSION=0.5.6-SNAPSHOT # Build debug AAR bundles"
