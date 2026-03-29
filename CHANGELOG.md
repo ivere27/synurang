@@ -1,3 +1,7 @@
+## 0.5.6
+
+*   **Concurrency and packaging fixes**: Hardened plugin host/stream teardown across hosts, improved Android debug AAR packaging, and added Java/Rust host test coverage.
+
 ## 0.5.5
 
 *   **TypeScript codegen**: Added lightweight TypeScript schema constants for enums, field numbers, and full gRPC method paths, with generator coverage tests.

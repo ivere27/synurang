@@ -82,6 +82,7 @@ impl From<&FfiError> for FfiError {
 struct StreamContext {
     send_queue: Mutex<Vec<Vec<u8>>>,  // host -> plugin
     recv_queue: Mutex<Vec<StreamResult>>,  // plugin -> host
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     send_cv: std::sync::Condvar,
     recv_cv: std::sync::Condvar,
     closed: std::sync::atomic::AtomicBool,
@@ -98,6 +99,7 @@ impl StreamContext {
         Self {
             send_queue: Mutex::new(Vec::new()),
             recv_queue: Mutex::new(Vec::new()),
+            worker: Mutex::new(None),
             send_cv: std::sync::Condvar::new(),
             recv_cv: std::sync::Condvar::new(),
             closed: std::sync::atomic::AtomicBool::new(false),
@@ -148,6 +150,16 @@ impl StreamContext {
     
     fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
+    }
+
+    fn set_worker(&self, worker: std::thread::JoinHandle<()>) {
+        if let Ok(mut slot) = self.worker.lock() {
+            *slot = Some(worker);
+        }
+    }
+
+    fn take_worker(&self) -> Option<std::thread::JoinHandle<()>> {
+        self.worker.lock().ok()?.take()
     }
 }
 
@@ -407,7 +419,7 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
     
     // Start handler thread
     let ctx_clone = ctx.clone();
-    let _ = std::thread::spawn(move || {
+    let worker = std::thread::spawn(move || {
         match method_str.as_str() {
             "/example.v1.GoGreeterService/BarServerStream" => {
                 // Wait for initial request using Condvar
@@ -543,6 +555,7 @@ pub extern "C" fn Synurang_Stream_GoGreeterService_Open(method: *const c_char) -
             }
         }
     });
+    ctx.set_worker(worker);
     
     handle
 }
@@ -621,11 +634,19 @@ pub extern "C" fn Synurang_Stream_CloseSend(handle: u64) {
 
 #[no_mangle]
 pub extern "C" fn Synurang_Stream_Close(handle: u64) {
-    if let Some(ctx) = get_stream(handle) {
+    let worker = if let Some(ctx) = get_stream(handle) {
         ctx.close();  // This now notifies all waiters
-    }
+        ctx.take_worker()
+    } else {
+        None
+    };
     if let Ok(mut streams) = streams().write() {
         streams.remove(&handle);
+    }
+    if let Some(worker) = worker {
+        if worker.thread().id() != std::thread::current().id() {
+            let _ = worker.join();
+        }
     }
 }
 

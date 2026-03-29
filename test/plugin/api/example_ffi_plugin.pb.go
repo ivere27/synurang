@@ -190,6 +190,7 @@ func Synurang_Stream_GoGreeterService_Open(method *C.char) C.ulonglong {
 
 	// Start stream handler goroutine
 	go func() {
+		defer close(ps.Done)
 		defer ps.CloseRecvCh()
 		defer ps.Cancel()
 
