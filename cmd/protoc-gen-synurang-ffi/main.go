@@ -115,6 +115,7 @@ type FieldData struct {
 	IsMap      bool
 	IsOneof    bool
 	OneofName  string
+	IsOptional bool   // True for proto3 optional fields (has presence tracking)
 	IsHandle   bool   // True when this message field's type is a handle
 	MessageFQN string // FQN of message type (e.g. "pkg.TreeNode"); empty for non-message fields
 	NeedsBox   bool   // True for recursive message fields (prost wraps in Box)
@@ -527,6 +528,90 @@ func wasmErrReturn(m MethodData) string {
 	}
 }
 
+// =============================================================================
+// C# Lite Template Helpers
+// =============================================================================
+
+// csharpType maps a proto field kind to a C# type name.
+func csharpType(f FieldData) string {
+	// Note: do not use IsHandle here — lite mode generates the actual GridHandle
+	// message class, so handle fields must be treated as regular message fields.
+	switch f.ProtoKind {
+	case "int32":
+		return "int"
+	case "int64":
+		return "long"
+	case "uint32":
+		return "uint"
+	case "uint64":
+		return "ulong"
+	case "float":
+		return "float"
+	case "double":
+		return "double"
+	case "bool":
+		return "bool"
+	case "string":
+		return "string"
+	case "bytes":
+		return "byte[]"
+	case "enum":
+		return f.TypeName
+	case "message":
+		return f.TypeName
+	default:
+		return "int"
+	}
+}
+
+// csharpIsValueType returns true if the C# type is a value type (needs ? for nullable).
+func csharpIsValueType(f FieldData) bool {
+	switch f.ProtoKind {
+	case "int32", "int64", "uint32", "uint64", "float", "double", "bool", "enum":
+		return true
+	default:
+		return false
+	}
+}
+
+// OneofGroup describes a real (non-synthetic) proto oneof for C# codegen.
+type OneofGroup struct {
+	Name   string      // proto oneof name (snake_case), e.g., "value"
+	GoName string      // PascalCase, e.g., "Value"
+	Fields []FieldData // fields in this oneof
+}
+
+// csharpOneofGroups returns the distinct real oneof groups for a message's fields.
+func csharpOneofGroups(fields []FieldData) []OneofGroup {
+	seen := make(map[string]*OneofGroup)
+	var order []string
+	for _, f := range fields {
+		if !f.IsOneof || f.IsOptional {
+			continue
+		}
+		g, ok := seen[f.OneofName]
+		if !ok {
+			// Convert snake_case oneof name to PascalCase
+			goName := ""
+			parts := strings.Split(f.OneofName, "_")
+			for _, p := range parts {
+				if len(p) > 0 {
+					goName += strings.ToUpper(p[:1]) + p[1:]
+				}
+			}
+			g = &OneofGroup{Name: f.OneofName, GoName: goName}
+			seen[f.OneofName] = g
+			order = append(order, f.OneofName)
+		}
+		g.Fields = append(g.Fields, f)
+	}
+	var result []OneofGroup
+	for _, name := range order {
+		result = append(result, *seen[name])
+	}
+	return result
+}
+
 func init() {
 	funcs := template.FuncMap{
 		"snakeCase":        toSnakeCase,
@@ -554,6 +639,10 @@ func init() {
 		"serviceHasStreaming": serviceHasStreaming,
 		"lower":               strings.ToLower,
 		"screaming":           toScreamingSnake,
+		// C# lite template functions
+		"csharpType":        csharpType,
+		"csharpIsValueType": csharpIsValueType,
+		"csharpOneofGroups": csharpOneofGroups,
 	}
 	var err error
 	templates, err = template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
@@ -607,7 +696,11 @@ func main() {
 				generateFromTemplate(gen, f, serviceList, "java", *javaPackage)
 			}
 			if *lang == "csharp" {
-				generateFromTemplate(gen, f, serviceList, "csharp", *csharpNamespace)
+				if *mode == "lite" {
+					generateFromTemplate(gen, f, serviceList, "csharp", "lite")
+				} else {
+					generateFromTemplate(gen, f, serviceList, "csharp", *csharpNamespace)
+				}
 			}
 			if *lang == "typescript" || *lang == "ts" {
 				generateFromTemplate(gen, f, serviceList, "typescript", "")
@@ -704,6 +797,9 @@ func selectTemplate(lang, modeOrOpt string) string {
 	case "java":
 		return "java.java.tmpl"
 	case "csharp":
+		if modeOrOpt == "lite" {
+			return "csharp_lite.cs.tmpl"
+		}
 		return "csharp.cs.tmpl"
 	case "typescript", "ts":
 		return "typescript.ts.tmpl"
@@ -748,6 +844,13 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 		switch lang {
 		case "rust":
 			return base + "_wasm.rs"
+		}
+	}
+
+	if mode == "lite" {
+		switch lang {
+		case "csharp":
+			return base + "_lite.cs"
 		}
 	}
 
@@ -829,6 +932,9 @@ func messageDataFromProtogen(msg *protogen.Message) MessageData {
 		if field.Desc.ContainingOneof() != nil {
 			fd.IsOneof = true
 			fd.OneofName = string(field.Desc.ContainingOneof().Name())
+		}
+		if field.Desc.HasOptionalKeyword() {
+			fd.IsOptional = true
 		}
 		md.Fields = append(md.Fields, fd)
 	}
@@ -985,7 +1091,7 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 			data.JavaPackage = strings.ReplaceAll(data.Package, "-", "_")
 		}
 	case "csharp":
-		if modeOrOpt != "" {
+		if modeOrOpt != "" && modeOrOpt != "lite" {
 			data.CSharpNamespace = modeOrOpt
 		} else {
 			// Derive from proto package: example.v1 -> Example.V1
@@ -1101,7 +1207,8 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 	}
 	markBoxFields(data.Messages)
 
-	if lang == "typescript" {
+	needsLocalTypes := lang == "typescript" || (lang == "csharp" && modeOrOpt == "lite")
+	if needsLocalTypes {
 		localMsgVisited := make(map[string]bool)
 		for _, msg := range file.Messages {
 			collectLocalMessages(&data.LocalMessages, msg, localMsgVisited)
