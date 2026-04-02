@@ -12,7 +12,7 @@ namespace {{.CSharpNamespace}}
     // MessageParser<T>  (matches Google.Protobuf API surface)
     // =========================================================================
 
-    internal sealed class MessageParser<T>
+    public sealed class MessageParser<T>
     {
         private readonly Func<byte[], T> _factory;
         public MessageParser(Func<byte[], T> factory) { _factory = factory; }
@@ -23,13 +23,13 @@ namespace {{.CSharpNamespace}}
     // BidiStream<TIn, TOut>  (typed wrapper around SynurangReflectionStream)
     // =========================================================================
 
-    internal sealed class BidiStream<TIn, TOut>
+    public sealed class BidiStream<TIn, TOut>
     {
         private readonly SynurangReflectionStream _stream;
         private readonly Func<TIn, byte[]> _serializer;
         private readonly Func<byte[], TOut> _deserializer;
 
-        public BidiStream(SynurangReflectionStream stream, Func<TIn, byte[]> serializer, Func<byte[], TOut> deserializer)
+        internal BidiStream(SynurangReflectionStream stream, Func<TIn, byte[]> serializer, Func<byte[], TOut> deserializer)
         {
             _stream = stream;
             _serializer = serializer;
@@ -53,7 +53,7 @@ namespace {{.CSharpNamespace}}
     // Enums
     // =========================================================================
 {{range $e := .Enums}}
-    internal enum {{$e.Name}}
+    public enum {{$e.Name}}
     {
 {{- range $v := $e.Values}}
         {{$v.Name}} = {{$v.Number}},
@@ -64,7 +64,7 @@ namespace {{.CSharpNamespace}}
     // Messages
     // =========================================================================
 {{range $msg := .LocalMessages}}
-    internal sealed class {{$msg.Name}}
+    public sealed class {{$msg.Name}}
     {
 {{- $groups := csharpOneofGroups $msg.Fields}}
 {{- /* ── Oneof case enums + case property + backing fields + accessors ── */}}
@@ -350,11 +350,11 @@ namespace {{.CSharpNamespace}}
     // FFI Service Stubs
     // =========================================================================
 {{range $svc := .Services}}
-    internal sealed class {{$svc.GoName}}Ffi
+    public sealed class {{$svc.GoName}}Ffi
     {
         private readonly SynurangReflectionHost _host;
 
-        public {{$svc.GoName}}Ffi(SynurangReflectionHost host)
+        internal {{$svc.GoName}}Ffi(SynurangReflectionHost host)
         {
             _host = host;
         }
