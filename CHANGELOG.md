@@ -1,3 +1,7 @@
+## 0.5.10
+
+*   **C# Lite and stream worker fixes**: Added C# Lite support for .NET 4.0, fixed `internal` visibility and `repeated int32` code generation issues, and stabilized plugin stream scheduling with a dedicated worker plus regression tests.
+
 ## 0.5.6
 
 *   **Concurrency and packaging fixes**: Hardened plugin host/stream teardown across hosts, improved Android debug AAR packaging, and added Java/Rust host test coverage.
