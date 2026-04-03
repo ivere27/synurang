@@ -116,5 +116,63 @@ if ! grep -q '_host.Invoke("MyServiceName"' "$SERVICE_CASE_FFI"; then
     exit 1
 fi
 
+echo "Generating C# lite code from packed_repeated_case.proto..."
+PACKED_REPEATED_PROTO="$ROOT_DIR/test/generated_csharp/packed_repeated_case.proto"
+cat > "$PACKED_REPEATED_PROTO" <<'EOF'
+syntax = "proto3";
+package packed.case.v1;
+option go_package = "github.com/ivere27/synurang/test/generated/packed_case;packedcase";
+
+enum ValueKind {
+  VALUE_KIND_UNSPECIFIED = 0;
+  VALUE_KIND_ONE = 1;
+}
+
+message PackedRepeatedCase {
+  repeated int32 ids = 1;
+  repeated float times = 2;
+  repeated bool flags = 3;
+  repeated ValueKind kinds = 4;
+}
+EOF
+
+protoc -I"$ROOT_DIR/test/generated_csharp" \
+    --plugin=protoc-gen-synurang-ffi="$PLUGIN" \
+    --synurang-ffi_out="$ROOT_DIR/test/generated_csharp" \
+    --synurang-ffi_opt=lang=csharp,mode=lite \
+    packed_repeated_case.proto
+
+echo "Verifying packed_repeated_case_lite.cs..."
+PACKED_REPEATED_LITE="$ROOT_DIR/test/generated_csharp/packed_repeated_case_lite.cs"
+if [ ! -f "$PACKED_REPEATED_LITE" ]; then
+    echo "Error: packed_repeated_case_lite.cs was not generated!"
+    exit 1
+fi
+
+if ! grep -q 'if (wire == ProtoWireType.LengthDelimited)' "$PACKED_REPEATED_LITE"; then
+    echo "Error: packed_repeated_case_lite.cs missing packed repeated scalar parsing!"
+    exit 1
+fi
+
+if ! grep -q 'msg.Ids.Add(packed.ReadInt32())' "$PACKED_REPEATED_LITE"; then
+    echo "Error: packed_repeated_case_lite.cs missing packed int32 parsing!"
+    exit 1
+fi
+
+if ! grep -q 'msg.Times.Add(packed.ReadFloat())' "$PACKED_REPEATED_LITE"; then
+    echo "Error: packed_repeated_case_lite.cs missing packed float parsing!"
+    exit 1
+fi
+
+if ! grep -q 'msg.Flags.Add(packed.ReadBool())' "$PACKED_REPEATED_LITE"; then
+    echo "Error: packed_repeated_case_lite.cs missing packed bool parsing!"
+    exit 1
+fi
+
+if ! grep -q 'msg.Kinds.Add((ValueKind)packed.ReadInt32())' "$PACKED_REPEATED_LITE"; then
+    echo "Error: packed_repeated_case_lite.cs missing packed enum parsing!"
+    exit 1
+fi
+
 echo "C# Generation Test Passed!"
 rm -rf "$ROOT_DIR/test/generated_csharp"

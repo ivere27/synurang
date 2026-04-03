@@ -277,19 +277,96 @@ namespace {{.CSharpNamespace}}
 {{- else if eq $f.ProtoKind "bytes"}}
                     case {{$f.Number}}: msg.{{$f.GoName}}.Add(r.ReadLengthDelimited()); break;
 {{- else if eq $f.ProtoKind "int32"}}
-                    case {{$f.Number}}: msg.{{$f.GoName}}.Add(r.ReadInt32()); break;
+                    case {{$f.Number}}:
+                        if (wire == ProtoWireType.LengthDelimited)
+                        {
+                            var packed = new ProtoReader(r.ReadLengthDelimited());
+                            while (!packed.IsEof)
+                                msg.{{$f.GoName}}.Add(packed.ReadInt32());
+                        }
+                        else
+                        {
+                            msg.{{$f.GoName}}.Add(r.ReadInt32());
+                        }
+                        break;
 {{- else if eq $f.ProtoKind "int64"}}
-                    case {{$f.Number}}: msg.{{$f.GoName}}.Add(r.ReadInt64()); break;
+                    case {{$f.Number}}:
+                        if (wire == ProtoWireType.LengthDelimited)
+                        {
+                            var packed = new ProtoReader(r.ReadLengthDelimited());
+                            while (!packed.IsEof)
+                                msg.{{$f.GoName}}.Add(packed.ReadInt64());
+                        }
+                        else
+                        {
+                            msg.{{$f.GoName}}.Add(r.ReadInt64());
+                        }
+                        break;
 {{- else if eq $f.ProtoKind "uint32"}}
-                    case {{$f.Number}}: msg.{{$f.GoName}}.Add(unchecked((uint)r.ReadInt32())); break;
+                    case {{$f.Number}}:
+                        if (wire == ProtoWireType.LengthDelimited)
+                        {
+                            var packed = new ProtoReader(r.ReadLengthDelimited());
+                            while (!packed.IsEof)
+                                msg.{{$f.GoName}}.Add(unchecked((uint)packed.ReadInt32()));
+                        }
+                        else
+                        {
+                            msg.{{$f.GoName}}.Add(unchecked((uint)r.ReadInt32()));
+                        }
+                        break;
 {{- else if eq $f.ProtoKind "float"}}
-                    case {{$f.Number}}: msg.{{$f.GoName}}.Add(r.ReadFloat()); break;
+                    case {{$f.Number}}:
+                        if (wire == ProtoWireType.LengthDelimited)
+                        {
+                            var packed = new ProtoReader(r.ReadLengthDelimited());
+                            while (!packed.IsEof)
+                                msg.{{$f.GoName}}.Add(packed.ReadFloat());
+                        }
+                        else
+                        {
+                            msg.{{$f.GoName}}.Add(r.ReadFloat());
+                        }
+                        break;
 {{- else if eq $f.ProtoKind "double"}}
-                    case {{$f.Number}}: msg.{{$f.GoName}}.Add(r.ReadDouble()); break;
+                    case {{$f.Number}}:
+                        if (wire == ProtoWireType.LengthDelimited)
+                        {
+                            var packed = new ProtoReader(r.ReadLengthDelimited());
+                            while (!packed.IsEof)
+                                msg.{{$f.GoName}}.Add(packed.ReadDouble());
+                        }
+                        else
+                        {
+                            msg.{{$f.GoName}}.Add(r.ReadDouble());
+                        }
+                        break;
 {{- else if eq $f.ProtoKind "bool"}}
-                    case {{$f.Number}}: msg.{{$f.GoName}}.Add(r.ReadBool()); break;
+                    case {{$f.Number}}:
+                        if (wire == ProtoWireType.LengthDelimited)
+                        {
+                            var packed = new ProtoReader(r.ReadLengthDelimited());
+                            while (!packed.IsEof)
+                                msg.{{$f.GoName}}.Add(packed.ReadBool());
+                        }
+                        else
+                        {
+                            msg.{{$f.GoName}}.Add(r.ReadBool());
+                        }
+                        break;
 {{- else if eq $f.ProtoKind "enum"}}
-                    case {{$f.Number}}: msg.{{$f.GoName}}.Add(({{$f.TypeName}})r.ReadInt32()); break;
+                    case {{$f.Number}}:
+                        if (wire == ProtoWireType.LengthDelimited)
+                        {
+                            var packed = new ProtoReader(r.ReadLengthDelimited());
+                            while (!packed.IsEof)
+                                msg.{{$f.GoName}}.Add(({{$f.TypeName}})packed.ReadInt32());
+                        }
+                        else
+                        {
+                            msg.{{$f.GoName}}.Add(({{$f.TypeName}})r.ReadInt32());
+                        }
+                        break;
 {{- end}}
 {{- else if $f.IsOptional}}
 {{- /* optional — use the setter to set the backing field */}}
