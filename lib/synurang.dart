@@ -212,6 +212,18 @@ class _PluginStreamState {
   _PluginStreamState(this.controller, this.pluginIndex);
 }
 
+class _DedicatedPluginStreamWorkerInit {
+  final SendPort mainSendPort;
+  final List<_PluginRegistration> pluginRegistrations;
+  final Object request;
+
+  const _DedicatedPluginStreamWorkerInit({
+    required this.mainSendPort,
+    required this.pluginRegistrations,
+    required this.request,
+  });
+}
+
 String _extractServiceName(String method) {
   // "/pkg.Service/Method" → "Service"
   final fullService = method.substring(1, method.lastIndexOf('/'));
@@ -736,7 +748,7 @@ Stream<Uint8List> _pluginServerStream(String method, Uint8List data) {
       _PluginStreamState(controller, pluginIndex);
 
   _CoreIsolateManager.instance
-      .sendRequest<int>(
+      .sendDedicatedPluginStreamRequest<int>(
           (id) => _PluginServerStreamRequest(id, dartStreamId, method, data))
       .then((int handle) {
     if (handle == 0) {
@@ -836,8 +848,9 @@ Future<Uint8List> _pluginClientStream(
   );
 
   // Open stream on worker (worker enters recv loop)
-  final int handle = await _CoreIsolateManager.instance.sendRequest<int>(
-      (id) => _PluginClientStreamRequest(id, dartStreamId, method));
+  final int handle = await _CoreIsolateManager.instance
+      .sendDedicatedPluginStreamRequest<int>(
+          (id) => _PluginClientStreamRequest(id, dartStreamId, method));
 
   if (handle == 0) {
     _pluginActiveStreams.remove(dartStreamId);
@@ -928,7 +941,7 @@ Stream<Uint8List> _pluginBidiStream(
       _PluginStreamState(controller, pluginIndex);
 
   _CoreIsolateManager.instance
-      .sendRequest<int>(
+      .sendDedicatedPluginStreamRequest<int>(
           (id) => _PluginBidiStreamRequest(id, dartStreamId, method))
       .then((int handle) {
     if (handle == 0) {
@@ -1105,6 +1118,8 @@ class _CoreIsolateManager {
   final Map<int, Completer<dynamic>> _requests = <int, Completer<dynamic>>{};
   final Map<int, int> _requestToWorker =
       <int, int>{}; // requestId -> workerIndex
+  final Map<int, Isolate> _dedicatedPluginStreamOpenIsolates =
+      <int, Isolate>{};
   int _nextRequestId = 0;
 
   // Isolate pool instead of single isolate
@@ -1150,6 +1165,35 @@ class _CoreIsolateManager {
     });
   }
 
+  Future<T> sendDedicatedPluginStreamRequest<T>(
+      Object Function(int id) requestBuilder,
+      {Duration timeout = const Duration(seconds: 30),
+      String debugLabel = 'request'}) async {
+    await _ensurePoolReady();
+
+    final int requestId = _nextRequestId++;
+    final request = requestBuilder(requestId);
+    final Completer<T> completer = Completer<T>();
+    _requests[requestId] = completer;
+
+    final isolate = await Isolate.spawn(
+      _dedicatedPluginStreamWorkerEntryPoint,
+      _DedicatedPluginStreamWorkerInit(
+        mainSendPort: _mainReceivePort!.sendPort,
+        pluginRegistrations: _pluginRegistrations,
+        request: request,
+      ),
+    );
+    _dedicatedPluginStreamOpenIsolates[requestId] = isolate;
+
+    return completer.future.timeout(timeout, onTimeout: () {
+      _requests.remove(requestId);
+      final isolate = _dedicatedPluginStreamOpenIsolates.remove(requestId);
+      isolate?.kill(priority: Isolate.immediate);
+      throw CoreTimeoutException(debugLabel, timeout);
+    });
+  }
+
   void reset() {
     // Cancel pending requests
     for (final completer in _requests.values) {
@@ -1159,6 +1203,10 @@ class _CoreIsolateManager {
     }
     _requests.clear();
     _requestToWorker.clear();
+    for (final isolate in _dedicatedPluginStreamOpenIsolates.values) {
+      isolate.kill(priority: Isolate.immediate);
+    }
+    _dedicatedPluginStreamOpenIsolates.clear();
 
     // Cleanup workers
     for (final worker in _workers) {
@@ -1295,10 +1343,12 @@ class _CoreIsolateManager {
     }
     // Stream Responses
     if (data is _StreamIdResponse) {
+      _dedicatedPluginStreamOpenIsolates.remove(data.id);
       _completeRequest<int>(data.id, data.streamId);
       return;
     }
     if (data is _ErrorResponse) {
+      _dedicatedPluginStreamOpenIsolates.remove(data.id);
       _updateWorkerStats(data.id);
       final completer = _requests.remove(data.id);
       completer?.completeError(data.error);
@@ -1460,6 +1510,12 @@ void _workerEntryPoint(_WorkerInitMessage msg) {
 
   // Send back (workerIndex, sendPort) tuple
   msg.mainSendPort.send((msg.workerIndex, receivePort.sendPort));
+}
+
+void _dedicatedPluginStreamWorkerEntryPoint(
+    _DedicatedPluginStreamWorkerInit msg) {
+  _initWorkerPlugins(msg.pluginRegistrations);
+  _handlePluginIsolateMessage(msg.request, msg.mainSendPort);
 }
 
 /// Initialize worker-local plugin state from registrations.
