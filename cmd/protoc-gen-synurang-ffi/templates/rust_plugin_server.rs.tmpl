@@ -86,7 +86,9 @@ struct StreamContext {
     send_cv: std::sync::Condvar,
     recv_cv: std::sync::Condvar,
     closed: std::sync::atomic::AtomicBool,
+    cancelled: std::sync::atomic::AtomicBool,
     send_closed: std::sync::atomic::AtomicBool,
+    cancel_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send + 'static>>>,
 }
 
 struct StreamResult {
@@ -103,7 +105,24 @@ impl StreamContext {
             send_cv: std::sync::Condvar::new(),
             recv_cv: std::sync::Condvar::new(),
             closed: std::sync::atomic::AtomicBool::new(false),
+            cancelled: std::sync::atomic::AtomicBool::new(false),
             send_closed: std::sync::atomic::AtomicBool::new(false),
+            cancel_callbacks: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn register_cancel_callback(&self, cb: Box<dyn FnOnce() + Send + 'static>) {
+        let mut guard = match self.cancel_callbacks.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if self.cancelled.load(Ordering::SeqCst) {
+            drop(guard);
+            cb();
+        } else if self.closed.load(Ordering::SeqCst) {
+            drop(guard);
+        } else {
+            guard.push(cb);
         }
     }
     
@@ -134,18 +153,41 @@ impl StreamContext {
         }
     }
     
-    fn close(&self) {
-        // Hold send_queue lock to prevent lost wakeup on send_cv
-        {
-            let _guard = self.send_queue.lock();
-            self.closed.store(true, Ordering::SeqCst);
-        }
+    fn finish(&self) {
+        self.close_with_cancelled(false);
+    }
+
+    fn cancel(&self) {
+        self.close_with_cancelled(true);
+    }
+
+    fn close_with_cancelled(&self, cancelled: bool) {
+        // Hold the callback lock during the state transition so registration
+        // either observes cancellation or is included in this drain.
+        let callbacks: Vec<Box<dyn FnOnce() + Send + 'static>> = {
+            let mut guard = match self.cancel_callbacks.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+
+            // Hold queue locks while setting closed to prevent lost wakeups.
+            let _send_guard = self.send_queue.lock();
+            let _recv_guard = self.recv_queue.lock();
+            if self.closed.swap(true, Ordering::SeqCst) {
+                Vec::new()
+            } else if cancelled {
+                self.cancelled.store(true, Ordering::SeqCst);
+                std::mem::take(&mut *guard)
+            } else {
+                guard.clear();
+                Vec::new()
+            }
+        };
         self.send_cv.notify_all();
-        // Hold recv_queue lock to prevent lost wakeup on recv_cv
-        {
-            let _guard = self.recv_queue.lock();
-        }
         self.recv_cv.notify_all();
+        for cb in callbacks {
+            cb();
+        }
     }
     
     fn is_closed(&self) -> bool {
@@ -212,14 +254,21 @@ fn get_{{$svc.GoName | snakeCase}}_plugin() -> Option<&'static dyn {{$svc.GoName
 // Stream Interfaces
 // =============================================================================
 
-pub trait PluginStreamSender<T> {
-    fn send(&self, msg: T) -> bool;
+pub trait PluginStream {
     fn is_cancelled(&self) -> bool;
+    /// Register a callback fired exactly once when the host cancels the stream.
+    /// If the stream is already cancelled at registration time, the callback
+    /// fires immediately on the calling thread. Default is a no-op for impls that
+    /// cannot surface cancellation events.
+    fn on_cancel(&self, _cb: Box<dyn FnOnce() + Send + 'static>) {}
 }
 
-pub trait PluginStreamReceiver<T> {
+pub trait PluginStreamSender<T>: PluginStream {
+    fn send(&self, msg: T) -> bool;
+}
+
+pub trait PluginStreamReceiver<T>: PluginStream {
     fn recv(&self) -> Option<T>;
-    fn is_cancelled(&self) -> bool;
 }
 
 pub trait PluginStreamBidi<Req, Resp>: PluginStreamSender<Resp> + PluginStreamReceiver<Req> {}
@@ -227,6 +276,16 @@ pub trait PluginStreamBidi<Req, Resp>: PluginStreamSender<Resp> + PluginStreamRe
 struct StreamSender<T> {
     ctx: Arc<StreamContext>,
     _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> PluginStream for StreamSender<T> {
+    fn is_cancelled(&self) -> bool {
+        self.ctx.is_closed()
+    }
+
+    fn on_cancel(&self, cb: Box<dyn FnOnce() + Send + 'static>) {
+        self.ctx.register_cancel_callback(cb);
+    }
 }
 
 impl<T: Message + Default> PluginStreamSender<T> for StreamSender<T> {
@@ -241,15 +300,21 @@ impl<T: Message + Default> PluginStreamSender<T> for StreamSender<T> {
         self.ctx.push_recv_result(0, buf);
         true
     }
-    
-    fn is_cancelled(&self) -> bool {
-        self.ctx.is_closed()
-    }
 }
 
 struct StreamReceiver<T> {
     ctx: Arc<StreamContext>,
     _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> PluginStream for StreamReceiver<T> {
+    fn is_cancelled(&self) -> bool {
+        self.ctx.is_closed()
+    }
+
+    fn on_cancel(&self, cb: Box<dyn FnOnce() + Send + 'static>) {
+        self.ctx.register_cancel_callback(cb);
+    }
 }
 
 impl<T: Message + Default> PluginStreamReceiver<T> for StreamReceiver<T> {
@@ -269,10 +334,6 @@ impl<T: Message + Default> PluginStreamReceiver<T> for StreamReceiver<T> {
             queue = self.ctx.send_cv.wait(queue).ok()?;
         }
     }
-    
-    fn is_cancelled(&self) -> bool {
-        self.ctx.is_closed()
-    }
 }
 
 struct StreamBidi<Req, Resp> {
@@ -280,21 +341,25 @@ struct StreamBidi<Req, Resp> {
     receiver: StreamReceiver<Req>,
 }
 
+impl<Req, Resp> PluginStream for StreamBidi<Req, Resp> {
+    fn is_cancelled(&self) -> bool {
+        self.sender.is_cancelled()
+    }
+
+    fn on_cancel(&self, cb: Box<dyn FnOnce() + Send + 'static>) {
+        self.sender.on_cancel(cb);
+    }
+}
+
 impl<Req: Message + Default, Resp: Message + Default> PluginStreamSender<Resp> for StreamBidi<Req, Resp> {
     fn send(&self, msg: Resp) -> bool {
         self.sender.send(msg)
-    }
-    fn is_cancelled(&self) -> bool {
-        self.sender.is_cancelled()
     }
 }
 
 impl<Req: Message + Default, Resp: Message + Default> PluginStreamReceiver<Req> for StreamBidi<Req, Resp> {
     fn recv(&self) -> Option<Req> {
         self.receiver.recv()
-    }
-    fn is_cancelled(&self) -> bool {
-        self.receiver.is_cancelled()
     }
 }
 
@@ -426,7 +491,7 @@ pub extern "C" fn Synurang_Stream_{{$svc.GoName}}_Open(method: *const c_char) ->
                 } else {
                     push_stream_error(&ctx_clone, "failed to parse stream request");
                 }
-                ctx_clone.close();
+                ctx_clone.finish();
             }
 {{- else if $m.IsClientStreaming}}
             "{{$m.FullMethodName}}" => {
@@ -444,7 +509,7 @@ pub extern "C" fn Synurang_Stream_{{$svc.GoName}}_Open(method: *const c_char) ->
                     }
                     Err(e) => push_stream_error(&ctx_clone, &e),
                 }
-                ctx_clone.close();
+                ctx_clone.finish();
             }
 {{- else if $m.IsBidiStreaming}}
             "{{$m.FullMethodName}}" => {
@@ -461,13 +526,13 @@ pub extern "C" fn Synurang_Stream_{{$svc.GoName}}_Open(method: *const c_char) ->
                 if let Err(e) = plugin.{{snakeCase $m.Name}}(&bidi) {
                     push_stream_error(&ctx_clone, &e);
                 }
-                ctx_clone.close();
+                ctx_clone.finish();
             }
 {{- end}}
 {{- end}}
             _ => {
                 push_stream_error(&ctx_clone, format!("unknown method: {}", method_str));
-                ctx_clone.close();
+                ctx_clone.finish();
             }
         }
     });
@@ -551,7 +616,7 @@ pub extern "C" fn Synurang_Stream_CloseSend(handle: u64) {
 #[no_mangle]
 pub extern "C" fn Synurang_Stream_Close(handle: u64) {
     let worker = if let Some(ctx) = get_stream(handle) {
-        ctx.close();  // This now notifies all waiters
+        ctx.cancel();  // This now notifies all waiters
         ctx.take_worker()
     } else {
         None

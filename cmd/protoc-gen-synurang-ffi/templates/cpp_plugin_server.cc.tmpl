@@ -44,8 +44,11 @@ struct StreamContext {
     std::queue<std::string> send_queue;  // host -> plugin
     std::queue<StreamResult> recv_queue;  // plugin -> host
     std::atomic<bool> closed{false};
+    std::atomic<bool> cancelled{false};
     std::atomic<bool> send_closed{false};
     std::thread handler_thread;
+    std::mutex cancel_mutex;
+    std::vector<std::function<void()>> cancel_callbacks;
 };
 
 static std::mutex g_stream_mutex;
@@ -118,13 +121,52 @@ static void push_stream_result(StreamContext* ctx, int status, std::string paylo
     ctx->recv_cv.notify_one();
 }
 
-static void close_stream_context(StreamContext* ctx) {
+static void register_cancel_callback(StreamContext* ctx, std::function<void()> callback) {
+    if (!callback) return;
+
+    bool fire_now = false;
     {
-        std::lock_guard<std::mutex> lock(ctx->mutex);
-        ctx->closed = true;
+        std::lock_guard<std::mutex> lock(ctx->cancel_mutex);
+        if (ctx->cancelled.load()) {
+            fire_now = true;
+        } else if (!ctx->closed.load()) {
+            ctx->cancel_callbacks.push_back(std::move(callback));
+            return;
+        } else {
+            return;
+        }
     }
+
+    if (fire_now) {
+        callback();
+    }
+}
+
+static void close_stream_context(StreamContext* ctx, bool cancelled) {
+    std::vector<std::function<void()>> callbacks;
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> callback_lock(ctx->cancel_mutex);
+        {
+            std::lock_guard<std::mutex> lock(ctx->mutex);
+            if (!ctx->closed.exchange(true)) {
+                changed = true;
+                if (cancelled) {
+                    ctx->cancelled = true;
+                    callbacks.swap(ctx->cancel_callbacks);
+                } else {
+                    ctx->cancel_callbacks.clear();
+                }
+            }
+        }
+    }
+    if (!changed) return;
+
     ctx->send_cv.notify_all();
     ctx->recv_cv.notify_all();
+    for (auto& callback : callbacks) {
+        if (callback) callback();
+    }
 }
 
 static void push_stream_error(StreamContext* ctx, const std::string& message) {
@@ -170,6 +212,10 @@ public:
     
     bool IsCancelled() const override {
         return ctx_->closed;
+    }
+
+    void OnCancel(std::function<void()> callback) override {
+        register_cancel_callback(ctx_, std::move(callback));
     }
 
 private:
@@ -282,7 +328,7 @@ uint64_t Synurang_Stream_{{$svc.GoName}}_Open(const char* method) {
             } else {
                 push_stream_error(ctx_ptr, "failed to parse stream request");
             }
-            close_stream_context(ctx_ptr);
+            close_stream_context(ctx_ptr, false);
             return;
         }
 {{- else if $m.IsClientStreaming}}
@@ -290,26 +336,26 @@ uint64_t Synurang_Stream_{{$svc.GoName}}_Open(const char* method) {
             StreamWrapper<{{$m.InputCppType}}, {{$m.OutputCppType}}> wrapper(ctx_ptr);
             auto resp = plugin->{{$m.GoName}}(&wrapper);
             wrapper.Send(resp);
-            close_stream_context(ctx_ptr);
+            close_stream_context(ctx_ptr, false);
             return;
         }
 {{- else if $m.IsBidiStreaming}}
         if (method_str == "{{$m.FullMethodName}}") {
             StreamWrapper<{{$m.InputCppType}}, {{$m.OutputCppType}}> wrapper(ctx_ptr);
             plugin->{{$m.GoName}}(&wrapper);
-            close_stream_context(ctx_ptr);
+            close_stream_context(ctx_ptr, false);
             return;
         }
 {{- end}}
 {{- end}}
             push_stream_error(ctx_ptr, "unknown method: " + method_str);
-            close_stream_context(ctx_ptr);
+            close_stream_context(ctx_ptr, false);
         } catch (const FfiError& e) {
             push_stream_error(ctx_ptr, e);
-            close_stream_context(ctx_ptr);
+            close_stream_context(ctx_ptr, false);
         } catch (const std::exception& e) {
             push_stream_error(ctx_ptr, e.what());
-            close_stream_context(ctx_ptr);
+            close_stream_context(ctx_ptr, false);
         }
     });
 
@@ -401,12 +447,7 @@ void Synurang_Stream_Close(uint64_t handle) {
         g_streams.erase(it);
     }
 
-    {
-        std::lock_guard<std::mutex> lock(ctx->mutex);
-        ctx->closed = true;
-    }
-    ctx->send_cv.notify_all();
-    ctx->recv_cv.notify_all();
+    close_stream_context(ctx.get(), true);
 
     if (ctx->handler_thread.joinable()) {
         ctx->handler_thread.join();

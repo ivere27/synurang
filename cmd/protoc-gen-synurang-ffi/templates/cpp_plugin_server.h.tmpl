@@ -59,6 +59,12 @@ public:
     
     // Check if stream context is cancelled
     virtual bool IsCancelled() const = 0;
+
+    // Register a callback fired exactly once when the host cancels the stream.
+    // If the stream is already cancelled at registration time, the callback
+    // fires immediately on the calling thread. Default is a no-op for impls
+    // that cannot surface cancellation events.
+    virtual void OnCancel(std::function<void()> callback) { (void)callback; }
 };
 
 // =============================================================================
