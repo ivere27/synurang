@@ -66,7 +66,7 @@ namespace {{.CSharpNamespace}}
 {{range $msg := .LocalMessages}}
     public sealed class {{$msg.Name}}
     {
-{{- $groups := csharpOneofGroups $msg.Fields}}
+{{- $groups := oneofGroups $msg.Fields}}
 {{- /* ── Oneof case enums + case property + backing fields + accessors ── */}}
 {{- range $g := $groups}}
         public enum {{$g.GoName}}OneofCase

@@ -106,19 +106,22 @@ type MessageData struct {
 }
 
 type FieldData struct {
-	Name       string // Proto field name (snake_case)
-	GoName     string // CamelCase Go/Rust name
-	Number     int32  // Field number
-	ProtoKind  string // "int32", "int64", "uint32", "uint64", "float", "double", "bool", "string", "bytes", "enum", "message"
-	TypeName   string // For enum/message: the simple type name
-	IsRepeated bool
-	IsMap      bool
-	IsOneof    bool
-	OneofName  string
-	IsOptional bool   // True for proto3 optional fields (has presence tracking)
-	IsHandle   bool   // True when this message field's type is a handle
-	MessageFQN string // FQN of message type (e.g. "pkg.TreeNode"); empty for non-message fields
-	NeedsBox   bool   // True for recursive message fields (prost wraps in Box)
+	Name           string // Proto field name (snake_case)
+	GoName         string // CamelCase Go/Rust name
+	Number         int32  // Field number
+	ProtoKind      string // Broad type kind: "int32", "int64", "uint32", "uint64", "float", "double", "bool", "string", "bytes", "enum", "message"
+	WireKind       string // Exact protobuf wire kind for TypeScript lite (e.g. "sint32", "fixed64", "sfixed32")
+	TypeName       string // For enum/message: the simple type name
+	IsRepeated     bool
+	IsMap          bool
+	IsOneof        bool
+	OneofName      string // proto oneof name (snake_case)
+	OneofGoName    string // PascalCase form of OneofName
+	IsOptional     bool   // True for proto3 optional fields (has presence tracking)
+	IsHandle       bool   // True when this message field's type is a handle
+	MessageFQN     string // FQN of message type (e.g. "pkg.TreeNode"); empty for non-message fields
+	NeedsBox       bool   // True for recursive message fields (prost wraps in Box)
+	MessageIsLocal bool   // True when this message field's type is declared in the same proto file
 }
 
 type EnumData struct {
@@ -581,8 +584,20 @@ type OneofGroup struct {
 	Fields []FieldData // fields in this oneof
 }
 
-// csharpOneofGroups returns the distinct real oneof groups for a message's fields.
-func csharpOneofGroups(fields []FieldData) []OneofGroup {
+// pascalFromSnake converts a snake_case identifier to PascalCase.
+func pascalFromSnake(s string) string {
+	out := ""
+	for _, part := range strings.Split(s, "_") {
+		if part == "" {
+			continue
+		}
+		out += strings.ToUpper(part[:1]) + part[1:]
+	}
+	return out
+}
+
+// oneofGroups returns the distinct real oneof groups for a message's fields.
+func oneofGroups(fields []FieldData) []OneofGroup {
 	seen := make(map[string]*OneofGroup)
 	var order []string
 	for _, f := range fields {
@@ -591,15 +606,7 @@ func csharpOneofGroups(fields []FieldData) []OneofGroup {
 		}
 		g, ok := seen[f.OneofName]
 		if !ok {
-			// Convert snake_case oneof name to PascalCase
-			goName := ""
-			parts := strings.Split(f.OneofName, "_")
-			for _, p := range parts {
-				if len(p) > 0 {
-					goName += strings.ToUpper(p[:1]) + p[1:]
-				}
-			}
-			g = &OneofGroup{Name: f.OneofName, GoName: goName}
+			g = &OneofGroup{Name: f.OneofName, GoName: pascalFromSnake(f.OneofName)}
 			seen[f.OneofName] = g
 			order = append(order, f.OneofName)
 		}
@@ -610,6 +617,92 @@ func csharpOneofGroups(fields []FieldData) []OneofGroup {
 		result = append(result, *seen[name])
 	}
 	return result
+}
+
+// =============================================================================
+// TypeScript Lite Template Helpers
+// =============================================================================
+
+func lowerCamelFromSnake(s string) string {
+	if s == "" {
+		return s
+	}
+	parts := strings.Split(s, "_")
+	var out strings.Builder
+	out.WriteString(parts[0])
+	for _, p := range parts[1:] {
+		if p == "" {
+			continue
+		}
+		out.WriteString(strings.ToUpper(p[:1]))
+		out.WriteString(p[1:])
+	}
+	return out.String()
+}
+
+func tsPropName(f FieldData) string {
+	return lowerFirst(f.GoName)
+}
+
+func tsJsonName(f FieldData) string {
+	return lowerCamelFromSnake(f.Name)
+}
+
+func tsType(f FieldData) string {
+	switch f.ProtoKind {
+	case "int32", "uint32", "float", "double":
+		return "number"
+	case "int64", "uint64":
+		return "bigint"
+	case "bool":
+		return "boolean"
+	case "string":
+		return "string"
+	case "bytes":
+		return "Uint8Array"
+	case "enum":
+		return f.TypeName
+	case "message":
+		if f.MessageIsLocal {
+			return f.TypeName
+		}
+		return "unknown"
+	default:
+		return "unknown"
+	}
+}
+
+func tsDefaultValue(f FieldData) string {
+	switch f.ProtoKind {
+	case "int32", "uint32", "float", "double", "enum":
+		return "0"
+	case "int64", "uint64":
+		return "0n"
+	case "bool":
+		return "false"
+	case "string":
+		return `""`
+	default:
+		return ""
+	}
+}
+
+func tsOneofCaseEnumName(messageName, groupName string) string {
+	return messageName + groupName + "OneofCase"
+}
+
+func tsOneofCaseProperty(f FieldData) string {
+	if !f.IsOneof || f.IsOptional {
+		return ""
+	}
+	return lowerFirst(f.OneofGoName) + "Case"
+}
+
+func tsOneofCaseValue(messageName string, f FieldData) string {
+	if !f.IsOneof || f.IsOptional {
+		return ""
+	}
+	return tsOneofCaseEnumName(messageName, f.OneofGoName) + "." + f.GoName
 }
 
 func init() {
@@ -642,7 +735,15 @@ func init() {
 		// C# lite template functions
 		"csharpType":        csharpType,
 		"csharpIsValueType": csharpIsValueType,
-		"csharpOneofGroups": csharpOneofGroups,
+		"oneofGroups":       oneofGroups,
+		// TypeScript lite template functions
+		"tsType":              tsType,
+		"tsDefaultValue":      tsDefaultValue,
+		"tsPropName":          tsPropName,
+		"tsJsonName":          tsJsonName,
+		"tsOneofCaseEnumName": tsOneofCaseEnumName,
+		"tsOneofCaseProperty": tsOneofCaseProperty,
+		"tsOneofCaseValue":    tsOneofCaseValue,
 	}
 	var err error
 	templates, err = template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
@@ -658,7 +759,7 @@ func init() {
 func main() {
 	var flags flag.FlagSet
 	lang := flags.String("lang", "", "language to generate (go, dart, cpp, c, rust, java, csharp, or typescript)")
-	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client, native, wasm")
+	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client, native, wasm, lite")
 	dartPackage := flags.String("dart_package", "", "Dart package name for imports")
 	javaPackage := flags.String("java_package", "", "Java package name for generated classes")
 	csharpNamespace := flags.String("csharp_namespace", "", "C# namespace for generated classes")
@@ -703,7 +804,7 @@ func main() {
 				}
 			}
 			if *lang == "typescript" || *lang == "ts" {
-				generateFromTemplate(gen, f, serviceList, "typescript", "")
+				generateFromTemplate(gen, f, serviceList, "typescript", *mode)
 			}
 			if *lang == "c" {
 				generateFromTemplate(gen, f, serviceList, "c", *mode)
@@ -802,6 +903,9 @@ func selectTemplate(lang, modeOrOpt string) string {
 		}
 		return "csharp.cs.tmpl"
 	case "typescript", "ts":
+		if modeOrOpt == "lite" {
+			return "typescript_lite.ts.tmpl"
+		}
 		return "typescript.ts.tmpl"
 	}
 	return ""
@@ -851,6 +955,8 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 		switch lang {
 		case "csharp":
 			return base + "_lite.cs"
+		case "typescript", "ts":
+			return base + "_lite.ts"
 		}
 	}
 
@@ -898,40 +1004,73 @@ func messageDataFromProtogen(msg *protogen.Message) MessageData {
 		switch field.Desc.Kind() {
 		case protoreflect.BoolKind:
 			fd.ProtoKind = "bool"
-		case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+			fd.WireKind = "bool"
+		case protoreflect.Int32Kind:
 			fd.ProtoKind = "int32"
-		case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+			fd.WireKind = "int32"
+		case protoreflect.Sint32Kind:
+			fd.ProtoKind = "int32"
+			fd.WireKind = "sint32"
+		case protoreflect.Sfixed32Kind:
+			fd.ProtoKind = "int32"
+			fd.WireKind = "sfixed32"
+		case protoreflect.Int64Kind:
 			fd.ProtoKind = "int64"
-		case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+			fd.WireKind = "int64"
+		case protoreflect.Sint64Kind:
+			fd.ProtoKind = "int64"
+			fd.WireKind = "sint64"
+		case protoreflect.Sfixed64Kind:
+			fd.ProtoKind = "int64"
+			fd.WireKind = "sfixed64"
+		case protoreflect.Uint32Kind:
 			fd.ProtoKind = "uint32"
-		case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+			fd.WireKind = "uint32"
+		case protoreflect.Fixed32Kind:
+			fd.ProtoKind = "uint32"
+			fd.WireKind = "fixed32"
+		case protoreflect.Uint64Kind:
 			fd.ProtoKind = "uint64"
+			fd.WireKind = "uint64"
+		case protoreflect.Fixed64Kind:
+			fd.ProtoKind = "uint64"
+			fd.WireKind = "fixed64"
 		case protoreflect.FloatKind:
 			fd.ProtoKind = "float"
+			fd.WireKind = "float"
 		case protoreflect.DoubleKind:
 			fd.ProtoKind = "double"
+			fd.WireKind = "double"
 		case protoreflect.StringKind:
 			fd.ProtoKind = "string"
+			fd.WireKind = "string"
 		case protoreflect.BytesKind:
 			fd.ProtoKind = "bytes"
+			fd.WireKind = "bytes"
 		case protoreflect.EnumKind:
 			fd.ProtoKind = "enum"
+			fd.WireKind = "enum"
 			if field.Enum != nil {
 				fd.TypeName = field.Enum.GoIdent.GoName
 			}
 		case protoreflect.MessageKind, protoreflect.GroupKind:
 			fd.ProtoKind = "message"
+			fd.WireKind = "message"
 			if field.Message != nil {
 				fd.TypeName = field.Message.GoIdent.GoName
 				fd.IsHandle = isHandleMessage(field.Message)
 				fd.MessageFQN = string(field.Message.Desc.FullName())
+				fd.MessageIsLocal = field.Message.Desc.ParentFile().Path() == msg.Desc.ParentFile().Path() &&
+					!field.Message.Desc.IsMapEntry()
 			}
 		default:
 			fd.ProtoKind = "unknown"
+			fd.WireKind = "unknown"
 		}
 		if field.Desc.ContainingOneof() != nil {
 			fd.IsOneof = true
 			fd.OneofName = string(field.Desc.ContainingOneof().Name())
+			fd.OneofGoName = pascalFromSnake(fd.OneofName)
 		}
 		if field.Desc.HasOptionalKeyword() {
 			fd.IsOptional = true

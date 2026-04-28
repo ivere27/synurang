@@ -90,6 +90,7 @@ The `mode` parameter controls what kind of code is generated.
 | java | *(default)* | `_ffi.java` | Java FFI host bindings |
 | csharp | *(default)* | `_ffi.cs` | C# FFI host bindings |
 | typescript | *(default)* | `_ffi.ts` | TypeScript schema constants (enums, field numbers, method paths) |
+| typescript | `lite` | `_lite.ts` | TypeScript protobuf-lite message classes with binary parse/serialize and JSON output |
 | c | `native` | `_ffi_native.h` | C header with flattened per-method signatures |
 | c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
 
@@ -541,7 +542,7 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 
 **C# (.NET Framework 4.0+ / .NET Core 3.1+)**: `--synurang-ffi_opt=lang=csharp`. Full support including all streaming types. Pure managed interop — no native bridge required.
 
-**TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants for local enums, local message field numbers, and full gRPC method paths. This is the recommended default for web/WASM hosts. A full TypeScript RPC generator is intentionally out of scope unless TypeScript becomes a primary RPC client target.
+**TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants for local enums, local message field numbers, and full gRPC method paths. `--synurang-ffi_opt=lang=typescript,mode=lite` additionally generates self-contained protobuf-lite message classes with `fromBinary()`/`parseFrom()`, `toBinary()`/`toByteArray()`, and `toJson()` helpers. A full TypeScript RPC generator is intentionally out of scope unless TypeScript becomes a primary RPC client target.
 
 #### C# .NET Version Compatibility
 
