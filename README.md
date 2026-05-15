@@ -89,14 +89,14 @@ The `mode` parameter controls what kind of code is generated.
 | rust | `wasm` | `_wasm.rs` | WASM exports via `#[wasm_bindgen]` |
 | java | *(default)* | `_ffi.java` | Java FFI host bindings |
 | csharp | *(default)* | `_ffi.cs` | C# FFI host bindings |
-| typescript | *(default)* | `_ffi.ts` | TypeScript schema constants (enums, field numbers, method paths) |
+| typescript | *(default)* | `_ffi.ts` + `_lite.ts` | TypeScript FFI client wrapper plus companion protobuf-lite message module when services are generated |
 | typescript | `lite` | `_lite.ts` | TypeScript protobuf-lite message classes with binary parse/serialize and JSON output |
 | c | `native` | `_ffi_native.h` | C header with flattened per-method signatures |
 | c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
 
 The default `plugin_server` mode exports the standard Synurang ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`) — all data is serialized protobuf, and any Synurang host can load the plugin.
 
-Native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). Callers pass scalars directly - no protobuf serialization at the call site. This is for direct FFI from C/C++/WASM without the Synurang host infrastructure. Methods with `repeated`, `oneof`, or `map` fields get a `_pb` fallback accepting raw protobuf bytes. Native mode is unary-only. WASM mode also emits stream APIs for streaming RPCs (`*_stream_open`, `*_stream_send`, `*_stream_recv`, `*_stream_close_send`, `*_stream_close`).
+Native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). Callers pass scalars directly - no protobuf serialization at the call site. This is for direct FFI from C/C++/WASM without the Synurang host infrastructure. Native mode emits `_pb` fallbacks for methods with `repeated`, `oneof`, or `map` fields. WASM mode emits a `_pb` variant for every unary RPC and stream APIs for streaming RPCs (`*_stream_open`, `*_stream_send`, `*_stream_recv`, `*_stream_close_send`, `*_stream_close`).
 
 ---
 
@@ -542,7 +542,7 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 
 **C# (.NET Framework 4.0+ / .NET Core 3.1+)**: `--synurang-ffi_opt=lang=csharp`. Full support including all streaming types. Pure managed interop — no native bridge required.
 
-**TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants for local enums, local message field numbers, and full gRPC method paths. `--synurang-ffi_opt=lang=typescript,mode=lite` additionally generates self-contained protobuf-lite message classes with `fromBinary()`/`parseFrom()`, `toBinary()`/`toByteArray()`, and `toJson()` helpers. A full TypeScript RPC generator is intentionally out of scope unless TypeScript becomes a primary RPC client target.
+**TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants plus service FFI client wrappers backed by a `PluginHost` abstraction. For proto files with generated services, the same invocation also emits the companion `_lite.ts` module used for `fromBinary()`/`parseFrom()`, `toBinary()`/`toByteArray()`, and `toJson()` helpers. `--synurang-ffi_opt=lang=typescript,mode=lite` generates only the protobuf-lite message module.
 
 #### C# .NET Version Compatibility
 

@@ -477,7 +477,24 @@ fn {{$svc.GoName | snakeCase}}_run_stream(ctx: &mut {{$svc.GoName}}StreamContext
 {{- range $m := $svc.Methods}}
 {{- if $m.IsUnary}}
 {{- $inMsg := index $.Messages $m.InputTypeKey}}
+{{- /* Every unary RPC gets a protobuf-bytes variant. This is what generated */}}
+{{- /* synurang FFI clients call uniformly across all RPCs. */}}
+#[wasm_bindgen]
+pub fn {{$prefix}}_{{snakeCase $m.Name}}_pb(data: &[u8]){{- if eq $m.OutputWKT "Empty"}} {{- else if $m.OutputIsHandle}} -> i64{{- else if eq $m.OutputWKT "Int32Value"}} -> i32{{- else if eq $m.OutputWKT "BoolValue"}} -> bool{{- else if eq $m.OutputWKT "DoubleValue"}} -> f64{{- else if eq $m.OutputWKT "StringValue"}} -> String{{- else}} -> Vec<u8>{{- end}} {
+    let plugin = match get_{{$svc.GoName | snakeCase}}_plugin() {
+        Some(p) => p,
+        None => { set_last_error("plugin not registered".into()); {{wasmErrReturn $m}} },
+    };
+    let req = match {{$m.InputType}}::decode(data) {
+        Ok(r) => r,
+        Err(e) => { set_last_error(format!("decode: {}", e)); {{wasmErrReturn $m}} },
+    };
+{{- template "rust_wasm_invoke" $m}}
+}
+
 {{- if not (needsPbFallback $inMsg.Fields)}}
+{{- /* Lightweight typed-args variant for RPCs whose input is just scalars. */}}
+{{- /* Callers that want to avoid encoding a protobuf message can call this directly. */}}
 #[wasm_bindgen]
 pub fn {{$prefix}}_{{snakeCase $m.Name}}(
 {{- range $i, $f := $inMsg.Fields}}
@@ -540,21 +557,6 @@ pub fn {{$prefix}}_{{snakeCase $m.Name}}(
 {{- end}}
 {{- end}}
         ..Default::default()
-    };
-{{- template "rust_wasm_invoke" $m}}
-}
-
-{{- else}}
-{{- /* For RPCs with repeated/oneof/map fields, accept protobuf bytes */}}
-#[wasm_bindgen]
-pub fn {{$prefix}}_{{snakeCase $m.Name}}_pb(data: &[u8]){{- if eq $m.OutputWKT "Empty"}} {{- else if $m.OutputIsHandle}} -> i64{{- else if eq $m.OutputWKT "Int32Value"}} -> i32{{- else if eq $m.OutputWKT "BoolValue"}} -> bool{{- else if eq $m.OutputWKT "DoubleValue"}} -> f64{{- else if eq $m.OutputWKT "StringValue"}} -> String{{- else}} -> Vec<u8>{{- end}} {
-    let plugin = match get_{{$svc.GoName | snakeCase}}_plugin() {
-        Some(p) => p,
-        None => { set_last_error("plugin not registered".into()); {{wasmErrReturn $m}} },
-    };
-    let req = match {{$m.InputType}}::decode(data) {
-        Ok(r) => r,
-        Err(e) => { set_last_error(format!("decode: {}", e)); {{wasmErrReturn $m}} },
     };
 {{- template "rust_wasm_invoke" $m}}
 }

@@ -38,6 +38,7 @@ type FileData struct {
 	GoImports       []GoImport
 	PbDartFile      string
 	PbHeaderFile    string
+	PbTsLiteFile    string   // ESM import path to the lite message module, e.g. "./volvoxgrid_lite.js"
 	CppDepHeaders   []string // Additional .pb.h includes for cross-proto types
 	CppNamespace    string
 	CppGuardName    string
@@ -804,6 +805,9 @@ func main() {
 				}
 			}
 			if *lang == "typescript" || *lang == "ts" {
+				if (*mode == "" || *mode == "default") && hasGeneratedServices(f, serviceList) {
+					generateFromTemplate(gen, f, serviceList, "typescript", "lite")
+				}
 				generateFromTemplate(gen, f, serviceList, "typescript", *mode)
 			}
 			if *lang == "c" {
@@ -1242,6 +1246,10 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 			}
 			data.CSharpNamespace = strings.Join(parts, ".")
 		}
+	case "typescript", "ts":
+		// Default-mode TS imports message classes from the sibling lite module.
+		// Both files are emitted into the same output directory.
+		data.PbTsLiteFile = "./" + strings.TrimSuffix(baseProto, ".proto") + "_lite.js"
 	}
 
 	// Track Go imports for external packages
@@ -1500,6 +1508,15 @@ func shouldGenerateService(serviceName string, serviceList map[string]bool) bool
 		return true
 	}
 	return serviceList[serviceName]
+}
+
+func hasGeneratedServices(file *protogen.File, serviceList map[string]bool) bool {
+	for _, service := range file.Services {
+		if shouldGenerateService(service.GoName, serviceList) {
+			return true
+		}
+	}
+	return false
 }
 
 func addDartImport(imports map[string]bool, file *protogen.File, protoPath, dartPackage string) {
