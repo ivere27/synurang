@@ -1,3 +1,9 @@
+## 0.6.0
+
+*   **Swift Lite support**: Added zero-dependency Swift runtime packaging, Swift code generation, ProtoLite encoding/decoding, well-known type support, plugin host/stream APIs, and Swift generator/integration/stress tests.
+*   **TypeScript support**: Added TypeScript Lite schema/code generation and TypeScript FFI client generation, with generator coverage for enums, services, streaming methods, and well-known types.
+*   **Plugin cancellation callbacks**: Added `on_cancel` support for Rust and C++ plugin servers with regression tests covering cancellation callback behavior.
+
 ## 0.5.10
 
 *   **C# Lite and stream worker fixes**: Added C# Lite support for .NET 4.0, fixed `internal` visibility and `repeated int32` code generation issues, and stabilized plugin stream scheduling with a dedicated worker plus regression tests.
