@@ -123,6 +123,14 @@ type FieldData struct {
 	MessageFQN     string // FQN of message type (e.g. "pkg.TreeNode"); empty for non-message fields
 	NeedsBox       bool   // True for recursive message fields (prost wraps in Box)
 	MessageIsLocal bool   // True when this message field's type is declared in the same proto file
+	// Map-entry sub-fields. Populated only when IsMap is true. Proto3 keys
+	// are limited to integral / bool / string kinds; values can be any
+	// non-map, non-repeated scalar / enum / message.
+	MapKeyKind      string // Broad ProtoKind for the key (e.g. "string", "int32")
+	MapKeyWireKind  string // Exact WireKind for the key (e.g. "sint32", "fixed64")
+	MapValueKind    string // Broad ProtoKind for the value
+	MapValueWireKind string // Exact WireKind for the value
+	MapValueTypeName string // For enum/message values, the simple type name
 }
 
 type EnumData struct {
@@ -706,6 +714,360 @@ func tsOneofCaseValue(messageName string, f FieldData) string {
 	return tsOneofCaseEnumName(messageName, f.OneofGoName) + "." + f.GoName
 }
 
+// =============================================================================
+// Swift Lite Template Helpers
+// =============================================================================
+
+// swiftKeywords are Swift identifiers that must be backtick-escaped when used
+// as a property name, enum case, or method name.
+var swiftKeywords = map[string]bool{
+	"associatedtype": true, "class": true, "deinit": true, "enum": true,
+	"extension": true, "fileprivate": true, "func": true, "import": true,
+	"init": true, "inout": true, "internal": true, "let": true, "open": true,
+	"operator": true, "private": true, "protocol": true, "public": true,
+	"static": true, "struct": true, "subscript": true, "typealias": true,
+	"var": true, "break": true, "case": true, "continue": true, "default": true,
+	"defer": true, "do": true, "else": true, "fallthrough": true, "for": true,
+	"guard": true, "if": true, "in": true, "repeat": true, "return": true,
+	"switch": true, "where": true, "while": true, "as": true, "Any": true,
+	"catch": true, "false": true, "is": true, "nil": true, "rethrows": true,
+	"super": true, "self": true, "Self": true, "throw": true, "throws": true,
+	"true": true, "try": true,
+}
+
+func swiftEscape(name string) string {
+	if swiftKeywords[name] {
+		return "`" + name + "`"
+	}
+	return name
+}
+
+// swiftType returns the Swift type for a scalar / enum / message field.
+// Repeated arrays and optional ? are applied by the template, not here.
+func swiftType(f FieldData) string {
+	switch f.ProtoKind {
+	case "int32":
+		return "Int32"
+	case "int64":
+		return "Int64"
+	case "uint32":
+		return "UInt32"
+	case "uint64":
+		return "UInt64"
+	case "float":
+		return "Float"
+	case "double":
+		return "Double"
+	case "bool":
+		return "Bool"
+	case "string":
+		return "String"
+	case "bytes":
+		return "Data"
+	case "enum", "message":
+		return f.TypeName
+	default:
+		return "Int32"
+	}
+}
+
+// swiftDefault returns the trailing " = <value>" for a non-optional, non-repeated,
+// non-message field. Returns empty string when no default initializer applies
+// (caller must handle).
+func swiftDefault(f FieldData) string {
+	switch f.ProtoKind {
+	case "int32", "int64", "uint32", "uint64", "float", "double":
+		return " = 0"
+	case "bool":
+		return " = false"
+	case "string":
+		return ` = ""`
+	case "bytes":
+		return " = Data()"
+	case "enum":
+		zero := swiftEnumZeroCase(f.TypeName)
+		if zero == "" {
+			return ""
+		}
+		return " = ." + zero
+	default:
+		return ""
+	}
+}
+
+// swiftFieldName returns the lowerCamelCase Swift property name from a proto
+// snake_case field name, with Swift keyword escaping.
+func swiftFieldName(f FieldData) string {
+	return swiftEscape(lowerCamelFromSnake(f.Name))
+}
+
+// swiftMethodName returns the lowerCamelCase Swift method name from the proto
+// PascalCase RPC name.
+func swiftMethodName(name string) string {
+	return swiftEscape(lowerFirst(name))
+}
+
+// enumStripPrefix caches the decision (per enum) of whether to strip the
+// SCREAMING_SNAKE enum-name prefix from each value when forming Swift cases.
+// We strip only if every value yields a valid Swift identifier after
+// stripping; otherwise no value is stripped, keeping the enum self-consistent.
+// Populated in collectEnumData.
+var enumStripPrefix = map[string]bool{}
+
+func toLowerCamelFromUnderscored(s string) string {
+	parts := strings.Split(strings.ToLower(s), "_")
+	var b strings.Builder
+	wroteFirst := false
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if !wroteFirst {
+			b.WriteString(p)
+			wroteFirst = true
+		} else {
+			b.WriteString(strings.ToUpper(p[:1]))
+			b.WriteString(p[1:])
+		}
+	}
+	return b.String()
+}
+
+// swiftEnumCase returns the Swift enum case name for a proto enum value.
+// Proto convention: enum values are prefixed with the SCREAMING_SNAKE form of
+// the enum name (e.g. CellKind.CELL_KIND_UNSPECIFIED). We strip that prefix if
+// — for this enum — every value yields a valid Swift identifier after
+// stripping. Otherwise the full value name is used for every case in the enum.
+// Matches SwiftProtobuf's behavior.
+func swiftEnumCase(enumName, valueName string) string {
+	prefix := toScreamingSnake(enumName) + "_"
+	v := valueName
+	if enumStripPrefix[enumName] && strings.HasPrefix(v, prefix) {
+		v = v[len(prefix):]
+	}
+	out := toLowerCamelFromUnderscored(v)
+	if out == "" {
+		out = strings.ToLower(valueName)
+	}
+	return swiftEscape(out)
+}
+
+// enumZeroCases caches the Swift case name for the zero-value of each enum,
+// populated in collectEnumData. Keyed by EnumData.Name (Go-side identifier).
+var enumZeroCases = map[string]string{}
+
+// swiftEnumZeroCase returns the Swift case name of the zero-numbered value of
+// the named enum, used as a fallback when reading an unknown raw value.
+func swiftEnumZeroCase(enumTypeName string) string {
+	return enumZeroCases[enumTypeName]
+}
+
+// swiftOneofCase returns the Swift case identifier inside a oneof's nested
+// enum, derived from the field's Go (CamelCase) name.
+func swiftOneofCase(goName string) string {
+	return swiftEscape(lowerFirst(goName))
+}
+
+// swiftWriteCall returns the ProtoWriter method name for a scalar/enum
+// wire kind. Branches on the exact WireKind (sint32, sfixed64, ...) so
+// the generated encoder uses the correct zigzag / fixed-width path.
+// Returns "" for messages — those go through `encode(into:)` instead.
+func swiftWriteCall(wireKind string) string {
+	switch wireKind {
+	case "int32":
+		return "writeInt32"
+	case "sint32":
+		return "writeSInt32"
+	case "sfixed32":
+		return "writeSFixed32"
+	case "int64":
+		return "writeInt64"
+	case "sint64":
+		return "writeSInt64"
+	case "sfixed64":
+		return "writeSFixed64"
+	case "uint32":
+		return "writeUInt32"
+	case "fixed32":
+		return "writeFixed32"
+	case "uint64":
+		return "writeUInt64"
+	case "fixed64":
+		return "writeFixed64"
+	case "float":
+		return "writeFloat"
+	case "double":
+		return "writeDouble"
+	case "bool":
+		return "writeBool"
+	case "string":
+		return "writeString"
+	case "bytes":
+		return "writeBytes"
+	case "enum":
+		return "writeInt32"
+	default:
+		return ""
+	}
+}
+
+// swiftReadCall mirrors swiftWriteCall but returns the ProtoReader method
+// (e.g. "readSInt32"). Returns "" for messages.
+func swiftReadCall(wireKind string) string {
+	switch wireKind {
+	case "int32":
+		return "readInt32"
+	case "sint32":
+		return "readSInt32"
+	case "sfixed32":
+		return "readSFixed32"
+	case "int64":
+		return "readInt64"
+	case "sint64":
+		return "readSInt64"
+	case "sfixed64":
+		return "readSFixed64"
+	case "uint32":
+		return "readUInt32"
+	case "fixed32":
+		return "readFixed32"
+	case "uint64":
+		return "readUInt64"
+	case "fixed64":
+		return "readFixed64"
+	case "float":
+		return "readFloat"
+	case "double":
+		return "readDouble"
+	case "bool":
+		return "readBool"
+	case "string":
+		return "readString"
+	case "bytes":
+		return "readBytes"
+	case "enum":
+		return "readInt32"
+	default:
+		return ""
+	}
+}
+
+// swiftScalarWire returns the WireType enum case for the non-packed wire
+// of a scalar/enum kind. Used by packed-repeated dispatch to detect "this
+// is one element, read scalar" vs ".lengthDelimited, read packed body".
+func swiftScalarWire(wireKind string) string {
+	switch wireKind {
+	case "fixed32", "sfixed32", "float":
+		return ".fixed32"
+	case "fixed64", "sfixed64", "double":
+		return ".fixed64"
+	case "string", "bytes", "message":
+		return ".lengthDelimited"
+	default:
+		return ".varint"
+	}
+}
+
+// swiftMapKeyType returns the Swift dictionary key type for a map field.
+// Proto3 keys are restricted to integral / bool / string kinds.
+func swiftMapKeyType(f FieldData) string {
+	switch f.MapKeyKind {
+	case "int32":
+		return "Int32"
+	case "int64":
+		return "Int64"
+	case "uint32":
+		return "UInt32"
+	case "uint64":
+		return "UInt64"
+	case "bool":
+		return "Bool"
+	case "string":
+		return "String"
+	default:
+		return "String"
+	}
+}
+
+// swiftMapValueType returns the Swift dictionary value type for a map
+// field. Message and enum values use their simple type name; scalars map
+// to Swift's native numeric types.
+func swiftMapValueType(f FieldData) string {
+	switch f.MapValueKind {
+	case "int32":
+		return "Int32"
+	case "int64":
+		return "Int64"
+	case "uint32":
+		return "UInt32"
+	case "uint64":
+		return "UInt64"
+	case "float":
+		return "Float"
+	case "double":
+		return "Double"
+	case "bool":
+		return "Bool"
+	case "string":
+		return "String"
+	case "bytes":
+		return "Data"
+	case "enum", "message":
+		return f.MapValueTypeName
+	default:
+		return "Int32"
+	}
+}
+
+// swiftMapKeyDefault / swiftMapValueDefault return a Swift expression for
+// the proto3 default value of a map key/value. Used to initialise the
+// loop-local accumulators when decoding a map entry.
+func swiftMapKeyDefault(f FieldData) string {
+	return swiftKindDefault(f.MapKeyKind, "")
+}
+
+func swiftMapValueDefault(f FieldData) string {
+	return swiftKindDefault(f.MapValueKind, f.MapValueTypeName)
+}
+
+func swiftKindDefault(kind, typeName string) string {
+	switch kind {
+	case "int32", "int64", "uint32", "uint64", "float", "double":
+		return "0"
+	case "bool":
+		return "false"
+	case "string":
+		return `""`
+	case "bytes":
+		return "Data()"
+	case "enum":
+		zero := swiftEnumZeroCase(typeName)
+		if zero == "" {
+			return typeName + "(rawValue: 0)!"
+		}
+		return "." + zero
+	case "message":
+		return typeName + "()"
+	default:
+		return "0"
+	}
+}
+
+// swiftNotDefault returns the Swift expression that's true when `expr` is
+// not at its proto3 default. Used to gate "skip default when serializing".
+func swiftNotDefault(kind, expr string) string {
+	switch kind {
+	case "bool":
+		return expr
+	case "string", "bytes":
+		return "!" + expr + ".isEmpty"
+	case "enum":
+		return expr + ".rawValue != 0"
+	default:
+		return expr + " != 0"
+	}
+}
+
 func init() {
 	funcs := template.FuncMap{
 		"snakeCase":        toSnakeCase,
@@ -745,6 +1107,23 @@ func init() {
 		"tsOneofCaseEnumName": tsOneofCaseEnumName,
 		"tsOneofCaseProperty": tsOneofCaseProperty,
 		"tsOneofCaseValue":    tsOneofCaseValue,
+		// Swift lite template functions
+		"swiftType":            swiftType,
+		"swiftEscape":          swiftEscape,
+		"swiftDefault":         swiftDefault,
+		"swiftFieldName":       swiftFieldName,
+		"swiftMethodName":      swiftMethodName,
+		"swiftEnumCase":        swiftEnumCase,
+		"swiftEnumZeroCase":    swiftEnumZeroCase,
+		"swiftOneofCase":       swiftOneofCase,
+		"swiftWriteCall":       swiftWriteCall,
+		"swiftReadCall":        swiftReadCall,
+		"swiftScalarWire":      swiftScalarWire,
+		"swiftMapKeyType":      swiftMapKeyType,
+		"swiftMapValueType":    swiftMapValueType,
+		"swiftMapKeyDefault":   swiftMapKeyDefault,
+		"swiftMapValueDefault": swiftMapValueDefault,
+		"swiftNotDefault":      swiftNotDefault,
 	}
 	var err error
 	templates, err = template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
@@ -759,7 +1138,7 @@ func init() {
 
 func main() {
 	var flags flag.FlagSet
-	lang := flags.String("lang", "", "language to generate (go, dart, cpp, c, rust, java, csharp, or typescript)")
+	lang := flags.String("lang", "", "language to generate (go, dart, cpp, c, rust, java, csharp, typescript, or swift)")
 	mode := flags.String("mode", "default", "generation mode: default, plugin_server, plugin_client, native, wasm, lite")
 	dartPackage := flags.String("dart_package", "", "Dart package name for imports")
 	javaPackage := flags.String("java_package", "", "Java package name for generated classes")
@@ -812,6 +1191,13 @@ func main() {
 			}
 			if *lang == "c" {
 				generateFromTemplate(gen, f, serviceList, "c", *mode)
+			}
+			if *lang == "swift" {
+				if *mode == "lite" {
+					generateFromTemplate(gen, f, serviceList, "swift", "lite")
+				} else {
+					generateFromTemplate(gen, f, serviceList, "swift", *mode)
+				}
 			}
 		}
 		return nil
@@ -911,6 +1297,8 @@ func selectTemplate(lang, modeOrOpt string) string {
 			return "typescript_lite.ts.tmpl"
 		}
 		return "typescript.ts.tmpl"
+	case "swift":
+		return "swift_lite.swift.tmpl"
 	}
 	return ""
 }
@@ -961,6 +1349,8 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 			return base + "_lite.cs"
 		case "typescript", "ts":
 			return base + "_lite.ts"
+		case "swift":
+			return base + "_lite.swift"
 		}
 	}
 
@@ -981,6 +1371,8 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 		return base + "_ffi.cs"
 	case "typescript", "ts":
 		return base + "_ffi.ts"
+	case "swift":
+		return base + "_ffi.swift"
 	}
 	return base + "_ffi"
 }
@@ -1079,9 +1471,81 @@ func messageDataFromProtogen(msg *protogen.Message) MessageData {
 		if field.Desc.HasOptionalKeyword() {
 			fd.IsOptional = true
 		}
+		if fd.IsMap && field.Message != nil {
+			// Map fields synthesize a hidden MapEntry message with `key` at
+			// tag 1 and `value` at tag 2. Surface those into FieldData so
+			// templates can emit native dictionary types without re-deriving
+			// from the entry message. ProtoKind / WireKind / IsRepeated are
+			// left as protobuf-go set them (kind=message, repeated=false)
+			// so existing templates branch consistently.
+			for _, sub := range field.Message.Fields {
+				kind, wire, typeName := classifyField(sub)
+				switch sub.Desc.Number() {
+				case 1:
+					fd.MapKeyKind = kind
+					fd.MapKeyWireKind = wire
+				case 2:
+					fd.MapValueKind = kind
+					fd.MapValueWireKind = wire
+					fd.MapValueTypeName = typeName
+				}
+			}
+		}
 		md.Fields = append(md.Fields, fd)
 	}
 	return md
+}
+
+// classifyField returns the ProtoKind / WireKind / TypeName triple for a
+// single protogen field. Extracted from messageDataFromProtogen so map
+// sub-fields can be classified without a recursive FieldData build.
+func classifyField(field *protogen.Field) (kind string, wire string, typeName string) {
+	switch field.Desc.Kind() {
+	case protoreflect.BoolKind:
+		return "bool", "bool", ""
+	case protoreflect.Int32Kind:
+		return "int32", "int32", ""
+	case protoreflect.Sint32Kind:
+		return "int32", "sint32", ""
+	case protoreflect.Sfixed32Kind:
+		return "int32", "sfixed32", ""
+	case protoreflect.Int64Kind:
+		return "int64", "int64", ""
+	case protoreflect.Sint64Kind:
+		return "int64", "sint64", ""
+	case protoreflect.Sfixed64Kind:
+		return "int64", "sfixed64", ""
+	case protoreflect.Uint32Kind:
+		return "uint32", "uint32", ""
+	case protoreflect.Fixed32Kind:
+		return "uint32", "fixed32", ""
+	case protoreflect.Uint64Kind:
+		return "uint64", "uint64", ""
+	case protoreflect.Fixed64Kind:
+		return "uint64", "fixed64", ""
+	case protoreflect.FloatKind:
+		return "float", "float", ""
+	case protoreflect.DoubleKind:
+		return "double", "double", ""
+	case protoreflect.StringKind:
+		return "string", "string", ""
+	case protoreflect.BytesKind:
+		return "bytes", "bytes", ""
+	case protoreflect.EnumKind:
+		name := ""
+		if field.Enum != nil {
+			name = field.Enum.GoIdent.GoName
+		}
+		return "enum", "enum", name
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		name := ""
+		if field.Message != nil {
+			name = field.Message.GoIdent.GoName
+		}
+		return "message", "message", name
+	default:
+		return "unknown", "unknown", ""
+	}
 }
 
 // collectMessage converts a *protogen.Message into MessageData and adds it to
@@ -1128,6 +1592,38 @@ func collectEnumData(out *[]EnumData, enum *protogen.Enum, visited map[string]bo
 			Name:   string(value.Desc.Name()),
 			Number: int32(value.Desc.Number()),
 		})
+	}
+	// Decide once whether to strip the enum's SCREAMING_SNAKE prefix when
+	// forming Swift case names: strip only if every value yields a valid
+	// Swift identifier (non-empty, non-digit-leading) after stripping.
+	if _, cached := enumStripPrefix[data.Name]; !cached {
+		prefix := toScreamingSnake(data.Name) + "_"
+		strip := true
+		for _, v := range data.Values {
+			rest := v.Name
+			if strings.HasPrefix(rest, prefix) {
+				rest = rest[len(prefix):]
+			} else {
+				strip = false
+				break
+			}
+			if rest == "" || (rest[0] >= '0' && rest[0] <= '9') {
+				strip = false
+				break
+			}
+		}
+		enumStripPrefix[data.Name] = strip
+	}
+	// Cache the Swift case name of the zero-numbered value for the Swift
+	// lite template's `swiftEnumZeroCase` helper. Must run after the
+	// strip decision above so swiftEnumCase sees it.
+	if _, cached := enumZeroCases[data.Name]; !cached {
+		for _, v := range data.Values {
+			if v.Number == 0 {
+				enumZeroCases[data.Name] = swiftEnumCase(data.Name, v.Name)
+				break
+			}
+		}
 	}
 	*out = append(*out, data)
 }
@@ -1354,7 +1850,7 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 	}
 	markBoxFields(data.Messages)
 
-	needsLocalTypes := lang == "typescript" || (lang == "csharp" && modeOrOpt == "lite")
+	needsLocalTypes := lang == "typescript" || (lang == "csharp" && modeOrOpt == "lite") || (lang == "swift" && modeOrOpt == "lite")
 	if needsLocalTypes {
 		localMsgVisited := make(map[string]bool)
 		for _, msg := range file.Messages {

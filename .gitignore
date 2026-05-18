@@ -33,6 +33,7 @@
 /test/host/cpp/build/
 /test/host/java/build/
 /test/host/rust/Cargo.lock
+/test/generated_swift/
 /crates/synurang-host/Cargo.lock
 
 # Java build artifacts
@@ -84,3 +85,7 @@ example/android/app/src/main/jniLibs/
 # Generated
 /build/
 /tcp_process_child
+
+# SwiftPM build artifacts
+/swift/.build/
+/swift/.swiftpm/

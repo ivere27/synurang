@@ -55,7 +55,7 @@ DESKTOP_GROUP_ID ?= io.github.ivere27
 DESKTOP_ARTIFACT_ID_CORE ?= synurang-desktop
 DESKTOP_ARTIFACT_ID_GRPC ?= synurang-desktop-grpc
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar
 
 # =============================================================================
 # Default Target
@@ -359,8 +359,8 @@ build_plugin_host:
 # Tests
 # =============================================================================
 
-# Run all tests (Go + Dart + C++ + Rust + Native/WASM + TypeScript + C# + Plugin)
-test: test_go test_dart test_cpp test_rust test_native_wasm_gen test_typescript_gen test_csharp test_plugin
+# Run all tests (Go + Dart + C++ + Rust + Native/WASM + TypeScript + C# + Swift + Plugin)
+test: test_go test_dart test_cpp test_rust test_native_wasm_gen test_typescript_gen test_csharp test_swift test_plugin
 	@echo "All tests complete."
 
 # C++ Tests (Generation + FFI)
@@ -402,6 +402,16 @@ test_typescript_gen:
 	@echo "Running TypeScript generation tests..."
 	./test/test_typescript_gen.sh
 	@echo "TypeScript generation tests complete."
+
+# Swift Tests (Generation + FFI host)
+test_swift: test_swift_gen test_host_swift
+	@echo "All Swift tests complete."
+
+# Swift codegen tests
+test_swift_gen:
+	@echo "Running Swift generation tests..."
+	./test/test_swift_gen.sh
+	@echo "Swift generation tests complete."
 
 # Rust FFI Integration tests (Mock Backend)
 test_rust_ffi:
@@ -624,10 +634,43 @@ test_bruteforce_hybrid_csharp: build_plugin_all build_host_csharp_brute $(if $(f
 
 test_bruteforce_csharp: test_bruteforce_hybrid_csharp
 
+# Swift host tests run inside the swift:5.9 Docker image — keeps the toolchain
+# off the developer's machine. Override SWIFT_DOCKER_IMAGE to pin a different
+# tag; override SWIFT_PLUGIN to point at a non-Go plugin shared library.
+SWIFT_DOCKER_IMAGE ?= swift:5.9
+SWIFT_PLUGIN ?= /work/bin/libplugin_go.so
+
+# Swift host loading plugins (mirrors test_host_csharp). Builds the Go plugin
+# first because the swift:5.9 image is missing libprotobuf for the C++ plugin;
+# Go and Rust plugins are statically linked and work out of the box.
+test_host_swift: build_plugin_go
+	@echo "Testing Swift host (in $(SWIFT_DOCKER_IMAGE) Docker)..."
+	docker run --rm \
+		-v $(CURRENT_DIR):/work -w /work/swift \
+		-e SYNURANG_TEST_PLUGIN_PATH=$(SWIFT_PLUGIN) \
+		$(SWIFT_DOCKER_IMAGE) swift test
+
+# Swift host brute-force (supports BRUTE_MODE=ffi only — Swift has no process
+# host yet). Reuses the same env vars as the C#/Java brute targets.
+test_bruteforce_hybrid_swift: build_plugin_go
+	@echo "Running Swift hybrid brute-force (in $(SWIFT_DOCKER_IMAGE) Docker)..."
+	docker run --rm \
+		-v $(CURRENT_DIR):/work -w /work/swift \
+		-e SYNURANG_TEST_PLUGIN_PATH=$(SWIFT_PLUGIN) \
+		-e SYNURANG_BRUTE=1 \
+		-e SYNURANG_BRUTE_DURATION=$(BRUTE_DURATION) \
+		-e SYNURANG_BRUTE_WORKERS=$(BRUTE_WORKERS) \
+		-e SYNURANG_BRUTE_MAX_FD_DELTA=$(BRUTE_MAX_FD_DELTA) \
+		-e SYNURANG_BRUTE_MAX_RSS_MB_DELTA=$(BRUTE_MAX_RSS_MB_DELTA) \
+		$(SWIFT_DOCKER_IMAGE) swift test --filter PluginStressTests
+
+test_bruteforce_swift: test_bruteforce_hybrid_swift
+
 # Run all brute-force tests (all modes × all languages)
 .PHONY: test_bruteforce test_bruteforce_process_go test_bruteforce_process_cpp test_bruteforce_process_rust \
         test_bruteforce_plugin_go test_bruteforce_plugin_cpp test_bruteforce_plugin_rust \
-        test_bruteforce_hybrid_dart test_bruteforce_hybrid_java test_bruteforce_hybrid_csharp
+        test_bruteforce_hybrid_dart test_bruteforce_hybrid_java test_bruteforce_hybrid_csharp \
+        test_bruteforce_hybrid_swift test_bruteforce_swift test_host_swift
 test_bruteforce:
 	@$(MAKE) test_bruteforce_process_go
 	@$(MAKE) test_bruteforce_process_cpp
@@ -638,6 +681,7 @@ test_bruteforce:
 	@$(MAKE) test_bruteforce_hybrid_dart
 	@$(MAKE) test_bruteforce_hybrid_java
 	@$(MAKE) test_bruteforce_hybrid_csharp
+	@$(MAKE) test_bruteforce_hybrid_swift
 	@echo "All brute-force tests complete."
 
 test_bruteforce_host: test_bruteforce
@@ -784,15 +828,15 @@ build_plugin_all: build_plugin_go build_plugin_cpp build_plugin_rust
 
 # Test all plugins together (loads Go, C++, Rust plugins × all host languages)
 test_plugin_all: test_host_all
-	@echo "All plugin tests complete (Go, C++, Rust plugins × Go, C++, Rust, Java, C# hosts)."
+	@echo "All plugin tests complete (Go, C++, Rust plugins × Go, C++, Rust, Java, C#, Swift hosts)."
 
 # =============================================================================
 # Host Mode (C++/Rust/Java parents loading plugins)
 # =============================================================================
 
-# Test all hosts (Go, C++, Rust, Java, C# parents)
-test_host_all: test_host_go test_host_cpp test_host_rust test_host_java test_host_csharp
-	@echo "All host tests complete (Go, C++, Rust, Java, C# parents × Go, C++, Rust plugins)"
+# Test all hosts (Go, C++, Rust, Java, C#, Swift parents)
+test_host_all: test_host_go test_host_cpp test_host_rust test_host_java test_host_csharp test_host_swift
+	@echo "All host tests complete (Go, C++, Rust, Java, C#, Swift parents × plugins)"
 
 # Go host loading plugins (uses Go's native gRPC server test)
 test_host_go: build_plugin_all
@@ -1028,18 +1072,20 @@ help:
 	@echo "  publish_maven     - Upload all bundles (AAR + desktop JAR) to Maven Central"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Native/WASM + C# + Plugin)"
+	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Native/WASM + C# + Swift + Plugin)"
 	@echo "  test_ffi          - Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)"
 	@echo "  test_ffi_{go,cpp,rust,java,dart,csharp} - Run individual FFI API test"
 	@echo "  test_go           - Run Go tests only"
 	@echo "  test_dart         - Run Dart tests only"
 	@echo "  test_plugin       - Run plugin FFI tests (test/plugin)"
-	@echo "  test_plugin_all   - Test all plugins × all hosts (Go,C++,Rust × Go,C++,Rust,Java,C#)"
+	@echo "  test_plugin_all   - Test all plugins × all hosts (Go,C++,Rust × Go,C++,Rust,Java,C#,Swift)"
 	@echo "  test_cpp          - Run C++ tests (gen + FFI)"
 	@echo "  test_rust         - Run Rust tests (gen + FFI)"
 	@echo "  test_native_wasm_gen - Run native/wasm codegen checks"
 	@echo "  test_typescript_gen - Run TypeScript codegen checks"
 	@echo "  test_csharp       - Run C# tests (gen + FFI API)"
+	@echo "  test_swift        - Run Swift tests (gen + Docker FFI host)"
+	@echo "  test_swift_gen    - Run Swift codegen checks"
 	@echo "  test_bruteforce_process_go   - Go host managing Go/C++/Rust children"
 	@echo "  test_bruteforce_process_cpp  - C++ host managing Go/C++/Rust children"
 	@echo "  test_bruteforce_process_rust - Rust host managing Go/C++/Rust children"
@@ -1049,6 +1095,7 @@ help:
 	@echo "  test_bruteforce_dart         - Dart hybrid test (Plugin + TCP Process)"
 	@echo "  test_bruteforce_java         - Java hybrid test (Plugin + TCP Process)"
 	@echo "  test_bruteforce_csharp       - C# hybrid test (Plugin + TCP Process)"
+	@echo "  test_bruteforce_swift        - Swift FFI brute-force (Docker, plugin only)"
 	@echo "  test_bruteforce              - Run all brute-force tests above"
 	@echo ""
 	@echo "Host Mode (Polyglot Parents):"
@@ -1058,6 +1105,7 @@ help:
 	@echo "  test_host_rust    - Test Rust parent loading plugins"
 	@echo "  test_host_java    - Test Java parent loading plugins"
 	@echo "  test_host_csharp  - Test C# parent loading plugins"
+	@echo "  test_host_swift   - Test Swift parent loading plugins (in swift:5.9 Docker)"
 	@echo ""
 	@echo "Plugin Mode:"
 	@echo "  build_plugin_all  - Build all plugins (Go, C++, Rust)"
@@ -1090,5 +1138,7 @@ help:
 	@echo "  make run_android MODE=release  # Flutter app"
 	@echo "  make run_android_java          # Java/Kotlin app"
 	@echo "  make test_host_java            # Java host test (desktop)"
+	@echo "  make test_host_swift           # Swift host test (Docker swift:5.9)"
+	@echo "  make test_bruteforce_swift BRUTE_DURATION=30s # Swift FFI stress, 30s"
 	@echo "  make docker_android_aar AAR_VERSION=0.5.10 # Build core + grpc AAR bundles"
 	@echo "  make docker_android_aar_debug AAR_VERSION=0.5.11-SNAPSHOT # Build debug AAR bundles"
