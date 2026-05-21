@@ -34,16 +34,18 @@ type FileData struct {
 	DartPackage   string
 	JavaPackage   string
 	// For imports
-	ExternalImports []string
-	GoImports       []GoImport
-	PbDartFile      string
-	PbHeaderFile    string
-	PbTsLiteFile    string   // ESM import path to the lite message module, e.g. "./volvoxgrid_lite.js"
-	CppDepHeaders   []string // Additional .pb.h includes for cross-proto types
-	CppNamespace    string
-	CppGuardName    string
-	RustModPath     string
-	CSharpNamespace string
+	ExternalImports   []string
+	GoImports         []GoImport
+	PbDartFile        string
+	PbHeaderFile      string
+	PbTsLiteFile      string   // ESM import path to the lite message module, e.g. "./volvoxgrid_lite.js"
+	CppDepHeaders     []string // Additional .pb.h includes for cross-proto types
+	CppLiteDepHeaders []string // Additional *_lite.hpp includes for cross-proto lite types
+	CppNamespace      string
+	CppNamespaceParts []string // CppNamespace split on "::" — used by cpp_lite to emit C++11-compatible nested-namespace blocks.
+	CppGuardName      string
+	RustModPath       string
+	CSharpNamespace   string
 	// Message field data (for native/wasm templates)
 	Messages      map[string]MessageData
 	LocalMessages []MessageData
@@ -90,6 +92,8 @@ type MethodData struct {
 	InputTypeKey      string // FQN key for Messages map lookup (e.g., "a.v1.Common")
 	InputCppType      string // Fully-qualified C++ input type (e.g., "::google::protobuf::Empty")
 	OutputCppType     string // Fully-qualified C++ output type
+	InputLiteType     string // Fully-qualified C++ lite input type
+	OutputLiteType    string // Fully-qualified C++ lite output type
 	InputGoIdent      string // Qualified Go type (e.g., "empty.Empty" or "HelloRequest")
 	OutputGoIdent     string // Qualified Go type
 	IsServerStreaming bool
@@ -113,6 +117,8 @@ type FieldData struct {
 	ProtoKind      string // Broad type kind: "int32", "int64", "uint32", "uint64", "float", "double", "bool", "string", "bytes", "enum", "message"
 	WireKind       string // Exact protobuf wire kind for TypeScript lite (e.g. "sint32", "fixed64", "sfixed32")
 	TypeName       string // For enum/message: the simple type name
+	TypeFQN        string // For enum/message: the protobuf FQN
+	TypeIsLocal    bool   // For enum/message: true when declared in the same proto file
 	IsRepeated     bool
 	IsMap          bool
 	IsOneof        bool
@@ -126,11 +132,13 @@ type FieldData struct {
 	// Map-entry sub-fields. Populated only when IsMap is true. Proto3 keys
 	// are limited to integral / bool / string kinds; values can be any
 	// non-map, non-repeated scalar / enum / message.
-	MapKeyKind      string // Broad ProtoKind for the key (e.g. "string", "int32")
-	MapKeyWireKind  string // Exact WireKind for the key (e.g. "sint32", "fixed64")
-	MapValueKind    string // Broad ProtoKind for the value
+	MapKeyKind       string // Broad ProtoKind for the key (e.g. "string", "int32")
+	MapKeyWireKind   string // Exact WireKind for the key (e.g. "sint32", "fixed64")
+	MapValueKind     string // Broad ProtoKind for the value
 	MapValueWireKind string // Exact WireKind for the value
 	MapValueTypeName string // For enum/message values, the simple type name
+	MapValueFQN      string // For enum/message values, the protobuf FQN
+	MapValueIsLocal  bool   // For enum/message values, true when declared in the same proto file
 }
 
 type EnumData struct {
@@ -1068,6 +1076,323 @@ func swiftNotDefault(kind, expr string) string {
 	}
 }
 
+// cppKeywords is the set of identifiers reserved by C++ that may collide
+// with proto field names (lower-case proto names only — proto field names
+// are conventionally snake_case so we don't worry about Pascal-cased ones).
+var cppKeywords = map[string]struct{}{
+	"alignas": {}, "alignof": {}, "and": {}, "and_eq": {}, "asm": {},
+	"auto": {}, "bitand": {}, "bitor": {}, "bool": {}, "break": {},
+	"case": {}, "catch": {}, "char": {}, "char8_t": {}, "char16_t": {},
+	"char32_t": {}, "class": {}, "compl": {}, "concept": {}, "const": {},
+	"consteval": {}, "constexpr": {}, "constinit": {}, "const_cast": {},
+	"continue": {}, "co_await": {}, "co_return": {}, "co_yield": {},
+	"decltype": {}, "default": {}, "delete": {}, "do": {}, "double": {},
+	"dynamic_cast": {}, "else": {}, "enum": {}, "explicit": {}, "export": {},
+	"extern": {}, "false": {}, "float": {}, "for": {}, "friend": {},
+	"goto": {}, "if": {}, "inline": {}, "int": {}, "long": {}, "mutable": {},
+	"namespace": {}, "new": {}, "noexcept": {}, "not": {}, "not_eq": {},
+	"nullptr": {}, "operator": {}, "or": {}, "or_eq": {}, "private": {},
+	"protected": {}, "public": {}, "register": {}, "reinterpret_cast": {},
+	"requires": {}, "return": {}, "short": {}, "signed": {}, "sizeof": {},
+	"static": {}, "static_assert": {}, "static_cast": {}, "struct": {},
+	"switch": {}, "template": {}, "this": {}, "thread_local": {}, "throw": {},
+	"true": {}, "try": {}, "typedef": {}, "typeid": {}, "typename": {},
+	"union": {}, "unsigned": {}, "using": {}, "virtual": {}, "void": {},
+	"volatile": {}, "wchar_t": {}, "while": {}, "xor": {}, "xor_eq": {},
+}
+
+// cppFieldName returns a safe C++ identifier for a proto field name,
+// appending a trailing underscore when the name collides with a C++
+// keyword (e.g. `delete` -> `delete_`).
+func cppFieldName(name string) string {
+	if _, ok := cppKeywords[name]; ok {
+		return name + "_"
+	}
+	return name
+}
+
+var cppLiteWellKnownTypes = map[string]string{
+	"google.protobuf.Empty":       "::synurang::lite::Empty",
+	"google.protobuf.Int32Value":  "::synurang::lite::Int32Value",
+	"google.protobuf.Int64Value":  "::synurang::lite::Int64Value",
+	"google.protobuf.UInt32Value": "::synurang::lite::UInt32Value",
+	"google.protobuf.UInt64Value": "::synurang::lite::UInt64Value",
+	"google.protobuf.BoolValue":   "::synurang::lite::BoolValue",
+	"google.protobuf.FloatValue":  "::synurang::lite::FloatValue",
+	"google.protobuf.DoubleValue": "::synurang::lite::DoubleValue",
+	"google.protobuf.StringValue": "::synurang::lite::StringValue",
+	"google.protobuf.BytesValue":  "::synurang::lite::BytesValue",
+	"google.protobuf.Timestamp":   "::synurang::lite::Timestamp",
+	"google.protobuf.Duration":    "::synurang::lite::Duration",
+}
+
+func cppLiteQualifiedType(typeName, typeFQN string, isLocal bool) string {
+	if typeName == "" {
+		return "int32_t"
+	}
+	if wkt, ok := cppLiteWellKnownTypes[typeFQN]; ok {
+		return wkt
+	}
+	if isLocal || typeFQN == "" {
+		return typeName
+	}
+	parts := strings.Split(typeFQN, ".")
+	if len(parts) <= 1 {
+		return typeName
+	}
+	return "::" + strings.Join(parts[:len(parts)-1], "::") + "::" + typeName
+}
+
+func cppLiteMessageType(msg *protogen.Message, currentFile *protogen.File) string {
+	if msg == nil {
+		return "int32_t"
+	}
+	typeFQN := string(msg.Desc.FullName())
+	isLocal := msg.Desc.ParentFile().Path() == currentFile.Desc.Path()
+	return cppLiteQualifiedType(msg.GoIdent.GoName, typeFQN, isLocal)
+}
+
+// cppLiteType returns the C++ scalar/enum/message type for a field (no
+// optional/vector wrapper — that's applied by the template).
+func cppLiteType(f FieldData) string {
+	switch f.ProtoKind {
+	case "int32":
+		return "int32_t"
+	case "int64":
+		return "int64_t"
+	case "uint32":
+		return "uint32_t"
+	case "uint64":
+		return "uint64_t"
+	case "float":
+		return "float"
+	case "double":
+		return "double"
+	case "bool":
+		return "bool"
+	case "string":
+		return "std::string"
+	case "bytes":
+		return "std::vector<uint8_t>"
+	case "enum", "message":
+		return cppLiteQualifiedType(f.TypeName, f.TypeFQN, f.TypeIsLocal)
+	default:
+		return "int32_t"
+	}
+}
+
+func cppLiteMapKeyType(f FieldData) string {
+	return cppLiteKindType(f.MapKeyKind, "", "", true)
+}
+
+func cppLiteMapValueType(f FieldData) string {
+	return cppLiteKindType(f.MapValueKind, f.MapValueTypeName, f.MapValueFQN, f.MapValueIsLocal)
+}
+
+func cppLiteKindType(kind, typeName, typeFQN string, isLocal bool) string {
+	switch kind {
+	case "int32":
+		return "int32_t"
+	case "int64":
+		return "int64_t"
+	case "uint32":
+		return "uint32_t"
+	case "uint64":
+		return "uint64_t"
+	case "float":
+		return "float"
+	case "double":
+		return "double"
+	case "bool":
+		return "bool"
+	case "string":
+		return "std::string"
+	case "bytes":
+		return "std::vector<uint8_t>"
+	case "enum", "message":
+		return cppLiteQualifiedType(typeName, typeFQN, isLocal)
+	default:
+		return "int32_t"
+	}
+}
+
+// cppLiteScalarDefault returns the literal default for a scalar proto kind
+// (used to initialize singular non-message fields in struct declarations).
+func cppLiteScalarDefault(protoKind string) string {
+	switch protoKind {
+	case "bool":
+		return "false"
+	case "float":
+		return "0.0f"
+	case "double":
+		return "0.0"
+	default:
+		return "0"
+	}
+}
+
+func cppLiteKindDefault(kind, typeName, typeFQN string, isLocal bool) string {
+	switch kind {
+	case "bool":
+		return "false"
+	case "float":
+		return "0.0f"
+	case "double":
+		return "0.0"
+	case "string":
+		return "std::string()"
+	case "bytes":
+		return "std::vector<uint8_t>()"
+	case "enum":
+		typ := cppLiteQualifiedType(typeName, typeFQN, isLocal)
+		return "static_cast<" + typ + ">(0)"
+	case "message":
+		return cppLiteQualifiedType(typeName, typeFQN, isLocal) + "()"
+	default:
+		return "0"
+	}
+}
+
+func cppLiteMapKeyDefault(f FieldData) string {
+	return cppLiteKindDefault(f.MapKeyKind, "", "", true)
+}
+
+func cppLiteMapValueDefault(f FieldData) string {
+	return cppLiteKindDefault(f.MapValueKind, f.MapValueTypeName, f.MapValueFQN, f.MapValueIsLocal)
+}
+
+func cppLiteNotDefault(kind, expr string) string {
+	switch kind {
+	case "bool":
+		return expr
+	case "float":
+		return expr + " != 0.0f"
+	case "double":
+		return expr + " != 0.0"
+	case "string", "bytes":
+		return "!" + expr + ".empty()"
+	case "enum":
+		return "static_cast<int32_t>(" + expr + ") != 0"
+	default:
+		return expr + " != 0"
+	}
+}
+
+// cppLiteWriteCall returns the ProtoWriter method name for a scalar/enum
+// wire kind (e.g. "write_sint32", "write_fixed64"). Empty for messages.
+func cppLiteWriteCall(wireKind string) string {
+	switch wireKind {
+	case "int32":
+		return "write_int32"
+	case "sint32":
+		return "write_sint32"
+	case "sfixed32":
+		return "write_sfixed32"
+	case "int64":
+		return "write_int64"
+	case "sint64":
+		return "write_sint64"
+	case "sfixed64":
+		return "write_sfixed64"
+	case "uint32":
+		return "write_uint32"
+	case "fixed32":
+		return "write_fixed32"
+	case "uint64":
+		return "write_uint64"
+	case "fixed64":
+		return "write_fixed64"
+	case "float":
+		return "write_float"
+	case "double":
+		return "write_double"
+	case "bool":
+		return "write_bool"
+	case "string":
+		return "write_string"
+	case "bytes":
+		return "write_bytes"
+	case "enum":
+		return "write_int32"
+	default:
+		return ""
+	}
+}
+
+// cppLiteReadCall mirrors cppLiteWriteCall but returns the ProtoReader
+// method name (e.g. "read_sint32"). Empty for messages.
+func cppLiteReadCall(wireKind string) string {
+	switch wireKind {
+	case "int32":
+		return "read_int32"
+	case "sint32":
+		return "read_sint32"
+	case "sfixed32":
+		return "read_sfixed32"
+	case "int64":
+		return "read_int64"
+	case "sint64":
+		return "read_sint64"
+	case "sfixed64":
+		return "read_sfixed64"
+	case "uint32":
+		return "read_uint32"
+	case "fixed32":
+		return "read_fixed32"
+	case "uint64":
+		return "read_uint64"
+	case "fixed64":
+		return "read_fixed64"
+	case "float":
+		return "read_float"
+	case "double":
+		return "read_double"
+	case "bool":
+		return "read_bool"
+	case "string":
+		return "read_string"
+	case "bytes":
+		return "read_bytes"
+	case "enum":
+		return "read_int32"
+	default:
+		return ""
+	}
+}
+
+// cppLitePackable returns "true" if a repeated scalar of this wire kind can
+// appear in packed form on the wire (varint/fixed32/fixed64). Used by the
+// repeated-decode switch to detect "packed body" vs "single element" tags.
+func cppLitePackable(wireKind string) string {
+	switch wireKind {
+	case "string", "bytes", "message":
+		return "false"
+	default:
+		return "true"
+	}
+}
+
+func cppGuardName(filename string) string {
+	base := strings.TrimSuffix(filename, path.Ext(filename))
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - 'a' + 'A')
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "SYNURANG_FFI_H_"
+	}
+	return b.String() + "_H_"
+}
+
 func init() {
 	funcs := template.FuncMap{
 		"snakeCase":        toSnakeCase,
@@ -1124,6 +1449,18 @@ func init() {
 		"swiftMapKeyDefault":   swiftMapKeyDefault,
 		"swiftMapValueDefault": swiftMapValueDefault,
 		"swiftNotDefault":      swiftNotDefault,
+		// C++ lite template functions
+		"cppFieldName":           cppFieldName,
+		"cppLiteType":            cppLiteType,
+		"cppLiteMapKeyType":      cppLiteMapKeyType,
+		"cppLiteMapValueType":    cppLiteMapValueType,
+		"cppLiteScalarDefault":   cppLiteScalarDefault,
+		"cppLiteMapKeyDefault":   cppLiteMapKeyDefault,
+		"cppLiteMapValueDefault": cppLiteMapValueDefault,
+		"cppLiteNotDefault":      cppLiteNotDefault,
+		"cppLiteWriteCall":       cppLiteWriteCall,
+		"cppLiteReadCall":        cppLiteReadCall,
+		"cppLitePackable":        cppLitePackable,
 	}
 	var err error
 	templates, err = template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.tmpl")
@@ -1264,6 +1601,8 @@ func selectTemplate(lang, modeOrOpt string) string {
 		switch modeOrOpt {
 		case "plugin_server":
 			return "cpp_plugin_server.cc.tmpl"
+		case "lite":
+			return "cpp_lite.hpp.tmpl"
 		default:
 			return "cpp.h.tmpl"
 		}
@@ -1351,6 +1690,8 @@ func outputFilenameWithMode(file *protogen.File, lang, mode, ext string) string 
 			return base + "_lite.ts"
 		case "swift":
 			return base + "_lite.swift"
+		case "cpp":
+			return base + "_lite.hpp"
 		}
 	}
 
@@ -1448,12 +1789,16 @@ func messageDataFromProtogen(msg *protogen.Message) MessageData {
 			fd.WireKind = "enum"
 			if field.Enum != nil {
 				fd.TypeName = field.Enum.GoIdent.GoName
+				fd.TypeFQN = string(field.Enum.Desc.FullName())
+				fd.TypeIsLocal = field.Enum.Desc.ParentFile().Path() == msg.Desc.ParentFile().Path()
 			}
 		case protoreflect.MessageKind, protoreflect.GroupKind:
 			fd.ProtoKind = "message"
 			fd.WireKind = "message"
 			if field.Message != nil {
 				fd.TypeName = field.Message.GoIdent.GoName
+				fd.TypeFQN = string(field.Message.Desc.FullName())
+				fd.TypeIsLocal = field.Message.Desc.ParentFile().Path() == msg.Desc.ParentFile().Path()
 				fd.IsHandle = isHandleMessage(field.Message)
 				fd.MessageFQN = string(field.Message.Desc.FullName())
 				fd.MessageIsLocal = field.Message.Desc.ParentFile().Path() == msg.Desc.ParentFile().Path() &&
@@ -1479,7 +1824,7 @@ func messageDataFromProtogen(msg *protogen.Message) MessageData {
 			// left as protobuf-go set them (kind=message, repeated=false)
 			// so existing templates branch consistently.
 			for _, sub := range field.Message.Fields {
-				kind, wire, typeName := classifyField(sub)
+				kind, wire, typeName, typeFQN, typeIsLocal := classifyField(sub, msg.Desc.ParentFile().Path())
 				switch sub.Desc.Number() {
 				case 1:
 					fd.MapKeyKind = kind
@@ -1488,6 +1833,8 @@ func messageDataFromProtogen(msg *protogen.Message) MessageData {
 					fd.MapValueKind = kind
 					fd.MapValueWireKind = wire
 					fd.MapValueTypeName = typeName
+					fd.MapValueFQN = typeFQN
+					fd.MapValueIsLocal = typeIsLocal
 				}
 			}
 		}
@@ -1496,55 +1843,63 @@ func messageDataFromProtogen(msg *protogen.Message) MessageData {
 	return md
 }
 
-// classifyField returns the ProtoKind / WireKind / TypeName triple for a
+// classifyField returns the ProtoKind / WireKind / type metadata for a
 // single protogen field. Extracted from messageDataFromProtogen so map
 // sub-fields can be classified without a recursive FieldData build.
-func classifyField(field *protogen.Field) (kind string, wire string, typeName string) {
+func classifyField(field *protogen.Field, currentFilePath string) (kind string, wire string, typeName string, typeFQN string, typeIsLocal bool) {
 	switch field.Desc.Kind() {
 	case protoreflect.BoolKind:
-		return "bool", "bool", ""
+		return "bool", "bool", "", "", false
 	case protoreflect.Int32Kind:
-		return "int32", "int32", ""
+		return "int32", "int32", "", "", false
 	case protoreflect.Sint32Kind:
-		return "int32", "sint32", ""
+		return "int32", "sint32", "", "", false
 	case protoreflect.Sfixed32Kind:
-		return "int32", "sfixed32", ""
+		return "int32", "sfixed32", "", "", false
 	case protoreflect.Int64Kind:
-		return "int64", "int64", ""
+		return "int64", "int64", "", "", false
 	case protoreflect.Sint64Kind:
-		return "int64", "sint64", ""
+		return "int64", "sint64", "", "", false
 	case protoreflect.Sfixed64Kind:
-		return "int64", "sfixed64", ""
+		return "int64", "sfixed64", "", "", false
 	case protoreflect.Uint32Kind:
-		return "uint32", "uint32", ""
+		return "uint32", "uint32", "", "", false
 	case protoreflect.Fixed32Kind:
-		return "uint32", "fixed32", ""
+		return "uint32", "fixed32", "", "", false
 	case protoreflect.Uint64Kind:
-		return "uint64", "uint64", ""
+		return "uint64", "uint64", "", "", false
 	case protoreflect.Fixed64Kind:
-		return "uint64", "fixed64", ""
+		return "uint64", "fixed64", "", "", false
 	case protoreflect.FloatKind:
-		return "float", "float", ""
+		return "float", "float", "", "", false
 	case protoreflect.DoubleKind:
-		return "double", "double", ""
+		return "double", "double", "", "", false
 	case protoreflect.StringKind:
-		return "string", "string", ""
+		return "string", "string", "", "", false
 	case protoreflect.BytesKind:
-		return "bytes", "bytes", ""
+		return "bytes", "bytes", "", "", false
 	case protoreflect.EnumKind:
 		name := ""
+		fqn := ""
+		local := false
 		if field.Enum != nil {
 			name = field.Enum.GoIdent.GoName
+			fqn = string(field.Enum.Desc.FullName())
+			local = field.Enum.Desc.ParentFile().Path() == currentFilePath
 		}
-		return "enum", "enum", name
+		return "enum", "enum", name, fqn, local
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		name := ""
+		fqn := ""
+		local := false
 		if field.Message != nil {
 			name = field.Message.GoIdent.GoName
+			fqn = string(field.Message.Desc.FullName())
+			local = field.Message.Desc.ParentFile().Path() == currentFilePath
 		}
-		return "message", "message", name
+		return "message", "message", name, fqn, local
 	default:
-		return "unknown", "unknown", ""
+		return "unknown", "unknown", "", "", false
 	}
 }
 
@@ -1653,6 +2008,9 @@ func collectMessageFiles(msg *protogen.Message, files map[string]bool, visited m
 		if field.Message != nil {
 			collectMessageFiles(field.Message, files, visited)
 		}
+		if field.Enum != nil {
+			files[field.Enum.Desc.ParentFile().Path()] = true
+		}
 	}
 }
 
@@ -1718,8 +2076,10 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 	case "cpp":
 		data.PbHeaderFile = strings.TrimSuffix(baseProto, ".proto") + ".pb.h"
 		data.CppNamespace = strings.ReplaceAll(data.Package, ".", "::")
-		guardBase := strings.TrimSuffix(outputFilename(file, "cpp"), ".h")
-		data.CppGuardName = strings.ToUpper(strings.ReplaceAll(guardBase, ".", "_")) + "_H_"
+		if data.CppNamespace != "" {
+			data.CppNamespaceParts = strings.Split(data.CppNamespace, "::")
+		}
+		data.CppGuardName = cppGuardName(outputFilenameWithMode(file, "cpp", modeOrOpt, ""))
 	case "rust":
 		data.RustModPath = strings.ReplaceAll(data.Package, ".", "_")
 	case "java":
@@ -1789,6 +2149,8 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 				InputTypeKey:      string(method.Input.Desc.FullName()),
 				InputCppType:      cppQualifiedType(method.Input),
 				OutputCppType:     cppQualifiedType(method.Output),
+				InputLiteType:     cppLiteMessageType(method.Input, file),
+				OutputLiteType:    cppLiteMessageType(method.Output, file),
 				OutputIsHandle:    isHandleMessage(method.Output),
 				OutputWKT:         wellKnownOutputTypes[string(method.Output.Desc.FullName())],
 				InputGoIdent:      qualifyGoType(method.Input.GoIdent, true),         // Input always used
@@ -1799,6 +2161,11 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 				IsUnary:           !isServerStream && !isClientStream,
 			}
 
+			// HasStreaming must remain true for ANY streaming kind (server,
+			// client, or bidi). The cpp_lite / swift_lite / csharp_lite
+			// templates gate the shared streaming helper (e.g.
+			// SynurangLiteBidiStream in cpp_lite) on this flag — narrowing it
+			// to just bidi would silently break server-streaming generation.
 			if isStreaming {
 				data.HasStreaming = true
 			}
@@ -1850,7 +2217,7 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 	}
 	markBoxFields(data.Messages)
 
-	needsLocalTypes := lang == "typescript" || (lang == "csharp" && modeOrOpt == "lite") || (lang == "swift" && modeOrOpt == "lite")
+	needsLocalTypes := lang == "typescript" || (lang == "csharp" && modeOrOpt == "lite") || (lang == "swift" && modeOrOpt == "lite") || (lang == "cpp" && modeOrOpt == "lite")
 	if needsLocalTypes {
 		localMsgVisited := make(map[string]bool)
 		for _, msg := range file.Messages {
@@ -1991,9 +2358,18 @@ func buildFileData(gen *protogen.Plugin, file *protogen.File, serviceList map[st
 		}
 		delete(depFiles, ownPath)
 		for depPath := range depFiles {
-			data.CppDepHeaders = append(data.CppDepHeaders, strings.TrimSuffix(depPath, ".proto")+".pb.h")
+			if strings.HasPrefix(depPath, "google/protobuf/") && modeOrOpt == "lite" {
+				continue
+			}
+			if modeOrOpt == "lite" {
+				depBase := strings.TrimSuffix(path.Base(depPath), ".proto")
+				data.CppLiteDepHeaders = append(data.CppLiteDepHeaders, depBase+"_lite.hpp")
+			} else {
+				data.CppDepHeaders = append(data.CppDepHeaders, strings.TrimSuffix(depPath, ".proto")+".pb.h")
+			}
 		}
 		sort.Strings(data.CppDepHeaders)
+		sort.Strings(data.CppLiteDepHeaders)
 	}
 
 	return data
