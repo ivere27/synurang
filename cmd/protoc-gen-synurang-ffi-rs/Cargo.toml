@@ -1,0 +1,16 @@
+[package]
+name = "protoc-gen-synurang-ffi-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust reimplementation of protoc-gen-synurang-ffi. Byte-identical drop-in replacement for the Go generator."
+
+[dependencies]
+prost = "0.13.5"
+prost-types = "0.13.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

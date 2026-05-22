@@ -55,7 +55,7 @@ DESKTOP_GROUP_ID ?= io.github.ivere27
 DESKTOP_ARTIFACT_ID_CORE ?= synurang-desktop
 DESKTOP_ARTIFACT_ID_GRPC ?= synurang-desktop-grpc
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen build_plugin_rs test_ffi_rs_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar
 
 # =============================================================================
 # Default Target
@@ -88,6 +88,14 @@ ffigen:
 
 build_plugin:
 	go build -o bin/protoc-gen-synurang-ffi ./cmd/protoc-gen-synurang-ffi
+
+build_plugin_rs:
+	cargo build --release --manifest-path cmd/protoc-gen-synurang-ffi-rs/Cargo.toml
+	mkdir -p bin
+	cp target/release/protoc-gen-synurang-ffi-rs bin/protoc-gen-synurang-ffi-rs
+
+test_ffi_rs_gen:
+	bash test/test_ffi_rs_gen.sh
 
 proto: build_plugin
 	@echo "Generating proto code..."
@@ -360,7 +368,7 @@ build_plugin_host:
 # =============================================================================
 
 # Run all tests (Go + Dart + C++ + Rust + Native/WASM + TypeScript + C# + Swift + Plugin)
-test: test_go test_dart test_cpp test_rust test_native_wasm_gen test_typescript_gen test_csharp test_swift test_plugin
+test: test_go test_dart test_cpp test_rust test_native_wasm_gen test_typescript_gen test_csharp test_swift test_plugin test_ffi_rs_gen
 	@echo "All tests complete."
 
 # C++ Tests (Generation + FFI)
