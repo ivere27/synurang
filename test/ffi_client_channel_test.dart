@@ -12,6 +12,8 @@ import 'package:test/test.dart';
 
 void main() {
   group('FfiClientChannel', () {
+    Directory? cacheDir;
+
     setUpAll(() async {
       configureSynurang(
         libraryName: 'synurang',
@@ -24,6 +26,10 @@ void main() {
     tearDownAll(() async {
       await stopGrpcServerAsync();
       resetCoreState();
+      final dir = cacheDir;
+      if (dir != null && await dir.exists()) {
+        await dir.delete(recursive: true);
+      }
     });
 
     test('creates channel with default options', () {
@@ -51,6 +57,21 @@ void main() {
     test('shutdown completes without error', () async {
       final channel = FfiClientChannel();
       await expectLater(channel.shutdown(), completes);
+    });
+
+    test('shutdown rejects new calls', () async {
+      final channel = FfiClientChannel();
+      await channel.shutdown();
+
+      final state = await channel.onConnectionStateChanged.first;
+      expect(state, equals(ConnectionState.shutdown));
+
+      final client = HealthServiceClient(channel);
+      await expectLater(
+        client.ping(Empty()),
+        throwsA(isA<GrpcError>()
+            .having((error) => error.code, 'code', StatusCode.unavailable)),
+      );
     });
 
     test('terminate completes without error', () async {
@@ -92,6 +113,19 @@ void main() {
           expect(response, isA<PingResponse>());
         }
       });
+
+      test('recoverCoreAsync restarts core with previous options', () async {
+        final result = await recoverCoreAsync(
+          previousStartOptions:
+              const StartGrpcServerOptions(token: 'test-token'),
+        );
+
+        expect(result.status, equals(CoreRecoveryStatus.recovered));
+        expect(getCoreState(), equals(CoreState.healthy));
+
+        final response = await client.ping(Empty());
+        expect(response, isA<PingResponse>());
+      });
     });
 
     group('with CacheService', () {
@@ -102,9 +136,11 @@ void main() {
         // Restart with cache enabled
         await stopGrpcServerAsync();
         resetCoreState();
+        cacheDir = await Directory.systemTemp.createTemp('synurang-cache-');
         await startGrpcServerAsync(
           token: 'test-token',
           enableCache: true,
+          cachePath: cacheDir!.path,
         );
       });
 

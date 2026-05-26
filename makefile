@@ -5,7 +5,7 @@
 # =============================================================================
 # Variables
 # =============================================================================
-SERVER_PATH := cmd/server/main.go
+SERVER_PATH := ./cmd/server
 COMMIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 COMMIT_DATE ?= $(shell git log -1 --format='%cd' --date=format:'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date +"%Y-%m-%dT%H:%M:%SZ")
@@ -174,6 +174,17 @@ shared_linux:
 	mv libsynurang.h ./src/
 	mv libsynurang.so ./src/
 	@echo "Linux build complete: src/libsynurang.so"
+
+# Linux amd64 with debug-only RPCs (e.g. /core.v1.DebugService/HangFor)
+# compiled in. NEVER ship this build to production.
+shared_linux_debug:
+	@echo "Building Linux shared library (DEBUG, test-only)..."
+	GOARCH=amd64 GOOS=linux CGO_ENABLED=1 GO111MODULE=on \
+		go build -trimpath -tags debug -ldflags "-s -w $(LD_FLAGS)" \
+		-o libsynurang.so -buildmode=c-shared $(SERVER_PATH)
+	mv libsynurang.h ./src/
+	mv libsynurang.so ./src/
+	@echo "Linux debug build complete: src/libsynurang.so"
 
 # Linux Example Shared Library
 shared_example_linux:
@@ -513,8 +524,20 @@ test_go: proto
 
 # Dart tests only (requires shared library + FFI bindings + server binary for benchmarks)
 # NOTE: --concurrency=1 is required because all tests share the same gRPC server
+# NOTE: HangFor-based end-to-end recovery tests are skipped under this target
+#       because shared_linux excludes the debug RPC. Use test_dart_debug to
+#       exercise the full end-to-end recovery path.
 test_dart: shared_linux ffigen build_server
 	@echo "Running Dart tests..."
+	flutter pub get
+	LD_LIBRARY_PATH=$(CURRENT_DIR)/src:${LD_LIBRARY_PATH} dart test --concurrency=1
+	@echo "Dart tests complete."
+
+# Dart tests against a debug-tagged shared library so the end-to-end
+# recovery tests (HangFor) actually run instead of being skipped.
+# DO NOT use this build for anything other than CI/local testing.
+test_dart_debug: shared_linux_debug ffigen build_server
+	@echo "Running Dart tests (DEBUG build, HangFor tests enabled)..."
 	flutter pub get
 	LD_LIBRARY_PATH=$(CURRENT_DIR)/src:${LD_LIBRARY_PATH} dart test --concurrency=1
 	@echo "Dart tests complete."

@@ -480,6 +480,73 @@ class _PluginStreamError {
 // Public API
 // =============================================================================
 
+const Duration _defaultCoreRequestTimeout = Duration(seconds: 30);
+
+/// Native core lifecycle options used by [startGrpcServerAsync] and recovery.
+class StartGrpcServerOptions {
+  final String storagePath;
+  final String cachePath;
+  final String engineSocketPath;
+  final String engineTcpPort;
+  final String viewSocketPath;
+  final String viewTcpPort;
+  final String token;
+  final bool enableCache;
+  final int streamTimeout;
+
+  const StartGrpcServerOptions({
+    this.storagePath = '',
+    this.cachePath = '',
+    this.engineSocketPath = '',
+    this.engineTcpPort = '',
+    this.viewSocketPath = '',
+    this.viewTcpPort = '',
+    this.token = '',
+    this.enableCache = false,
+    this.streamTimeout = 0,
+  });
+}
+
+/// Current health state of the in-process native core bridge.
+enum CoreState {
+  healthy,
+  unhealthy,
+  recovering,
+  restartRequired,
+}
+
+/// Outcome of an explicit core recovery attempt.
+enum CoreRecoveryStatus {
+  recovered,
+  restartRequired,
+  failed,
+}
+
+/// Structured result returned by [recoverCoreAsync].
+class CoreRecoveryResult {
+  final CoreRecoveryStatus status;
+  final String phase;
+  final String message;
+  final Object? error;
+  final StackTrace? stackTrace;
+
+  const CoreRecoveryResult({
+    required this.status,
+    required this.phase,
+    required this.message,
+    this.error,
+    this.stackTrace,
+  });
+
+  bool get recovered => status == CoreRecoveryStatus.recovered;
+  bool get restartRequired => status == CoreRecoveryStatus.restartRequired;
+  bool get failed => status == CoreRecoveryStatus.failed;
+
+  @override
+  String toString() =>
+      'CoreRecoveryResult(status: $status, phase: $phase, message: $message)';
+}
+
 /// OPTIMIZATION: Pre-warm the helper isolate early during app startup.
 void prewarmIsolate() {
   // ignore: discarded_futures
@@ -493,9 +560,15 @@ String ensureLibraryLoaded() {
   return getResolvedLibraryPath()!;
 }
 
-/// Reset library state for app restart scenarios.
+/// Reset Dart-side helper isolate state for app restart scenarios.
+///
+/// This completes pending Dart requests and kills helper isolates. It does not
+/// unload or reload the native shared library, so it cannot guarantee recovery
+/// from a hard native deadlock.
 void resetCoreState() {
-  _CoreIsolateManager.instance.reset();
+  final error = CoreShutdownException('Core reset requested');
+  _failActiveCoreStreams(error);
+  _CoreIsolateManager.instance.reset(markHealthy: true, error: error);
 }
 
 /// Register a plugin .so for the given service names.
@@ -549,41 +622,179 @@ Future<int> startGrpcServerAsync({
   bool enableCache = false,
   int streamTimeout = 0,
 }) async {
-  return _CoreIsolateManager.instance.sendRequest<int>((id) => _StartRequest(
-      id,
-      storagePath,
-      cachePath,
-      engineSocketPath,
-      engineTcpPort,
-      viewSocketPath,
-      viewTcpPort,
-      token,
-      enableCache,
-      streamTimeout));
+  return startGrpcServerWithOptionsAsync(StartGrpcServerOptions(
+    storagePath: storagePath,
+    cachePath: cachePath,
+    engineSocketPath: engineSocketPath,
+    engineTcpPort: engineTcpPort,
+    viewSocketPath: viewSocketPath,
+    viewTcpPort: viewTcpPort,
+    token: token,
+    enableCache: enableCache,
+    streamTimeout: streamTimeout,
+  ));
+}
+
+/// Start the native gRPC server using a reusable options object.
+Future<int> startGrpcServerWithOptionsAsync(StartGrpcServerOptions options,
+    {Duration timeout = _defaultCoreRequestTimeout}) async {
+  final result = await _startGrpcServerWithOptionsAsync(
+    options,
+    timeout: timeout,
+    allowWhenUnhealthy: true,
+  );
+  if (result == 0) {
+    _CoreIsolateManager.instance.markHealthy();
+  }
+  return result;
 }
 
 /// Stop the Go gRPC server
-Future<int> stopGrpcServerAsync() async {
-  return _CoreIsolateManager.instance
-      .sendRequest<int>((id) => _StopRequest(id));
+Future<int> stopGrpcServerAsync(
+    {Duration timeout = _defaultCoreRequestTimeout}) async {
+  return _CoreIsolateManager.instance.sendRequest<int>(
+    (id) => _StopRequest(id),
+    timeout: timeout,
+    debugLabel: 'stopGrpcServer',
+    allowWhenUnhealthy: true,
+  );
 }
+
+Future<int> _startGrpcServerWithOptionsAsync(
+  StartGrpcServerOptions options, {
+  Duration timeout = _defaultCoreRequestTimeout,
+  bool allowWhenUnhealthy = false,
+  bool allowWhenRecovering = false,
+  bool markUnhealthyOnTimeout = true,
+}) {
+  return _CoreIsolateManager.instance.sendRequest<int>(
+    (id) => _StartRequest(
+      id,
+      options.storagePath,
+      options.cachePath,
+      options.engineSocketPath,
+      options.engineTcpPort,
+      options.viewSocketPath,
+      options.viewTcpPort,
+      options.token,
+      options.enableCache,
+      options.streamTimeout,
+    ),
+    timeout: timeout,
+    debugLabel: 'startGrpcServer',
+    allowWhenUnhealthy: allowWhenUnhealthy,
+    allowWhenRecovering: allowWhenRecovering,
+    markUnhealthyOnTimeout: markUnhealthyOnTimeout,
+  );
+}
+
+/// Try to recover a timed-out/unhealthy FFI core without reloading the process.
+///
+/// This resets Dart helper isolates, attempts a short native stop, resets the
+/// helpers again, then starts the native core with [previousStartOptions]. If a
+/// lifecycle FFI call also times out, the loaded native library may be stuck and
+/// the result is [CoreRecoveryStatus.restartRequired].
+Future<CoreRecoveryResult> recoverCoreAsync({
+  required StartGrpcServerOptions previousStartOptions,
+  Duration stopTimeout = const Duration(seconds: 2),
+  Duration startTimeout = const Duration(seconds: 5),
+}) {
+  return _CoreIsolateManager.instance.recoverCore(
+    previousStartOptions: previousStartOptions,
+    stopTimeout: stopTimeout,
+    startTimeout: startTimeout,
+  );
+}
+
+/// Get the current Dart-side view of the core health state.
+CoreState getCoreState() {
+  return _CoreIsolateManager.instance.state;
+}
+
+// =============================================================================
+// Test-only helpers
+//
+// These exist purely so the recovery/lifecycle state machine can be exercised
+// deterministically in unit tests without needing to provoke a real native
+// hang. Never call these from production code.
+// =============================================================================
+
+/// Drive the core into [CoreState.unhealthy] as if an FFI request had timed out.
+/// Triggers the full cascade (pending requests fail, active streams error and
+/// close, dedicated plugin-stream isolates are killed).
+void debugMarkCoreUnhealthy([Object? cause]) {
+  _CoreIsolateManager.instance._markUnhealthy(
+    cause ?? CoreTimeoutException('debug', const Duration(seconds: 30)),
+  );
+}
+
+/// Forcibly set [CoreState]. Useful for testing terminal-state behavior
+/// (`restartRequired`) without having to make a lifecycle call actually time
+/// out.
+void debugForceCoreState(CoreState state) {
+  _CoreIsolateManager.instance._state = state;
+}
+
+/// Number of FFI server streams whose controllers are currently registered on
+/// the main isolate. Used by tests to verify cascade cleanup.
+int debugActiveServerStreamCount() => _activeStreams.length;
+
+/// Number of plugin-mode server streams currently registered on the main
+/// isolate.
+int debugActivePluginStreamCount() => _pluginActiveStreams.length;
+
+/// Number of pending stream-result completers waiting for trailers.
+int debugPendingStreamResultCount() => _pendingStreamResults.length;
+
+/// Number of in-flight requests tracked by the core isolate manager.
+int debugPendingRequestCount() => _CoreIsolateManager.instance._requests.length;
+
+/// Register a synthetic pending-request completer so tests can verify the
+/// [_markUnhealthy] / [reset] cascade without racing against a real RPC.
+/// Returns the synthetic request id (negative to avoid colliding with the
+/// real `_nextRequestId` counter).
+int debugRegisterFakePendingRequest(Completer<dynamic> completer) {
+  final id = -1 - _CoreIsolateManager.instance._requests.length;
+  _CoreIsolateManager.instance._requests[id] = completer;
+  return id;
+}
+
+/// Returns true if a recovery is currently in flight.
+bool debugIsRecoveryInFlight() =>
+    _CoreIsolateManager.instance._recoveryFuture != null;
+
+/// Grace added to the Dart-side timeout when the caller supplies a per-call
+/// [Duration]. Lets the Go-side deadline fire first and surface a clean
+/// `DEADLINE_EXCEEDED` rather than the harsher [CoreTimeoutException].
+const Duration _perCallTimeoutGrace = Duration(seconds: 5);
 
 /// Invoke a backend method via FFI.
 ///
 /// Routes through plugin registry in plugin mode, or Go backend in Go mode.
-/// Optional parameters (zero-overhead when not used, Go mode only):
-/// - [metadata]: Request metadata (e.g., auth tokens)
-/// - [timeout]: Per-call timeout (deadline enforcement in Go)
+/// Optional parameters (zero-overhead when not used):
+/// - [metadata]: Request metadata (e.g., auth tokens). Go mode only.
+/// - [timeout]: Per-call timeout. Extends the Dart-side wait and (in Go mode)
+///   is enforced as a deadline on the backend. Pass this for heavy calls that
+///   may legitimately exceed the default 30s — otherwise a slow call will
+///   trip the core into the unhealthy state and cancel all other in-flight
+///   work.
 Future<Uint8List> invokeBackendAsync(
   String method,
   Uint8List data, {
   Map<String, String>? metadata,
   Duration? timeout,
 }) async {
+  final dartTimeout = timeout != null
+      ? timeout + _perCallTimeoutGrace
+      : _defaultCoreRequestTimeout;
+
   // Plugin mode: always uses _InvokeBackendRequest (worker handles dispatch)
   if (_usePluginMode || (metadata == null && timeout == null)) {
     return _CoreIsolateManager.instance.sendRequest<Uint8List>(
-        (id) => _InvokeBackendRequest(id, method, data));
+      (id) => _InvokeBackendRequest(id, method, data),
+      timeout: dartTimeout,
+      debugLabel: 'invokeBackend',
+    );
   }
 
   // Go mode with metadata/timeout
@@ -599,7 +810,10 @@ Future<Uint8List> invokeBackendAsync(
   final metaBytes = Uint8List.fromList(utf8.encode(metaBuffer.toString()));
 
   return _CoreIsolateManager.instance.sendRequest<Uint8List>(
-      (id) => _InvokeBackendWithMetaRequest(id, method, data, metaBytes));
+    (id) => _InvokeBackendWithMetaRequest(id, method, data, metaBytes),
+    timeout: dartTimeout,
+    debugLabel: 'invokeBackend',
+  );
 }
 
 // =============================================================================
@@ -645,15 +859,62 @@ class FFIServerStreamResult {
           .complete(_activeStreamTrailers.remove(_streamId) ?? {});
     }
   }
+
+  void _completeError(Object error, [StackTrace? stackTrace]) {
+    if (!_trailersCompleter.isCompleted) {
+      _trailersCompleter.completeError(error, stackTrace);
+    }
+  }
 }
 
 /// Pending FFI stream results waiting for trailers
 final Map<int, FFIServerStreamResult> _pendingStreamResults = {};
 
+void _failActiveCoreStreams(Object error, [StackTrace? stackTrace]) {
+  // Snapshot before mutating so we can clear the maps and tear down both the
+  // Dart controllers and the underlying native sessions/handles. onCancel is
+  // nulled first so any subsequent subscription cancellation doesn't attempt
+  // a second native close on the same id.
+  final coreEntries = _activeStreams.entries.toList();
+  _activeStreams.clear();
+  for (final entry in coreEntries) {
+    final streamId = entry.key;
+    final controller = entry.value;
+    controller.onCancel = null;
+    if (!controller.isClosed) {
+      controller.addError(error, stackTrace);
+      controller.close();
+    }
+    _ffi.CloseStream(streamId);
+  }
+
+  for (final result in _pendingStreamResults.values.toList()) {
+    result._completeError(error, stackTrace);
+  }
+  _pendingStreamResults.clear();
+  _activeStreamTrailers.clear();
+
+  final pluginEntries = _pluginActiveStreams.values.toList();
+  _pluginActiveStreams.clear();
+  for (final state in pluginEntries) {
+    state.controller.onCancel = null;
+    if (!state.controller.isClosed) {
+      state.controller.addError(error, stackTrace);
+      state.controller.close();
+    }
+    if (state.handle != 0 && state.pluginIndex < _mainPlugins.length) {
+      final plugin = _mainPlugins[state.pluginIndex];
+      plugin.ensureStreamFuncs();
+      plugin._streamClose?.call(state.handle);
+    }
+  }
+}
+
 /// Server streaming: Go sends multiple responses.
 /// Returns [FFIServerStreamResult] with stream and trailers access.
 FFIServerStreamResult invokeBackendServerStreamWithTrailers(
     String method, Uint8List data) {
+  _CoreIsolateManager.instance.ensureAvailable();
   _ensureStreamCallbackRegistered();
   final controller = StreamController<Uint8List>();
   late FFIServerStreamResult result;
@@ -703,6 +964,7 @@ FFIServerStreamResult invokeBackendServerStreamWithTrailers(
 
 /// Server streaming: backend sends multiple responses (simple API without trailers).
 Stream<Uint8List> invokeBackendServerStream(String method, Uint8List data) {
+  _CoreIsolateManager.instance.ensureAvailable();
   if (_usePluginMode) {
     return _pluginServerStream(method, data);
   }
@@ -778,6 +1040,7 @@ Stream<Uint8List> _pluginServerStream(String method, Uint8List data) {
 /// Client streaming: Dart sends multiple requests, backend returns single response
 Future<Uint8List> invokeBackendClientStream(
     String method, Stream<Uint8List> dataStream) async {
+  _CoreIsolateManager.instance.ensureAvailable();
   if (_usePluginMode) {
     return _pluginClientStream(method, dataStream);
   }
@@ -809,6 +1072,7 @@ Future<Uint8List> invokeBackendClientStream(
   );
 
   await for (final data in dataStream) {
+    _CoreIsolateManager.instance.ensureAvailable();
     final dataPtr = calloc<Uint8>(data.length);
     dataPtr.asTypedList(data.length).setAll(0, data);
     _ffi.SendStreamData(streamId, dataPtr.cast(), data.length);
@@ -863,6 +1127,7 @@ Future<Uint8List> _pluginClientStream(
   plugin.ensureStreamFuncs();
 
   await for (final data in dataStream) {
+    _CoreIsolateManager.instance.ensureAvailable();
     final dataPtr = calloc<Uint8>(data.length);
     dataPtr.asTypedList(data.length).setAll(0, data);
     plugin._streamSend!(handle, dataPtr.cast(), data.length);
@@ -876,6 +1141,7 @@ Future<Uint8List> _pluginClientStream(
 /// Bidirectional streaming: Both sides stream
 Stream<Uint8List> invokeBackendBidiStream(
     String method, Stream<Uint8List> dataStream) {
+  _CoreIsolateManager.instance.ensureAvailable();
   if (_usePluginMode) {
     return _pluginBidiStream(method, dataStream);
   }
@@ -915,6 +1181,7 @@ Future<void> _sendBidiStreamData(int streamId, Stream<Uint8List> dataStream,
   try {
     await for (final data in dataStream) {
       if (controller.isClosed) break;
+      _CoreIsolateManager.instance.ensureAvailable();
       final dataPtr = calloc<Uint8>(data.length);
       dataPtr.asTypedList(data.length).setAll(0, data);
       _ffi.SendStreamData(streamId, dataPtr.cast(), data.length);
@@ -978,6 +1245,7 @@ Future<void> _sendPluginBidiData(int handle, int pluginIndex,
   try {
     await for (final data in dataStream) {
       if (controller.isClosed) break;
+      _CoreIsolateManager.instance.ensureAvailable();
       final dataPtr = calloc<Uint8>(data.length);
       dataPtr.asTypedList(data.length).setAll(0, data);
       plugin._streamSend!(handle, dataPtr.cast(), data.length);
@@ -1038,6 +1306,38 @@ class CoreShutdownException implements Exception {
   CoreShutdownException([this.message = 'Core reset during shutdown']);
   @override
   String toString() => 'CoreShutdownException: $message';
+}
+
+/// Exception thrown when the core is unhealthy or recovery is in progress.
+class CoreUnavailableException implements Exception {
+  final CoreState state;
+  final String message;
+  final Object? cause;
+
+  CoreUnavailableException(this.state, this.message, [this.cause]);
+
+  @override
+  String toString() {
+    if (cause == null) {
+      return 'CoreUnavailableException($state): $message';
+    }
+    return 'CoreUnavailableException($state): $message (cause: $cause)';
+  }
+}
+
+/// Exception thrown when the loaded native library cannot be recovered safely.
+class CoreRestartRequiredException implements Exception {
+  final String message;
+  final Object? cause;
+
+  CoreRestartRequiredException(
+      [this.message = 'Core restart required', this.cause]);
+
+  @override
+  String toString() {
+    if (cause == null) return 'CoreRestartRequiredException: $message';
+    return 'CoreRestartRequiredException: $message (cause: $cause)';
+  }
 }
 
 /// Exception thrown when a request times out.
@@ -1118,8 +1418,7 @@ class _CoreIsolateManager {
   final Map<int, Completer<dynamic>> _requests = <int, Completer<dynamic>>{};
   final Map<int, int> _requestToWorker =
       <int, int>{}; // requestId -> workerIndex
-  final Map<int, Isolate> _dedicatedPluginStreamOpenIsolates =
-      <int, Isolate>{};
+  final Map<int, Isolate> _dedicatedPluginStreamOpenIsolates = <int, Isolate>{};
   int _nextRequestId = 0;
 
   // Isolate pool instead of single isolate
@@ -1127,15 +1426,43 @@ class _CoreIsolateManager {
   ReceivePort? _mainReceivePort;
   bool _isReset = false;
   Future<void>? _initFuture;
+  CoreState _state = CoreState.healthy;
+  Future<CoreRecoveryResult>? _recoveryFuture;
+
+  CoreState get state => _state;
 
   Future<void> ensureInitialized() async {
     await _ensurePoolReady();
   }
 
+  void markHealthy() {
+    if (_state != CoreState.restartRequired) {
+      _state = CoreState.healthy;
+    }
+  }
+
+  void ensureAvailable() {
+    _ensureCoreCanAcceptRequest(
+      allowWhenUnhealthy: false,
+      allowWhenRecovering: false,
+    );
+  }
+
   Future<T> sendRequest<T>(Object Function(int id) requestBuilder,
-      {Duration timeout = const Duration(seconds: 30),
-      String debugLabel = 'request'}) async {
+      {Duration timeout = _defaultCoreRequestTimeout,
+      String debugLabel = 'request',
+      bool allowWhenUnhealthy = false,
+      bool allowWhenRecovering = false,
+      bool markUnhealthyOnTimeout = true}) async {
+    _ensureCoreCanAcceptRequest(
+      allowWhenUnhealthy: allowWhenUnhealthy,
+      allowWhenRecovering: allowWhenRecovering,
+    );
     await _ensurePoolReady();
+    _ensureCoreCanAcceptRequest(
+      allowWhenUnhealthy: allowWhenUnhealthy,
+      allowWhenRecovering: allowWhenRecovering,
+    );
 
     final int requestId = _nextRequestId++;
     final request = requestBuilder(requestId);
@@ -1156,20 +1483,31 @@ class _CoreIsolateManager {
 
     // Timeout wrapper
     return completer.future.timeout(timeout, onTimeout: () {
-      _requests.remove(requestId);
-      final workerIdx = _requestToWorker.remove(requestId);
-      if (workerIdx != null && workerIdx < _workers.length) {
-        _workers[workerIdx].pendingRequests--;
+      final error = CoreTimeoutException(debugLabel, timeout);
+      _removeRequestTracking(requestId);
+      if (markUnhealthyOnTimeout) {
+        _markUnhealthy(error);
       }
-      throw CoreTimeoutException(debugLabel, timeout);
+      throw error;
     });
   }
 
   Future<T> sendDedicatedPluginStreamRequest<T>(
       Object Function(int id) requestBuilder,
-      {Duration timeout = const Duration(seconds: 30),
-      String debugLabel = 'request'}) async {
+      {Duration timeout = _defaultCoreRequestTimeout,
+      String debugLabel = 'request',
+      bool allowWhenUnhealthy = false,
+      bool allowWhenRecovering = false,
+      bool markUnhealthyOnTimeout = true}) async {
+    _ensureCoreCanAcceptRequest(
+      allowWhenUnhealthy: allowWhenUnhealthy,
+      allowWhenRecovering: allowWhenRecovering,
+    );
     await _ensurePoolReady();
+    _ensureCoreCanAcceptRequest(
+      allowWhenUnhealthy: allowWhenUnhealthy,
+      allowWhenRecovering: allowWhenRecovering,
+    );
 
     final int requestId = _nextRequestId++;
     final request = requestBuilder(requestId);
@@ -1190,19 +1528,87 @@ class _CoreIsolateManager {
       _requests.remove(requestId);
       final isolate = _dedicatedPluginStreamOpenIsolates.remove(requestId);
       isolate?.kill(priority: Isolate.immediate);
-      throw CoreTimeoutException(debugLabel, timeout);
+      final error = CoreTimeoutException(debugLabel, timeout);
+      if (markUnhealthyOnTimeout) {
+        _markUnhealthy(error);
+      }
+      throw error;
     });
   }
 
-  void reset() {
-    // Cancel pending requests
-    for (final completer in _requests.values) {
+  void _ensureCoreCanAcceptRequest({
+    required bool allowWhenUnhealthy,
+    required bool allowWhenRecovering,
+  }) {
+    switch (_state) {
+      case CoreState.healthy:
+        return;
+      case CoreState.unhealthy:
+        if (allowWhenUnhealthy) return;
+        throw CoreUnavailableException(
+          _state,
+          'Core is unhealthy; call recoverCoreAsync before issuing RPCs',
+        );
+      case CoreState.recovering:
+        if (allowWhenRecovering) return;
+        throw CoreUnavailableException(
+          _state,
+          'Core recovery is already in progress',
+        );
+      case CoreState.restartRequired:
+        throw CoreRestartRequiredException(
+          'Native core recovery failed; restart the app process',
+        );
+    }
+  }
+
+  void _removeRequestTracking(int requestId) {
+    _requests.remove(requestId);
+    final workerIdx = _requestToWorker.remove(requestId);
+    if (workerIdx != null && workerIdx < _workers.length) {
+      final worker = _workers[workerIdx];
+      if (worker.pendingRequests > 0) {
+        worker.pendingRequests--;
+      }
+    }
+  }
+
+  void _completePendingRequests(Object error, [StackTrace? stackTrace]) {
+    for (final completer in _requests.values.toList()) {
       if (!completer.isCompleted) {
-        completer.completeError(CoreShutdownException());
+        completer.completeError(error, stackTrace);
       }
     }
     _requests.clear();
     _requestToWorker.clear();
+    for (final worker in _workers) {
+      worker.pendingRequests = 0;
+    }
+  }
+
+  void _markUnhealthy(Object cause, [StackTrace? stackTrace]) {
+    if (_state == CoreState.restartRequired) return;
+    _state = CoreState.unhealthy;
+    final error = CoreUnavailableException(
+      _state,
+      'Core marked unhealthy after a timed-out FFI request',
+      cause,
+    );
+    _completePendingRequests(error, stackTrace);
+    for (final isolate in _dedicatedPluginStreamOpenIsolates.values) {
+      isolate.kill(priority: Isolate.immediate);
+    }
+    _dedicatedPluginStreamOpenIsolates.clear();
+    _failActiveCoreStreams(error, stackTrace);
+  }
+
+  void reset({
+    bool markHealthy = false,
+    bool preserveState = false,
+    Object? error,
+  }) {
+    final resetError = error ?? CoreShutdownException();
+    _completePendingRequests(resetError);
     for (final isolate in _dedicatedPluginStreamOpenIsolates.values) {
       isolate.kill(priority: Isolate.immediate);
     }
@@ -1222,6 +1628,155 @@ class _CoreIsolateManager {
     _isReset = true;
     _nextRequestId = 0;
     _initFuture = null;
+    if (!preserveState && markHealthy && _state != CoreState.restartRequired) {
+      _state = CoreState.healthy;
+    }
+  }
+
+  Future<CoreRecoveryResult> recoverCore({
+    required StartGrpcServerOptions previousStartOptions,
+    required Duration stopTimeout,
+    required Duration startTimeout,
+  }) {
+    final activeRecovery = _recoveryFuture;
+    if (activeRecovery != null) return activeRecovery;
+
+    final recovery = _recoverCore(
+      previousStartOptions: previousStartOptions,
+      stopTimeout: stopTimeout,
+      startTimeout: startTimeout,
+    );
+    _recoveryFuture = recovery.whenComplete(() {
+      _recoveryFuture = null;
+    });
+    return _recoveryFuture!;
+  }
+
+  Future<CoreRecoveryResult> _recoverCore({
+    required StartGrpcServerOptions previousStartOptions,
+    required Duration stopTimeout,
+    required Duration startTimeout,
+  }) async {
+    if (_state == CoreState.restartRequired) {
+      return const CoreRecoveryResult(
+        status: CoreRecoveryStatus.restartRequired,
+        phase: 'precheck',
+        message: 'Native core already requires an app restart',
+      );
+    }
+
+    _state = CoreState.recovering;
+    final recoveryError = CoreShutdownException('Core recovery started');
+    _failActiveCoreStreams(recoveryError);
+    reset(preserveState: true, error: recoveryError);
+
+    try {
+      final stopResult = await sendRequest<int>(
+        (id) => _StopRequest(id),
+        timeout: stopTimeout,
+        debugLabel: 'recoverCore.stopGrpcServer',
+        allowWhenUnhealthy: true,
+        allowWhenRecovering: true,
+        markUnhealthyOnTimeout: false,
+      );
+      if (stopResult != 0) {
+        final stopError = CoreUnavailableException(
+          CoreState.unhealthy,
+          'StopGrpcServer returned $stopResult',
+        );
+        reset(preserveState: true, error: stopError);
+        _state = CoreState.unhealthy;
+        return CoreRecoveryResult(
+          status: CoreRecoveryStatus.failed,
+          phase: 'stop',
+          message: 'StopGrpcServer returned $stopResult',
+          error: stopResult,
+        );
+      }
+    } on CoreTimeoutException catch (error, stackTrace) {
+      reset(preserveState: true, error: error);
+      _state = CoreState.restartRequired;
+      final restartError = CoreRestartRequiredException(
+        'Timed out while stopping native core',
+        error,
+      );
+      _failActiveCoreStreams(restartError, stackTrace);
+      return CoreRecoveryResult(
+        status: CoreRecoveryStatus.restartRequired,
+        phase: 'stop',
+        message: 'Timed out while stopping native core',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    } catch (error, stackTrace) {
+      reset(preserveState: true, error: error);
+      _state = CoreState.unhealthy;
+      return CoreRecoveryResult(
+        status: CoreRecoveryStatus.failed,
+        phase: 'stop',
+        message: 'Failed while stopping native core',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    reset(preserveState: true, error: recoveryError);
+
+    try {
+      final result = await _startGrpcServerWithOptionsAsync(
+        previousStartOptions,
+        timeout: startTimeout,
+        allowWhenUnhealthy: true,
+        allowWhenRecovering: true,
+        markUnhealthyOnTimeout: false,
+      );
+      if (result != 0) {
+        final startError = CoreUnavailableException(
+          CoreState.unhealthy,
+          'StartGrpcServer returned $result',
+        );
+        reset(preserveState: true, error: startError);
+        _state = CoreState.unhealthy;
+        return CoreRecoveryResult(
+          status: CoreRecoveryStatus.failed,
+          phase: 'start',
+          message: 'StartGrpcServer returned $result',
+          error: result,
+        );
+      }
+    } on CoreTimeoutException catch (error, stackTrace) {
+      reset(preserveState: true, error: error);
+      _state = CoreState.restartRequired;
+      final restartError = CoreRestartRequiredException(
+        'Timed out while starting native core',
+        error,
+      );
+      _failActiveCoreStreams(restartError, stackTrace);
+      return CoreRecoveryResult(
+        status: CoreRecoveryStatus.restartRequired,
+        phase: 'start',
+        message: 'Timed out while starting native core',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    } catch (error, stackTrace) {
+      reset(preserveState: true, error: error);
+      _state = CoreState.unhealthy;
+      return CoreRecoveryResult(
+        status: CoreRecoveryStatus.failed,
+        phase: 'start',
+        message: 'Failed while starting native core',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    _state = CoreState.healthy;
+    return const CoreRecoveryResult(
+      status: CoreRecoveryStatus.recovered,
+      phase: 'start',
+      message: 'Core recovered',
+    );
   }
 
   /// Get pool statistics for monitoring and debugging.
@@ -1368,18 +1923,33 @@ class _CoreIsolateManager {
     _updateWorkerStats(id);
     if (allowNull) {
       final completer = _requests.remove(id) as Completer<Uint8List?>?;
-      if (address == 0 || len == 0) {
-        completer?.complete(null);
+      if (completer == null) {
+        if (address != 0) {
+          _ffi.FreeFfiData(Pointer<Void>.fromAddress(address));
+        }
         return;
       }
-      completer?.complete(_decodeZeroCopyPointer(address, len));
+      if (address == 0 || len == 0) {
+        if (address != 0) {
+          _ffi.FreeFfiData(Pointer<Void>.fromAddress(address));
+        }
+        completer.complete(null);
+        return;
+      }
+      completer.complete(_decodeZeroCopyPointer(address, len));
     } else {
       final completer = _requests.remove(id) as Completer<Uint8List>?;
-      if (address == 0) {
-        completer?.complete(Uint8List(0));
+      if (completer == null) {
+        if (address != 0) {
+          _ffi.FreeFfiData(Pointer<Void>.fromAddress(address));
+        }
         return;
       }
-      completer?.complete(_decodeZeroCopyPointer(address, len));
+      if (address == 0) {
+        completer.complete(Uint8List(0));
+        return;
+      }
+      completer.complete(_decodeZeroCopyPointer(address, len));
     }
   }
 
@@ -1388,7 +1958,9 @@ class _CoreIsolateManager {
     final workerIdx = _requestToWorker.remove(requestId);
     if (workerIdx != null && workerIdx < _workers.length) {
       final worker = _workers[workerIdx];
-      worker.pendingRequests--;
+      if (worker.pendingRequests > 0) {
+        worker.pendingRequests--;
+      }
       worker.completedRequests++;
     }
   }
@@ -1408,7 +1980,12 @@ class _CoreIsolateManager {
       int id, int address, int totalLen, int pluginIndex) {
     _updateWorkerStats(id);
     final completer = _requests.remove(id) as Completer<Uint8List>?;
-    if (completer == null) return;
+    if (completer == null) {
+      if (address != 0) {
+        _mainPlugins[pluginIndex].freeFunc(Pointer<Void>.fromAddress(address));
+      }
+      return;
+    }
 
     if (totalLen < 0) {
       if (address == 0) {
@@ -2107,6 +2684,7 @@ FfiData _invokeBackendWithMetaRaw(
 
 /// Invoke backend synchronously (for main thread use)
 Uint8List invokeBackend(String method, Uint8List data) {
+  _CoreIsolateManager.instance.ensureAvailable();
   if (_usePluginMode) {
     return _invokePluginSync(method, data);
   }
@@ -2201,6 +2779,7 @@ final _finalizer = NativeFinalizer(_freeFfiDataPtr);
 
 /// Send data to a Go stream (for Dart -> Go streaming)
 void sendStreamData(int streamId, Uint8List data) {
+  _CoreIsolateManager.instance.ensureAvailable();
   final dataPtr = calloc<Uint8>(data.length);
   final dataList = dataPtr.asTypedList(data.length);
   dataList.setAll(0, data);
@@ -2210,6 +2789,7 @@ void sendStreamData(int streamId, Uint8List data) {
 
 /// Close a stream (signal EOF to Go)
 void closeStream(int streamId) {
+  _CoreIsolateManager.instance.ensureAvailable();
   _ffi.CloseStream(streamId);
 }
 
@@ -2405,13 +2985,26 @@ class FfiClientChannel implements ClientChannel {
   @override
   final ChannelOptions options;
 
+  final StreamController<ConnectionState> _stateController =
+      StreamController<ConnectionState>.broadcast();
+  bool _closed = false;
+
   FfiClientChannel({this.options = const ChannelOptions()});
 
-  @override
-  Future<void> shutdown() async {}
+  bool get isClosed => _closed;
 
   @override
-  Future<void> terminate() async {}
+  Future<void> shutdown() async {
+    if (_closed) return;
+    _closed = true;
+    if (!_stateController.isClosed) {
+      _stateController.add(ConnectionState.shutdown);
+      await _stateController.close();
+    }
+  }
+
+  @override
+  Future<void> terminate() => shutdown();
 
   @override
   String get host => 'ffi';
@@ -2421,12 +3014,24 @@ class FfiClientChannel implements ClientChannel {
 
   @override
   Stream<ConnectionState> get onConnectionStateChanged =>
-      Stream.value(ConnectionState.ready);
+      Stream<ConnectionState>.multi(
+        (controller) {
+          controller
+              .add(_closed ? ConnectionState.shutdown : ConnectionState.ready);
+          final subscription = _stateController.stream.listen(
+            controller.add,
+            onError: controller.addError,
+            onDone: controller.close,
+          );
+          controller.onCancel = subscription.cancel;
+        },
+        isBroadcast: true,
+      );
 
   @override
   ClientCall<Q, R> createCall<Q, R>(
       ClientMethod<Q, R> method, Stream<Q> requests, CallOptions options) {
-    return _FfiClientCall<Q, R>(method, requests, options);
+    return _FfiClientCall<Q, R>(this, method, requests, options);
   }
 
   @override
@@ -2434,17 +3039,25 @@ class FfiClientChannel implements ClientChannel {
 }
 
 class _FfiClientCall<Q, R> extends ClientCall<Q, R> {
+  final FfiClientChannel _channel;
   final ClientMethod<Q, R> _method;
   final Stream<Q> _requests;
+  final CallOptions _callOptions;
   final _headers = Completer<Map<String, String>>();
   final _trailers = Completer<Map<String, String>>();
 
-  _FfiClientCall(this._method, this._requests, CallOptions options)
-      : super(_method, _requests, options);
+  _FfiClientCall(
+      this._channel, this._method, this._requests, CallOptions options)
+      : _callOptions = options,
+        super(_method, _requests, options);
 
   @override
   Stream<R> get response async* {
     try {
+      if (_channel.isClosed) {
+        throw const GrpcError.unavailable('FFI channel is shut down');
+      }
+
       // Collect all requests from the stream
       final requests = await _requests.toList();
 
@@ -2462,7 +3075,18 @@ class _FfiClientCall<Q, R> extends ClientCall<Q, R> {
       }
 
       final data = request.writeToBuffer();
-      final responseBytes = await invokeBackendAsync(_method.path, data);
+      if (_channel.isClosed) {
+        throw const GrpcError.unavailable('FFI channel is shut down');
+      }
+      final responseBytes = await invokeBackendAsync(
+        _method.path,
+        data,
+        metadata: _callOptions.metadata.isEmpty ? null : _callOptions.metadata,
+        timeout: _callOptions.timeout,
+      );
+      if (_channel.isClosed) {
+        throw const GrpcError.unavailable('FFI channel is shut down');
+      }
       final response = _method.responseDeserializer(responseBytes);
 
       _headers.complete({});
@@ -2474,16 +3098,30 @@ class _FfiClientCall<Q, R> extends ClientCall<Q, R> {
       if (e is GrpcError) {
         rethrow;
       }
-      throw GrpcError.internal(e.toString());
+      throw _mapCoreExceptionToGrpcError(e);
     }
   }
 
   @override
-  Future<void> cancel() async {}
+  Future<void> cancel() async {
+    isCancelled = true;
+    if (!_headers.isCompleted) _headers.complete({});
+    if (!_trailers.isCompleted) _trailers.complete({});
+  }
 
   @override
   Future<Map<String, String>> get headers => _headers.future;
 
   @override
   Future<Map<String, String>> get trailers => _trailers.future;
+}
+
+GrpcError _mapCoreExceptionToGrpcError(Object error) {
+  if (error is CoreTimeoutException ||
+      error is CoreUnavailableException ||
+      error is CoreShutdownException ||
+      error is CoreRestartRequiredException) {
+    return GrpcError.unavailable(error.toString(), null, error);
+  }
+  return GrpcError.internal(error.toString(), null, error);
 }

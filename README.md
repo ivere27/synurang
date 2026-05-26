@@ -562,15 +562,109 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 
 ### Dart
 
+#### Lifecycle
+
 ```dart
-// Start/stop the embedded server
-await startGrpcServerAsync();
+// Start/stop the embedded native core
+await startGrpcServerAsync(token: 'xxx', cachePath: '/path/to/cache');
 await stopGrpcServerAsync();
 
-// Cache API (Go-managed SQLite)
+// Reusable options object (recommended — also required for recoverCoreAsync)
+final opts = StartGrpcServerOptions(
+  token: 'xxx',
+  cachePath: '/path/to/cache',
+);
+await startGrpcServerWithOptionsAsync(opts);
+```
+
+#### Per-call timeout
+
+The default Dart-side wait for any FFI call is **30 seconds**. A timeout marks the
+core unhealthy and cancels every other in-flight request. For calls that may
+legitimately exceed 30s (heavy queries, batch ops, blob uploads), pass an
+explicit `timeout:`. The backend enforces the deadline first; Dart waits
+`timeout + 5s` grace so callers receive a clean `DEADLINE_EXCEEDED` rather than
+a `CoreTimeoutException`.
+
+```dart
+await invokeBackendAsync(method, data, timeout: Duration(minutes: 5));
+
+// gRPC clients flow through CallOptions.timeout automatically
+final stub = MyServiceClient(channel,
+    options: CallOptions(timeout: Duration(minutes: 5)));
+```
+
+#### Core state & recovery
+
+If the native core hangs (e.g., a Rust deadlock holding a global lock),
+`recoverCoreAsync` performs a Dart-side reset plus native `Stop`/`Start`
+without reloading the shared library.
+
+| `CoreState` | meaning | accepts RPCs? |
+|---|---|---|
+| `healthy` | normal operation | yes |
+| `unhealthy` | a request timed out; recovery not yet attempted | no |
+| `recovering` | recovery is in flight | no |
+| `restartRequired` | recovery itself timed out — native lib likely deadlocked | never (sticky) |
+
+```dart
+try {
+  await client.someRpc(...);
+} on CoreTimeoutException {
+  final result = await recoverCoreAsync(
+    previousStartOptions: opts,
+    stopTimeout: Duration(seconds: 2),
+    startTimeout: Duration(seconds: 5),
+  );
+
+  if (result.recovered) {
+    // Re-create gRPC channels / providers as needed
+  } else if (result.restartRequired) {
+    // Native lib is wedged — process restart is the only remedy
+    showRestartRequiredUi();
+  } else {
+    // result.failed — surface error, retry later if appropriate
+  }
+}
+
+// Inspect state directly
+final state = getCoreState();
+```
+
+`recoverCoreAsync` is idempotent under concurrent callers: a second call while
+one is in flight returns the same future. The caller owns
+`previousStartOptions` — synurang does not cache them. There is **no** automatic
+RPC retry: timed-out FFI calls may still complete later natively, and retrying
+non-idempotent operations is the caller's choice.
+
+`resetCoreState()` kills helper isolates and fails pending requests/streams but
+does **not** unload or reload the shared library. Use it for app-restart-style
+cleanup, not for recovery from a native hang.
+
+#### Exceptions
+
+| Exception | When | gRPC mapping |
+|---|---|---|
+| `CoreTimeoutException` | FFI request exceeded its timeout | `unavailable` |
+| `CoreUnavailableException` | RPC issued while `unhealthy` / `recovering` | `unavailable` |
+| `CoreRestartRequiredException` | core is in `restartRequired` (or recovery timed out) | `unavailable` |
+| `CoreShutdownException` | core was reset under the caller | `unavailable` |
+
+`FfiClientChannel` automatically maps the above to `GrpcError.unavailable`; any
+other error → `internal`.
+
+#### Cache API
+
+```dart
 await cacheGetRaw(store, key);
 await cachePutRaw(store, key, data, ttl);
 ```
+
+> **Note:** `recoverCoreAsync` only applies to the embedded core (the mode
+> activated by `startGrpcServerAsync` — what the Transports table calls
+> "FFI (source)"). In plugin mode (`registerPlugin`) there are no `Start`/`Stop`
+> symbols to call, so recovery always returns `restartRequired` — a process
+> restart is required for native-side hangs.
 
 ### Go
 

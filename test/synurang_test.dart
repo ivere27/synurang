@@ -14,11 +14,16 @@ void main() {
     late Directory tmpDir;
 
     setUpAll(() async {
+      configureSynurang(
+        libraryName: 'synurang',
+        libraryPath: '${Directory.current.path}/src/libsynurang.so',
+      );
       prewarmIsolate();
       tmpDir = Directory.systemTemp.createTempSync('synura_cache_test_');
       await startGrpcServerAsync(
         cachePath: tmpDir.path,
         token: 'test-cache',
+        enableCache: true,
       );
     });
 

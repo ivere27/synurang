@@ -278,6 +278,23 @@ func InvokeBackend(method *C.char, data unsafe.Pointer, dataLen C.longlong) C.Ff
 	goMethod := C.GoString(method)
 	goData := unsafe.Slice((*byte)(data), int(dataLen))
 
+	// Test-only RPCs. In production builds tryDebugHang is a no-op stub.
+	if handled, debugResp, debugErr := tryDebugHang(goMethod, goData); handled {
+		if debugErr != nil {
+			errBytes := ffierror.Marshal(debugErr)
+			cErr := C.CBytes(errBytes)
+			return C.FfiData{
+				data: cErr,
+				len:  C.longlong(-len(errBytes)),
+			}
+		}
+		cOk := C.CBytes(debugResp)
+		return C.FfiData{
+			data: cOk,
+			len:  C.longlong(len(debugResp)),
+		}
+	}
+
 	// Zero-copy: service-scoped dispatchers allocate C memory and serialize directly
 	cPtr, size, err := invokeCoreFfiByMethod(localImpl, context.Background(), goMethod, goData)
 
@@ -381,6 +398,17 @@ func InvokeBackendWithMeta(method *C.char, data unsafe.Pointer, dataLen C.longlo
 
 	// Metadata available in 'metadata' map for handlers that need it
 	_ = metadata
+
+	// Test-only RPCs. In production builds tryDebugHang is a no-op stub.
+	if handled, debugResp, debugErr := tryDebugHang(goMethod, goData); handled {
+		if debugErr != nil {
+			errBytes := ffierror.Marshal(debugErr)
+			cErr := C.CBytes(errBytes)
+			return C.FfiData{data: cErr, len: C.longlong(-len(errBytes))}
+		}
+		cOk := C.CBytes(debugResp)
+		return C.FfiData{data: cOk, len: C.longlong(len(debugResp))}
+	}
 
 	// Zero-copy: service-scoped dispatchers allocate C memory and serialize directly
 	cPtr, size, err := invokeCoreFfiByMethod(localImpl, ctx, goMethod, goData)
