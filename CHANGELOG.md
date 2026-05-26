@@ -1,3 +1,16 @@
+## 0.6.2
+
+*   **Dart core recovery**: Added `StartGrpcServerOptions`, `CoreState`, `CoreRecoveryResult`, `recoverCoreAsync`, `getCoreState`, and `resetCoreState` so apps can explicitly recover the embedded native core after an FFI timeout by resetting Dart helper isolates and issuing native `Stop` / `Start` calls.
+*   **Timeout and shutdown handling**: Per-call FFI timeouts now mark the core unhealthy, fail pending requests, close active server/plugin streams, and gate new RPCs with `CoreUnavailableException` or `CoreRestartRequiredException`. `FfiClientChannel` maps these recovery errors to gRPC `unavailable`.
+*   **Recovery test coverage**: Added a debug-only `HangFor` RPC plus recovery tests covering core state transitions, concurrent `recoverCoreAsync` callers, lifecycle calls while unhealthy, pending request cleanup, stream cleanup, and `restartRequired` behavior.
+*   **Rust generator implementation**: Added `protoc-gen-synurang-ffi-rs`, a Rust/prost reimplementation of `protoc-gen-synurang-ffi`, with make targets and parity tests that compare generated output, flag validation, and benchmark runs against the Go generator.
+
+## 0.6.1
+
+*   **C++ Lite support**: Added a zero-dependency C++11 header-only runtime (`cpp/synurang_lite.hpp`) and `lang=cpp,mode=lite` code generation for protobuf messages and FFI service stubs.
+*   **C++ Lite protobuf coverage**: Generated lite headers now cover imported lite headers, well-known types, maps, repeated and packed fields, optional fields, oneofs, and streaming service helpers without requiring libprotobuf or gRPC.
+*   **C++ generation tests**: Expanded C++ generator tests to validate lite header generation for core/cache/native protos and syntax-check the generated headers with `g++`.
+
 ## 0.6.0
 
 *   **Swift Lite support**: Added zero-dependency Swift runtime packaging, Swift code generation, ProtoLite encoding/decoding, well-known type support, plugin host/stream APIs, and Swift generator/integration/stress tests.
