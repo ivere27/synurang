@@ -100,11 +100,17 @@ for target in "${targets[@]}"; do
   assets+=("${asset}")
 done
 
+# Read the annotated tag's message for the release notes instead of gh's
+# --notes-from-tag, which older gh versions (< 2.31) do not support. The remote
+# tag is already verified against HEAD by assert_release_source, so --verify-tag
+# is redundant and likewise omitted for compatibility with older gh.
+tag_notes="$(git -C "${repo_root}" tag -l --format='%(contents)' "${tag}")"
+[[ -n "${tag_notes}" ]] || tag_notes="${tag}"
+
 release_flags=(
   --repo "${github_repo}"
   --title "${tag}"
-  --notes-from-tag
-  --verify-tag
+  --notes-file -
 )
 if [[ "${version}" == *-* ]]; then
   release_flags+=(--prerelease)
@@ -113,7 +119,7 @@ fi
 # gh creates a draft internally while it uploads positional assets, and only
 # publishes after every upload succeeds. A failed upload therefore cannot
 # leave a partially populated public release.
-gh release create "${tag}" \
+printf '%s\n' "${tag_notes}" | gh release create "${tag}" \
   "${release_flags[@]}" \
   "${assets[@]}" "${checksum_file}"
 
