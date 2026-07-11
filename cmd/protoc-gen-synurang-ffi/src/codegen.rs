@@ -13,12 +13,12 @@ use prost_types::{field_descriptor_proto, FieldDescriptorProto};
 use crate::funcs_lang::{cpp_guard_name, cpp_qualified_type, well_known_output_type};
 use crate::gofmt::final_content;
 use crate::model::{
-    fqn_for_top, go_package_alias, ActiveXProperty, ActiveXServiceOption, DescriptorIndex, EnumData,
-    FieldData, FileData, FileInfo, MessageData, MessageInfo, MethodData, ServiceData,
+    fqn_for_top, go_package_alias, ActiveXProperty, ActiveXServiceOption, DescriptorIndex,
+    EnumData, FieldData, FileData, FileInfo, MessageData, MessageInfo, MethodData, ServiceData,
 };
 use crate::names::{
-    acronym_aware_snake_case, basename, go_camel, pascal_from_snake, to_snake_case,
-    trim_proto_suffix, upper_first,
+    acronym_aware_snake_case, basename, go_camel, pascal_from_snake, python_identifier,
+    to_snake_case, trim_proto_suffix, upper_first,
 };
 use crate::template::TemplateEngine;
 use crate::value::Value;
@@ -26,91 +26,93 @@ use crate::value::Value;
 pub const TEMPLATE_FILES: &[(&str, &str)] = &[
     (
         "_rust_invoke.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/_rust_invoke.tmpl"),
+        include_str!("../templates/_rust_invoke.tmpl"),
     ),
     (
         "_rust_plugin_trait.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/_rust_plugin_trait.tmpl"),
+        include_str!("../templates/_rust_plugin_trait.tmpl"),
     ),
     (
         "c_activex.h.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/c_activex.h.tmpl"),
+        include_str!("../templates/c_activex.h.tmpl"),
     ),
     (
         "c_native.h.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/c_native.h.tmpl"),
+        include_str!("../templates/c_native.h.tmpl"),
     ),
-    (
-        "cpp.h.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/cpp.h.tmpl"),
-    ),
+    ("cpp.h.tmpl", include_str!("../templates/cpp.h.tmpl")),
     (
         "cpp_lite.hpp.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/cpp_lite.hpp.tmpl"),
+        include_str!("../templates/cpp_lite.hpp.tmpl"),
     ),
     (
         "cpp_plugin_server.cc.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/cpp_plugin_server.cc.tmpl"),
+        include_str!("../templates/cpp_plugin_server.cc.tmpl"),
     ),
     (
         "cpp_plugin_server.h.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/cpp_plugin_server.h.tmpl"),
+        include_str!("../templates/cpp_plugin_server.h.tmpl"),
     ),
     (
         "csharp.cs.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/csharp.cs.tmpl"),
+        include_str!("../templates/csharp.cs.tmpl"),
     ),
     (
         "csharp_lite.cs.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/csharp_lite.cs.tmpl"),
+        include_str!("../templates/csharp_lite.cs.tmpl"),
     ),
     (
         "dart.dart.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/dart.dart.tmpl"),
+        include_str!("../templates/dart.dart.tmpl"),
     ),
     (
         "go_default.go.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/go_default.go.tmpl"),
+        include_str!("../templates/go_default.go.tmpl"),
     ),
     (
         "go_plugin_client.go.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/go_plugin_client.go.tmpl"),
+        include_str!("../templates/go_plugin_client.go.tmpl"),
     ),
     (
         "go_plugin_server.go.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/go_plugin_server.go.tmpl"),
+        include_str!("../templates/go_plugin_server.go.tmpl"),
     ),
     (
         "java.java.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/java.java.tmpl"),
+        include_str!("../templates/java.java.tmpl"),
     ),
     (
-        "rust.rs.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/rust.rs.tmpl"),
+        "python.py.tmpl",
+        include_str!("../templates/python.py.tmpl"),
     ),
+    (
+        "python_lite.py.tmpl",
+        include_str!("../templates/python_lite.py.tmpl"),
+    ),
+    ("rust.rs.tmpl", include_str!("../templates/rust.rs.tmpl")),
     (
         "rust_native.rs.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/rust_native.rs.tmpl"),
+        include_str!("../templates/rust_native.rs.tmpl"),
     ),
     (
         "rust_plugin_server.rs.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/rust_plugin_server.rs.tmpl"),
+        include_str!("../templates/rust_plugin_server.rs.tmpl"),
     ),
     (
         "rust_wasm.rs.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/rust_wasm.rs.tmpl"),
+        include_str!("../templates/rust_wasm.rs.tmpl"),
     ),
     (
         "swift_lite.swift.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/swift_lite.swift.tmpl"),
+        include_str!("../templates/swift_lite.swift.tmpl"),
     ),
     (
         "typescript.ts.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/typescript.ts.tmpl"),
+        include_str!("../templates/typescript.ts.tmpl"),
     ),
     (
         "typescript_lite.ts.tmpl",
-        include_str!("../../protoc-gen-synurang-ffi/templates/typescript_lite.ts.tmpl"),
+        include_str!("../templates/typescript_lite.ts.tmpl"),
     ),
 ];
 
@@ -183,9 +185,10 @@ pub fn parse_params(raw: &str) -> Result<ParsedParams, String> {
                 } else if v == "false" {
                     annotate_code = false;
                 } else {
-                    return Err(format!(
+                    return Err(
                         "bad value for parameter \"annotate_code\": want \"true\" or \"false\""
-                    ));
+                            .to_string(),
+                    );
                 }
                 continue;
             }
@@ -212,6 +215,7 @@ pub fn parse_params(raw: &str) -> Result<ParsedParams, String> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn generate_from_template(
     response: &mut CodeGeneratorResponse,
     engine: &TemplateEngine,
@@ -285,6 +289,9 @@ fn build_file_data(
         java_package: String::new(),
         external_imports: Vec::new(),
         go_imports: Vec::new(),
+        python_imports: Vec::new(),
+        python_lite_imports: Vec::new(),
+        python_lite_module: String::new(),
         pb_dart_file: String::new(),
         pb_header_file: String::new(),
         pb_ts_lite_file: String::new(),
@@ -351,10 +358,26 @@ fn build_file_data(
         "typescript" | "ts" => {
             data.pb_ts_lite_file = format!("./{}_lite.js", trim_proto_suffix(&base_proto));
         }
+        "python" | "py" => {
+            data.python_lite_module = python_lite_module_name(&file.path);
+            let mut imports = BTreeMap::new();
+            for dependency in &file.desc.dependency {
+                if dependency.starts_with("google/protobuf/") {
+                    continue;
+                }
+                let module = python_lite_module_name(dependency);
+                imports.insert(module.clone(), python_module_alias(&module));
+            }
+            data.python_lite_imports = imports
+                .into_iter()
+                .map(|(module, alias)| (alias, module))
+                .collect();
+        }
         _ => {}
     }
 
     let mut go_imports: BTreeMap<String, String> = BTreeMap::new();
+    let mut python_imports: BTreeMap<String, String> = BTreeMap::new();
     for service in &file.desc.service {
         let service_name = service.name.clone().unwrap_or_default();
         let service_go_name = go_camel(&service_name);
@@ -401,6 +424,8 @@ fn build_file_data(
                     is_streaming,
                     &mut go_imports,
                 ),
+                input_python_type: qualify_python_type(input, &mut python_imports),
+                output_python_type: qualify_python_type(output, &mut python_imports),
                 is_server_streaming: is_server_stream && !is_client_stream,
                 is_client_streaming: is_client_stream && !is_server_stream,
                 is_bidi_streaming: is_server_stream && is_client_stream,
@@ -433,6 +458,10 @@ fn build_file_data(
         .into_iter()
         .map(|(path, alias)| (alias, path))
         .collect();
+    data.python_imports = python_imports
+        .into_iter()
+        .map(|(module, alias)| (alias, module))
+        .collect();
 
     let mut visited = BTreeSet::new();
     for service in &file.desc.service {
@@ -452,6 +481,7 @@ fn build_file_data(
     mark_box_fields(&mut data.messages);
 
     let needs_local_types = lang == "typescript"
+        || lang == "python"
         || (lang == "csharp" && mode_or_opt == "lite")
         || (lang == "swift" && mode_or_opt == "lite")
         || (lang == "cpp" && mode_or_opt == "lite");
@@ -618,6 +648,8 @@ fn collect_message_data(
 fn message_data(index: &DescriptorIndex, msg: &MessageInfo) -> MessageData {
     MessageData {
         name: msg.go_name.clone(),
+        fqn: msg.fqn.clone(),
+        python_name: msg.python_name.clone(),
         fields: msg
             .desc
             .field
@@ -795,6 +827,8 @@ fn collect_enum_data(
     }
     out.push(EnumData {
         name: en.go_name.clone(),
+        fqn: en.fqn.clone(),
+        python_name: en.python_name.clone(),
         values: en
             .desc
             .value
@@ -944,6 +978,31 @@ fn qualify_go_type(
     format!("{alias}.{}", msg.go_name)
 }
 
+fn python_lite_module_name(proto_path: &str) -> String {
+    if proto_path.starts_with("google/protobuf/") {
+        return "synurang.proto".to_string();
+    }
+    let stem = trim_proto_suffix(&basename(proto_path)).replace('-', "_");
+    format!("{stem}_lite")
+}
+
+fn python_module_alias(module: &str) -> String {
+    module.replace('_', "__").replace('.', "_dot_")
+}
+
+fn qualify_python_type(
+    msg: Option<&MessageInfo>,
+    imports: &mut BTreeMap<String, String>,
+) -> String {
+    let Some(msg) = msg else {
+        return "object".to_string();
+    };
+    let module = python_lite_module_name(&msg.file_path);
+    let alias = python_module_alias(&module);
+    imports.insert(module, alias.clone());
+    format!("{alias}.{}", python_identifier(&msg.go_name))
+}
+
 fn cpp_lite_message_type(msg: Option<&MessageInfo>, current_file: &FileInfo) -> String {
     let Some(msg) = msg else {
         return "int32_t".to_string();
@@ -976,6 +1035,13 @@ pub fn select_template(lang: &str, mode_or_opt: &str) -> Option<&'static str> {
             _ => "c_native.h.tmpl",
         },
         "java" => "java.java.tmpl",
+        "python" | "py" => {
+            if mode_or_opt == "lite" {
+                "python_lite.py.tmpl"
+            } else {
+                "python.py.tmpl"
+            }
+        }
         "csharp" => {
             if mode_or_opt == "lite" {
                 "csharp_lite.cs.tmpl"
@@ -1033,6 +1099,7 @@ fn output_filename_with_mode(file: &FileInfo, lang: &str, mode: &str, ext: &str)
             "typescript" | "ts" => format!("{base}_lite.ts"),
             "swift" => format!("{base}_lite.swift"),
             "cpp" => format!("{base}_lite.hpp"),
+            "python" | "py" => format!("{base}_lite.py"),
             _ => format!("{base}_ffi"),
         };
     }
@@ -1046,6 +1113,7 @@ fn output_filename_with_mode(file: &FileInfo, lang: &str, mode: &str, ext: &str)
         "csharp" => format!("{base}_ffi.cs"),
         "typescript" | "ts" => format!("{base}_ffi.ts"),
         "swift" => format!("{base}_ffi.swift"),
+        "python" | "py" => format!("{base}_ffi.py"),
         _ => format!("{base}_ffi"),
     }
 }

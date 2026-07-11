@@ -1,0 +1,71 @@
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    build-essential \
+    ca-certificates \
+    curl \
+    file \
+    gcc-mingw-w64-x86-64 \
+    unzip \
+    xz-utils \
+    zip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Keep the release toolchain fixed so rebuilding a source revision does not
+# silently pick up a newer compiler.
+ARG RUST_TOOLCHAIN=1.85.1
+ARG RUSTUP_VERSION=1.27.1
+ARG RUSTUP_SHA256=6aeece6993e902708983b209d04c0d1dbb14ebb405ddb87def578d41f920f56d
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:${PATH}
+
+RUN curl -fsSL \
+      "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
+      -o /tmp/rustup-init && \
+    echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum --check --strict && \
+    chmod +x /tmp/rustup-init && \
+    /tmp/rustup-init -y --profile minimal --default-toolchain "${RUST_TOOLCHAIN}" && \
+    rm -f /tmp/rustup-init && \
+    rustup target add \
+      aarch64-unknown-linux-musl \
+      x86_64-pc-windows-gnu \
+      x86_64-unknown-linux-musl
+
+# cargo-zigbuild supplies hermetic musl linkers for static Linux x86_64 and
+# aarch64 executables. The image is intentionally amd64; arm64 Docker hosts can
+# run it through emulation.
+ARG ZIG_VERSION=0.13.0
+ARG ZIG_SHA256=d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
+RUN curl -fsSL \
+      "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" \
+      -o /tmp/zig.tar.xz && \
+    echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum --check --strict && \
+    tar -xf /tmp/zig.tar.xz -C /opt && \
+    ln -s "/opt/zig-linux-x86_64-${ZIG_VERSION}/zig" /usr/local/bin/zig && \
+    rm -f /tmp/zig.tar.xz && \
+    cargo install --locked --version 0.20.1 cargo-zigbuild
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Prime Cargo's registry cache. The mounted checkout remains the source of
+# truth when the container runs.
+COPY cmd/protoc-gen-synurang-ffi/Cargo.toml /tmp/codegen-crate/Cargo.toml
+COPY cmd/protoc-gen-synurang-ffi/Cargo.lock /tmp/codegen-crate/Cargo.lock
+RUN mkdir -p /tmp/codegen-crate/src && \
+    touch /tmp/codegen-crate/src/main.rs && \
+    cargo fetch --locked --manifest-path /tmp/codegen-crate/Cargo.toml && \
+    rm -rf /tmp/codegen-crate && \
+    chmod -R a+rwX /opt/cargo /opt/rustup
+
+COPY docker/build_codegen_release.sh /opt/synurang/build_codegen_release.sh
+RUN chmod +x /opt/synurang/build_codegen_release.sh
+
+WORKDIR /workspace/synurang
+ENTRYPOINT ["/opt/synurang/build_codegen_release.sh"]

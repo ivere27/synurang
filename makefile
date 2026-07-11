@@ -10,7 +10,8 @@ COMMIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "dev")
 COMMIT_DATE ?= $(shell git log -1 --format='%cd' --date=format:'%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "unknown")
 BUILD_DATE := $(shell date +"%Y-%m-%dT%H:%M:%SZ")
 LD_FLAGS := -X main.commitHash=$(COMMIT_HASH) -X main.commitDate=$(COMMIT_DATE) -X main.buildDate=$(BUILD_DATE)
-CURRENT_DIR := $(shell pwd)
+ROOT_DIR := $(patsubst %/,%,$(abspath $(dir $(lastword $(MAKEFILE_LIST)))))
+CURRENT_DIR := $(ROOT_DIR)
 BRUTE_DURATION ?= 5m
 BRUTE_PHASE ?= 45s
 BRUTE_WORKERS ?= 16
@@ -55,7 +56,15 @@ DESKTOP_GROUP_ID ?= io.github.ivere27
 DESKTOP_ARTIFACT_ID_CORE ?= synurang-desktop
 DESKTOP_ARTIFACT_ID_GRPC ?= synurang-desktop-grpc
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_ffi_csharp test_plugin test_plugin_race run ffigen benchmark build_server build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen build_plugin_rs test_ffi_rs_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar
+# Rust protoc generator release bundles
+CODEGEN_DOCKER_IMAGE ?= synurang-codegen-release:latest
+CODEGEN_DOCKER_PLATFORM ?= linux/amd64
+CODEGEN_VERSION ?=
+CODEGEN_TARGETS ?= x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-gnu
+CODEGEN_GITHUB_REPO ?= ivere27/synurang
+CODEGEN_DIST_DIR ?= $(CURRENT_DIR)/dist/codegen
+
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_python test_python_gen test_python_grpc test_host_python test_codegen test_ffi_csharp test_ffi_python test_plugin test_plugin_race run ffigen benchmark build_server build_plugin build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar docker_codegen_image docker_codegen publish_github publish_github_codegen
 
 # =============================================================================
 # Default Target
@@ -87,15 +96,12 @@ ffigen:
 # =============================================================================
 
 build_plugin:
-	go build -o bin/protoc-gen-synurang-ffi ./cmd/protoc-gen-synurang-ffi
-
-build_plugin_rs:
-	cargo build --release --manifest-path cmd/protoc-gen-synurang-ffi-rs/Cargo.toml
+	cargo build --release --locked --manifest-path cmd/protoc-gen-synurang-ffi/Cargo.toml
 	mkdir -p bin
-	cp target/release/protoc-gen-synurang-ffi-rs bin/protoc-gen-synurang-ffi-rs
+	cp target/release/protoc-gen-synurang-ffi bin/protoc-gen-synurang-ffi
 
-test_ffi_rs_gen:
-	bash test/test_ffi_rs_gen.sh
+test_codegen:
+	bash test/test_codegen.sh
 
 proto: build_plugin
 	@echo "Generating proto code..."
@@ -361,6 +367,37 @@ docker_desktop_jar: docker_desktop_jar_image
 		"$(DESKTOP_DOCKER_IMAGE)"
 	@echo "Desktop JAR artifacts: dist/maven/"
 
+# =============================================================================
+# Rust protoc generator release (Docker + GitHub Releases)
+# =============================================================================
+docker_codegen_image:
+	@echo "Building Docker image for Rust code generator releases..."
+	docker build --platform "$(CODEGEN_DOCKER_PLATFORM)" \
+		-t "$(CODEGEN_DOCKER_IMAGE)" -f Dockerfile.codegen .
+
+docker_codegen:
+	@test -n "$(CODEGEN_VERSION)" || { \
+		echo "Error: CODEGEN_VERSION is required (for example: make docker_codegen CODEGEN_VERSION=0.6.3)."; \
+		exit 1; \
+	}
+	CODEGEN_VERSION="$(CODEGEN_VERSION)" \
+	CODEGEN_TARGETS="$(CODEGEN_TARGETS)" \
+	CODEGEN_DOCKER_IMAGE="$(CODEGEN_DOCKER_IMAGE)" \
+	CODEGEN_DOCKER_PLATFORM="$(CODEGEN_DOCKER_PLATFORM)" \
+	CODEGEN_DIST_DIR="$(CODEGEN_DIST_DIR)" \
+		bash docker/build_codegen_release.sh
+
+publish_github_codegen:
+	CODEGEN_VERSION="$(CODEGEN_VERSION)" \
+	CODEGEN_TARGETS="$(CODEGEN_TARGETS)" \
+	CODEGEN_DOCKER_IMAGE="$(CODEGEN_DOCKER_IMAGE)" \
+	CODEGEN_DOCKER_PLATFORM="$(CODEGEN_DOCKER_PLATFORM)" \
+	CODEGEN_DIST_DIR="$(CODEGEN_DIST_DIR)" \
+	CODEGEN_GITHUB_REPO="$(CODEGEN_GITHUB_REPO)" \
+		bash docker/publish_codegen_release.sh
+
+publish_github: publish_github_codegen
+
 # Plugin Shared Library (for test/plugin)
 shared_plugin:
 	@echo "Building plugin shared library..."
@@ -378,8 +415,8 @@ build_plugin_host:
 # Tests
 # =============================================================================
 
-# Run all tests (Go + Dart + C++ + Rust + Native/WASM + TypeScript + C# + Swift + Plugin)
-test: test_go test_dart test_cpp test_rust test_native_wasm_gen test_typescript_gen test_csharp test_swift test_plugin test_ffi_rs_gen
+# Run all tests (Go + Dart + C++ + Rust + Python + Native/WASM + TypeScript + C# + Swift + Plugin)
+test: test_go test_dart test_cpp test_rust test_python test_native_wasm_gen test_typescript_gen test_csharp test_swift test_plugin test_codegen
 	@echo "All tests complete."
 
 # C++ Tests (Generation + FFI)
@@ -432,6 +469,33 @@ test_swift_gen:
 	./test/test_swift_gen.sh
 	@echo "Swift generation tests complete."
 
+# Python Tests (Generation + ctypes FFI host)
+.PHONY: test_python_runtime
+test_python: test_python_gen test_python_runtime
+	@echo "All Python tests complete."
+
+test_python_gen:
+	@echo "Running Python generation tests..."
+	./test/test_python_gen.sh
+	@echo "Python generation tests complete."
+
+test_python_runtime:
+	@echo "Running Python ctypes host tests..."
+	./test/test_python_runtime.sh
+	@echo "Python ctypes host tests complete."
+
+test_python_grpc:
+	@python3 -c 'import grpc' >/dev/null 2>&1 || { \
+		echo "Error: grpcio is required; install with: python3 -m pip install './python[grpc]'"; \
+		exit 1; \
+	}
+	SYNURANG_REQUIRE_GRPC_TEST=1 ./test/test_python_gen.sh
+	@echo "Python remote gRPC transport tests complete."
+
+test_host_python: test_python_runtime
+
+test_ffi_python: test_python_runtime
+
 # Rust FFI Integration tests (Mock Backend)
 test_rust_ffi:
 	@echo "Running Rust FFI Integration tests..."
@@ -476,10 +540,10 @@ test_plugin_race: proto shared_plugin
 # FFI API Tests (No gRPC — raw bytes, all 4 RPC types)
 # =============================================================================
 
-# Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)
-test_ffi: test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_ffi_csharp
+# Run all FFI API tests (Go, C++, Rust, Java, Dart, C#, Python)
+test_ffi: test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_ffi_csharp test_ffi_python
 	@echo "\n═══════════════════════════════════════════════════════════════"
-	@echo "  All FFI API tests passed (Go, C++, Rust, Java, Dart, C#)"
+	@echo "  All FFI API tests passed (Go, C++, Rust, Java, Dart, C#, Python)"
 	@echo "═══════════════════════════════════════════════════════════════\n"
 
 # Go FFI test
@@ -1092,6 +1156,7 @@ help:
 	@echo ""
 	@echo "Build Targets:"
 	@echo "  all               - Build proto and Linux shared library"
+	@echo "  build_plugin      - Build the canonical Rust protoc-gen-synurang-ffi binary"
 	@echo "  shared_linux      - Build Linux amd64 shared library"
 	@echo "  shared_android    - Build Android ARM/ARM64/x86_64 shared libraries"
 	@echo "  proto             - Generate Go, Dart, and FFI proto code"
@@ -1100,18 +1165,23 @@ help:
 	@echo "  docker_android_aar_debug - Build debug core + grpc AARs into dist/maven"
 	@echo "  docker_desktop_jar_image - Build Docker image for desktop JAR packaging"
 	@echo "  docker_desktop_jar - Build desktop JARs (JNI natives + classes) into dist/maven"
+	@echo "  docker_codegen    - Build Rust generator release archives (requires CODEGEN_VERSION)"
+	@echo "  publish_github_codegen - Build and upload generator archives to a GitHub release"
 	@echo "  publish_maven     - Upload all bundles (AAR + desktop JAR) to Maven Central"
 	@echo ""
 	@echo "Test Targets:"
-	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Native/WASM + C# + Swift + Plugin)"
-	@echo "  test_ffi          - Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)"
-	@echo "  test_ffi_{go,cpp,rust,java,dart,csharp} - Run individual FFI API test"
+	@echo "  test              - Run all tests (Go + Dart + C++ + Rust + Python + Native/WASM + C# + Swift + Plugin)"
+	@echo "  test_codegen      - Run the canonical Rust generator regression matrix"
+	@echo "  test_ffi          - Run all FFI API tests (Go, C++, Rust, Java, Dart, C#, Python)"
+	@echo "  test_ffi_{go,cpp,rust,java,dart,csharp,python} - Run individual FFI API test"
 	@echo "  test_go           - Run Go tests only"
 	@echo "  test_dart         - Run Dart tests only"
 	@echo "  test_plugin       - Run plugin FFI tests (test/plugin)"
 	@echo "  test_plugin_all   - Test all plugins × all hosts (Go,C++,Rust × Go,C++,Rust,Java,C#,Swift)"
 	@echo "  test_cpp          - Run C++ tests (gen + FFI)"
 	@echo "  test_rust         - Run Rust tests (gen + FFI)"
+	@echo "  test_python       - Run Python generation + ctypes host tests"
+	@echo "  test_python_grpc  - Run optional Python remote gRPC transport integration"
 	@echo "  test_native_wasm_gen - Run native/wasm codegen checks"
 	@echo "  test_typescript_gen - Run TypeScript codegen checks"
 	@echo "  test_csharp       - Run C# tests (gen + FFI API)"

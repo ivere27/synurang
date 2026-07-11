@@ -20,6 +20,10 @@ The FFI wire format itself is protobuf-only. Some language packages still bundle
 
 Both skip generated gRPC stubs and channels in the actual call path. The codegen approach is recommended unless you need custom serialization or want to avoid the codegen step.
 
+The canonical `protoc-gen-synurang-ffi` executable is implemented in Rust.
+The `lang` option selects its output language; for example, `lang=go` still
+generates Go bindings and does not select a Go implementation of the generator.
+
 ---
 
 ## Go
@@ -700,6 +704,153 @@ stream.close();
 
 ---
 
+## Python (3.10+)
+
+Python 2 is not supported. The Python package provides transport-neutral
+clients, an in-process plugin/FFI host, and an optional remote gRPC transport;
+it does not currently provide a Python plugin server or process host. Its core
+`ctypes` runtime and generated protobuf-lite messages use only the Python
+standard library. Python message generation currently targets proto3 schemas.
+
+### Dependencies
+
+From a Synurang checkout:
+
+```sh
+python3 -m pip install ./python
+```
+
+### With codegen
+
+Generate both dependency-free protobuf-lite messages and the Synurang client:
+
+```sh
+protoc --synurang-ffi_out=. --synurang-ffi_opt=lang=python \
+       your_service.proto
+```
+
+This emits `your_service_lite.py` and `your_service_ffi.py`; neither
+`protoc --python_out` nor `google.protobuf` is required. The generated
+`*Client` class exposes typed, snake-case methods for all four RPC styles over
+any `RpcTransport`. `*Ffi` remains as a compatibility wrapper:
+
+```python
+import your_service_lite as pb
+from synurang import FfiTransport, PluginHost
+from your_service_ffi import GreeterClient, GreeterFfi
+
+with PluginHost.load("./libmyplugin.so") as plugin:
+    # Existing API
+    greeter = GreeterFfi(plugin)
+
+    # Equivalent neutral-transport API
+    greeter = GreeterClient(FfiTransport(plugin))
+
+    # Unary
+    reply = greeter.say_hello(pb.HelloRequest(name="World"))
+
+    # Server streaming: request -> Iterator[response]
+    for item in greeter.list_items(pb.ListRequest()):
+        print(item)
+
+    # Client streaming: Iterable[request] -> response
+    upload_reply = greeter.upload(iter(chunks))
+
+    # Bidirectional streaming: explicit typed send/receive stream
+    with greeter.chat() as chat:
+        for message in messages:
+            chat.send(message)
+        chat.close_send()
+        for reply in chat.responses():
+            print(reply)
+```
+
+`lang=py` is an alias for `lang=python`. Add `mode=lite` to emit only the
+message module.
+
+### Remote gRPC with the same client
+
+Remote transport is an optional dependency; generated messages remain
+dependency-free and do not use `google.protobuf` or `grpcio-tools`:
+
+```sh
+python3 -m pip install './python[grpc]'
+```
+
+```python
+import your_service_lite as pb
+from synurang import GrpcTransport
+from your_service_ffi import GreeterClient
+
+with GrpcTransport.insecure_channel("127.0.0.1:50051") as transport:
+    greeter = GreeterClient(transport)
+    reply = greeter.say_hello(
+        pb.HelloRequest(name="World"),
+        timeout=5.0,
+        metadata=(("x-request-id", "example"),),
+    )
+```
+
+`GrpcTransport` uses synchronous `grpcio` and supports unary, server-streaming,
+client-streaming, and bidirectional-streaming methods. Remote failures remain
+native `grpc.RpcError` values; plugin failures remain `FfiError` values. The
+generated keyword-only `timeout` and `metadata` arguments are forwarded to the
+transport; the current native plugin ABI carries neither, so `FfiTransport`
+rejects non-default values instead of silently ignoring them.
+
+### Manual (raw bytes)
+
+`PluginHost.invoke()` and `PluginHost.open_stream()` accept the service's short
+name, the full protobuf method path, and serialized message bytes. A stream's
+`recv()` returns `None` at EOF.
+
+```python
+import your_service_lite as pb
+from synurang import PluginHost
+
+with PluginHost.load("./libmyplugin.so") as plugin:
+    # Unary
+    data = plugin.invoke(
+        "Greeter",
+        "/mypackage.Greeter/SayHello",
+        pb.HelloRequest(name="World").SerializeToString(),
+    )
+    reply = pb.HelloReply.FromString(data)
+
+    # Server streaming
+    with plugin.open_stream(
+        "Greeter", "/mypackage.Greeter/ListItems"
+    ) as stream:
+        stream.send(pb.ListRequest().SerializeToString())
+        stream.close_send()
+        while (data := stream.recv()) is not None:
+            print(pb.Item.FromString(data))
+
+    # Client streaming
+    with plugin.open_stream(
+        "Greeter", "/mypackage.Greeter/Upload"
+    ) as stream:
+        for chunk in chunks:
+            stream.send(chunk.SerializeToString())
+        stream.close_send()
+        data = stream.recv()
+        if data is None:
+            raise RuntimeError("upload returned no response")
+        upload_reply = pb.UploadResponse.FromString(data)
+
+    # Bidirectional streaming
+    with plugin.open_stream(
+        "Greeter", "/mypackage.Greeter/Chat"
+    ) as stream:
+        for message in messages:
+            stream.send(message.SerializeToString())
+        stream.close_send()
+        while (data := stream.recv()) is not None:
+            print(pb.ChatMessage.FromString(data))
+```
+
+---
+
 ## Structured FFI Errors
 
 Synurang carries `core.v1.Error` over FFI/plugin boundaries. The canonical structured error is `FfiError`.
@@ -745,6 +896,7 @@ Then assert the decoded `FfiError` fields in each host:
 - Java/C#: catch `FfiError` and inspect `getCode()` / `Code` and `getGrpcCode()` / `GrpcCode`
 - C++: catch `synurang::FfiError` and inspect `code()` / `grpc_code()`
 - Rust: match `Error::PluginError(err)` or `Error::StreamError(err)` and inspect the inner `FfiError`
+- Python: catch `FfiError` and inspect `code`, `grpc_code`, `message`, and the original `payload`
 
 Example host-side usage:
 
@@ -811,6 +963,22 @@ match plugin.invoke("GoGreeterService", "/example.v1.GoGreeterService/Bar", &req
 }
 ```
 
+```python
+from synurang import FfiError
+
+try:
+    plugin.invoke(
+        "GoGreeterService",
+        "/example.v1.GoGreeterService/Bar",
+        request_bytes,
+    )
+except FfiError as error:
+    print(
+        f"code={error.code} grpc={error.grpc_code} "
+        f"message={error.message}"
+    )
+```
+
 Unary plugin return path (`host -> unary call -> plugin`):
 
 If the host calls `/example.v1.GoGreeterService/Bar`, the plugin method should return or throw `FfiError` like this.
@@ -856,6 +1024,7 @@ The existing host runners are a good place to wire this in:
 make test_host_csharp
 make test_host_java
 make test_host_rust
+make test_host_python
 make test_host_all
 ```
 

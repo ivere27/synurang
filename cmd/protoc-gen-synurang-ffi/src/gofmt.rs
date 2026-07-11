@@ -1,5 +1,5 @@
 //! Post-processing passes applied to generated Go files so the byte output
-//! matches what the Go generator produces after running through gofmt.
+//! matches canonical `gofmt` output.
 
 pub fn final_content(filename: &str, content: String) -> String {
     if filename.ends_with(".go") {

@@ -1,0 +1,19 @@
+[package]
+name = "protoc-gen-synurang-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Synurang FFI code generator for Protocol Buffers"
+repository = "https://github.com/ivere27/synurang"
+rust-version = "1.80"
+include = ["Cargo.toml", "Cargo.lock", "src/**", "templates/**"]
+
+[dependencies]
+prost = "0.13.5"
+prost-types = "0.13.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

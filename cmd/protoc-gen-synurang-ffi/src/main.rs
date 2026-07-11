@@ -19,9 +19,7 @@ mod template;
 mod value;
 mod wire;
 
-use codegen::{
-    generate_from_template, has_generated_services, parse_params, TEMPLATE_FILES,
-};
+use codegen::{generate_from_template, has_generated_services, parse_params, TEMPLATE_FILES};
 use model::DescriptorIndex;
 use template::TemplateEngine;
 use wire::parse_active_x_options_from_request;
@@ -62,8 +60,10 @@ fn main() {
                 .unwrap_or_else(|| "protoc-gen-synurang-ffi".to_string());
             eprintln!("{bin}: {msg}");
         }
-        let mut response = CodeGeneratorResponse::default();
-        response.error = Some(msg);
+        let response = CodeGeneratorResponse {
+            error: Some(msg),
+            ..Default::default()
+        };
         let _ = write_response(response);
         if exit_code != 0 {
             std::process::exit(exit_code);
@@ -80,20 +80,48 @@ fn run() -> Result<(), PluginError> {
     let request = CodeGeneratorRequest::decode(input.as_slice())
         .map_err(|e| PluginError::Codegen(format!("decode CodeGeneratorRequest: {e}")))?;
 
-    let parsed = parse_params(request.parameter.as_deref().unwrap_or("")).map_err(PluginError::Flag)?;
+    let parsed =
+        parse_params(request.parameter.as_deref().unwrap_or("")).map_err(PluginError::Flag)?;
     let lang = parsed.flags.get("lang").cloned().unwrap_or_default();
     let mode = parsed
         .flags
         .get("mode")
         .cloned()
         .unwrap_or_else(|| "default".to_string());
-    let dart_package = parsed.flags.get("dart_package").cloned().unwrap_or_default();
-    let java_package = parsed.flags.get("java_package").cloned().unwrap_or_default();
+    let dart_package = parsed
+        .flags
+        .get("dart_package")
+        .cloned()
+        .unwrap_or_default();
+    let java_package = parsed
+        .flags
+        .get("java_package")
+        .cloned()
+        .unwrap_or_default();
     let csharp_namespace = parsed
         .flags
         .get("csharp_namespace")
         .cloned()
         .unwrap_or_default();
+    const SUPPORTED_LANGUAGES: &[&str] = &[
+        "go",
+        "dart",
+        "cpp",
+        "rust",
+        "java",
+        "csharp",
+        "typescript",
+        "ts",
+        "c",
+        "swift",
+        "python",
+        "py",
+    ];
+    if !lang.is_empty() && !SUPPORTED_LANGUAGES.contains(&lang.as_str()) {
+        return Err(PluginError::Codegen(format!(
+            "unsupported language {lang:?}; expected one of: go, dart, cpp, rust, java, csharp, typescript, c, swift, python"
+        )));
+    }
     let service_list: BTreeSet<String> = parsed
         .flags
         .get("services")
@@ -108,8 +136,10 @@ fn run() -> Result<(), PluginError> {
 
     let index = DescriptorIndex::new(&request.proto_file, &parsed.import_map);
     let engine = TemplateEngine::new(TEMPLATE_FILES)?;
-    let mut response = CodeGeneratorResponse::default();
-    response.supported_features = Some(code_generator_response::Feature::Proto3Optional as u64);
+    let mut response = CodeGeneratorResponse {
+        supported_features: Some(code_generator_response::Feature::Proto3Optional as u64),
+        ..Default::default()
+    };
 
     for file_path in &request.file_to_generate {
         let file = index
@@ -174,6 +204,56 @@ fn run() -> Result<(), PluginError> {
                 "java",
                 &java_package,
             )?;
+        }
+        if lang == "python" || lang == "py" {
+            let syntax = file.desc.syntax.as_deref().unwrap_or("proto2");
+            if syntax != "proto3" {
+                return Err(PluginError::Codegen(format!(
+                    "Python lite code generation supports proto3 schemas only: {} uses {syntax}",
+                    file.path
+                )));
+            }
+            match mode.as_str() {
+                "lite" => generate_from_template(
+                    &mut response,
+                    &engine,
+                    &index,
+                    file,
+                    &service_list,
+                    &active_x_options,
+                    "python",
+                    "lite",
+                )?,
+                "" | "default" => {
+                    generate_from_template(
+                        &mut response,
+                        &engine,
+                        &index,
+                        file,
+                        &service_list,
+                        &active_x_options,
+                        "python",
+                        "lite",
+                    )?;
+                    if has_generated_services(file, &service_list) {
+                        generate_from_template(
+                            &mut response,
+                            &engine,
+                            &index,
+                            file,
+                            &service_list,
+                            &active_x_options,
+                            "python",
+                            "default",
+                        )?;
+                    }
+                }
+                _ => {
+                    return Err(PluginError::Codegen(format!(
+                        "unsupported lang/mode: python/{mode}"
+                    )));
+                }
+            }
         }
         if lang == "csharp" {
             let mode_or_opt = if mode == "lite" {
@@ -257,9 +337,11 @@ fn run() -> Result<(), PluginError> {
             if !name.ends_with(".go") {
                 continue;
             }
-            let mut meta = code_generator_response::File::default();
-            meta.name = Some(format!("{name}.meta"));
-            meta.content = Some(String::new());
+            let meta = code_generator_response::File {
+                name: Some(format!("{name}.meta")),
+                content: Some(String::new()),
+                ..Default::default()
+            };
             metas.push(meta);
         }
         response.file.extend(metas);

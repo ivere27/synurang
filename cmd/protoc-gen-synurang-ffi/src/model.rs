@@ -83,6 +83,8 @@ impl FieldData {
 #[derive(Clone, Debug)]
 pub struct MessageData {
     pub name: String,
+    pub fqn: String,
+    pub python_name: String,
     pub fields: Vec<FieldData>,
     pub is_handle: bool,
 }
@@ -91,6 +93,8 @@ impl MessageData {
     pub fn to_value(&self) -> Value {
         Value::map([
             ("Name".into(), Value::s(&self.name)),
+            ("Fqn".into(), Value::s(&self.fqn)),
+            ("PythonName".into(), Value::s(&self.python_name)),
             (
                 "Fields".into(),
                 Value::list(self.fields.iter().map(FieldData::to_value).collect()),
@@ -103,6 +107,8 @@ impl MessageData {
 #[derive(Clone, Debug)]
 pub struct EnumData {
     pub name: String,
+    pub fqn: String,
+    pub python_name: String,
     pub values: Vec<(String, i32)>,
 }
 
@@ -110,6 +116,8 @@ impl EnumData {
     pub fn to_value(&self) -> Value {
         Value::map([
             ("Name".into(), Value::s(&self.name)),
+            ("Fqn".into(), Value::s(&self.fqn)),
+            ("PythonName".into(), Value::s(&self.python_name)),
             (
                 "Values".into(),
                 Value::list(
@@ -142,6 +150,8 @@ pub struct MethodData {
     pub output_lite_type: String,
     pub input_go_ident: String,
     pub output_go_ident: String,
+    pub input_python_type: String,
+    pub output_python_type: String,
     pub is_server_streaming: bool,
     pub is_client_streaming: bool,
     pub is_bidi_streaming: bool,
@@ -165,6 +175,11 @@ impl MethodData {
             ("OutputLiteType".into(), Value::s(&self.output_lite_type)),
             ("InputGoIdent".into(), Value::s(&self.input_go_ident)),
             ("OutputGoIdent".into(), Value::s(&self.output_go_ident)),
+            ("InputPythonType".into(), Value::s(&self.input_python_type)),
+            (
+                "OutputPythonType".into(),
+                Value::s(&self.output_python_type),
+            ),
             (
                 "IsServerStreaming".into(),
                 Value::Bool(self.is_server_streaming),
@@ -216,6 +231,9 @@ pub struct FileData {
     pub java_package: String,
     pub external_imports: Vec<String>,
     pub go_imports: Vec<(String, String)>,
+    pub python_imports: Vec<(String, String)>,
+    pub python_lite_imports: Vec<(String, String)>,
+    pub python_lite_module: String,
     pub pb_dart_file: String,
     pub pb_header_file: String,
     pub pb_ts_lite_file: String,
@@ -267,6 +285,38 @@ impl FileData {
                         })
                         .collect(),
                 ),
+            ),
+            (
+                "PythonImports".into(),
+                Value::list(
+                    self.python_imports
+                        .iter()
+                        .map(|(alias, module)| {
+                            Value::map([
+                                ("Alias".into(), Value::s(alias)),
+                                ("Module".into(), Value::s(module)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "PythonLiteImports".into(),
+                Value::list(
+                    self.python_lite_imports
+                        .iter()
+                        .map(|(alias, module)| {
+                            Value::map([
+                                ("Alias".into(), Value::s(alias)),
+                                ("Module".into(), Value::s(module)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "PythonLiteModule".into(),
+                Value::s(&self.python_lite_module),
             ),
             ("PbDartFile".into(), Value::s(&self.pb_dart_file)),
             ("PbHeaderFile".into(), Value::s(&self.pb_header_file)),
@@ -331,6 +381,7 @@ pub struct ActiveXProperty {
 pub struct MessageInfo {
     pub fqn: String,
     pub go_name: String,
+    pub python_name: String,
     pub file_path: String,
     pub desc: DescriptorProto,
 }
@@ -339,6 +390,7 @@ pub struct MessageInfo {
 pub struct EnumInfo {
     pub fqn: String,
     pub go_name: String,
+    pub python_name: String,
     pub file_path: String,
     pub desc: EnumDescriptorProto,
 }
@@ -359,10 +411,7 @@ pub struct DescriptorIndex {
 }
 
 impl DescriptorIndex {
-    pub fn new(
-        files: &[FileDescriptorProto],
-        import_map: &BTreeMap<String, String>,
-    ) -> Self {
+    pub fn new(files: &[FileDescriptorProto], import_map: &BTreeMap<String, String>) -> Self {
         let mut index = DescriptorIndex {
             files: BTreeMap::new(),
             messages: BTreeMap::new(),
@@ -387,10 +436,10 @@ impl DescriptorIndex {
             let path = desc.name.clone().unwrap_or_default();
             let package = desc.package.clone().unwrap_or_default();
             for msg in &desc.message_type {
-                index.collect_message(&path, &package, "", "", msg);
+                index.collect_message(&path, &package, "", "", "", msg);
             }
             for en in &desc.enum_type {
-                index.collect_enum(&path, &package, "", "", en);
+                index.collect_enum(&path, &package, "", "", "", en);
             }
         }
         index
@@ -402,26 +451,44 @@ impl DescriptorIndex {
         package: &str,
         parent_fqn: &str,
         parent_go_prefix: &str,
+        parent_python_prefix: &str,
         desc: &DescriptorProto,
     ) {
         let name = desc.name.clone().unwrap_or_default();
         let fqn = qualify_fqn(package, parent_fqn, &name);
         let go_name = format!("{parent_go_prefix}{}", go_camel(&name));
+        let python_name = format!("{parent_python_prefix}{name}");
         self.messages.insert(
             fqn.clone(),
             MessageInfo {
                 fqn: fqn.clone(),
                 go_name: go_name.clone(),
+                python_name: python_name.clone(),
                 file_path: file_path.to_string(),
                 desc: desc.clone(),
             },
         );
         let nested_prefix = format!("{go_name}_");
+        let nested_python_prefix = format!("{python_name}.");
         for nested in &desc.nested_type {
-            self.collect_message(file_path, package, &fqn, &nested_prefix, nested);
+            self.collect_message(
+                file_path,
+                package,
+                &fqn,
+                &nested_prefix,
+                &nested_python_prefix,
+                nested,
+            );
         }
         for en in &desc.enum_type {
-            self.collect_enum(file_path, package, &fqn, &nested_prefix, en);
+            self.collect_enum(
+                file_path,
+                package,
+                &fqn,
+                &nested_prefix,
+                &nested_python_prefix,
+                en,
+            );
         }
     }
 
@@ -431,16 +498,19 @@ impl DescriptorIndex {
         package: &str,
         parent_fqn: &str,
         parent_go_prefix: &str,
+        parent_python_prefix: &str,
         desc: &EnumDescriptorProto,
     ) {
         let name = desc.name.clone().unwrap_or_default();
         let fqn = qualify_fqn(package, parent_fqn, &name);
         let go_name = format!("{parent_go_prefix}{}", go_camel(&name));
+        let python_name = format!("{parent_python_prefix}{name}");
         self.enums.insert(
             fqn.clone(),
             EnumInfo {
                 fqn,
                 go_name,
+                python_name,
                 file_path: file_path.to_string(),
                 desc: desc.clone(),
             },
@@ -464,11 +534,7 @@ fn split_go_package(raw: &str) -> (String, String) {
     if let Some((path, name)) = raw.split_once(';') {
         return (path.to_string(), name.to_string());
     }
-    let name = raw
-        .rsplit('/')
-        .next()
-        .unwrap_or(raw)
-        .replace('-', "_");
+    let name = raw.rsplit('/').next().unwrap_or(raw).replace('-', "_");
     (raw.to_string(), name)
 }
 

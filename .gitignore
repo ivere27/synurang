@@ -75,6 +75,15 @@
 .idea/
 .vscode/
 
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+python/build/
+python/dist/
+
 # Flutter
 .dart_tool/
 .packages

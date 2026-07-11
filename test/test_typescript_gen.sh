@@ -22,7 +22,7 @@ mkdir -p "$OUT_DIR"
 
 echo "Building plugin..."
 cd "$ROOT_DIR"
-go build -o "$PLUGIN" ./cmd/protoc-gen-synurang-ffi
+make build_plugin
 
 echo "Generating TypeScript code from example.proto..."
 protoc -Iexample/api -Iapi -I/usr/include \

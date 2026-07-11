@@ -1,3 +1,10 @@
+## Unreleased
+
+*   **Canonical Rust generator**: Replaced the Go code-generator implementation and the temporary `protoc-gen-synurang-ffi-rs` binary with one Rust-based `protoc-gen-synurang-ffi`. Output selection is unchanged, including `lang=go` and the existing default Go/Dart generation behavior.
+*   **Python 3.10+ neutral clients and codegen**: Added dependency-free proto3 protobuf-lite messages, a neutral `RpcTransport`, `FfiTransport` over the `ctypes` plugin host, and an optional synchronous `GrpcTransport` for remote servers. The same generated `*Client` API supports all four RPC cardinalities over either transport, while `*Ffi(host)` remains compatible. `mode=lite` emits only messages; neither `google.protobuf` nor `protoc --python_out` is required. Python 2 is not supported.
+*   **Generator release packaging**: Added a version-pinned Docker release build for static Linux x86-64/AArch64 and Windows x86-64 binaries, reproducible archives, `SHA256SUMS`, and Make targets for publishing the assets to GitHub Releases.
+*   **Generator regression coverage**: Consolidated language/mode generation and option validation around the canonical Rust binary, including Python generation and rejection of unsupported Python 2 output.
+
 ## 0.6.2
 
 *   **Dart core recovery**: Added `StartGrpcServerOptions`, `CoreState`, `CoreRecoveryResult`, `recoverCoreAsync`, `getCoreState`, and `resetCoreState` so apps can explicitly recover the embedded native core after an FFI timeout by resetting Dart helper isolates and issuing native `Stop` / `Start` calls.

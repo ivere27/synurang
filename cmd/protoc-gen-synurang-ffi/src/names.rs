@@ -80,6 +80,24 @@ pub fn to_snake_case(s: &str) -> String {
     out
 }
 
+pub fn python_identifier(s: &str) -> String {
+    const KEYWORDS: &[&str] = &[
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+        "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
+        "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+        "try", "while", "with", "yield",
+    ];
+    if KEYWORDS.contains(&s) {
+        format!("{s}_")
+    } else {
+        s.to_string()
+    }
+}
+
+pub fn python_method_name(s: &str) -> String {
+    python_identifier(&acronym_aware_snake_case(s))
+}
+
 pub fn acronym_aware_snake_case(s: &str) -> String {
     let runes: Vec<char> = s.chars().collect();
     let mut out = String::new();

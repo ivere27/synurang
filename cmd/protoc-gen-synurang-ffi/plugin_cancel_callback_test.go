@@ -126,9 +126,9 @@ func buildTestGenerator(t *testing.T, packageDir, tmp string) string {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	generator := filepath.Join(tmp, name)
-	runCmd(t, commandIn(packageDir, "go", "build", "-o", generator, "."))
-	return generator
+	targetDir := filepath.Join(tmp, "generator-target")
+	runCmd(t, commandIn(packageDir, "cargo", "build", "--release", "--locked", "--target-dir", targetDir))
+	return filepath.Join(targetDir, "release", name)
 }
 
 func generateExamplePluginServer(t *testing.T, repoRoot, tmp, generator, lang string) string {

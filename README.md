@@ -35,8 +35,8 @@ resp, _ := client.SayHello(ctx, &pb.HelloRequest{Name: "World"})
 ## Quick start
 
 ```bash
-# Install the code generator
-go install github.com/ivere27/synurang/cmd/protoc-gen-synurang-ffi@latest
+# Install the Rust-based code generator from this checkout
+cargo install --locked --path cmd/protoc-gen-synurang-ffi
 
 # Generate FFI bindings from your .proto
 protoc --synurang-ffi_out=. --synurang-ffi_opt=lang=go service.proto
@@ -77,7 +77,9 @@ FFI and TCP/UDS run simultaneously on the same server.
 
 ### Code Generation Modes
 
-The `mode` parameter controls what kind of code is generated.
+The canonical generator executable is implemented in Rust. `lang` selects the
+language it emits (so `lang=go` remains supported), while `mode` selects the
+kind of output. Omitting `lang` preserves the legacy combined Go/Dart output.
 
 | Language | Mode | Output | Description |
 |----------|------|--------|-------------|
@@ -89,8 +91,11 @@ The `mode` parameter controls what kind of code is generated.
 | rust | `wasm` | `_wasm.rs` | WASM exports via `#[wasm_bindgen]` |
 | java | *(default)* | `_ffi.java` | Java FFI host bindings |
 | csharp | *(default)* | `_ffi.cs` | C# FFI host bindings |
+| python | *(default)* | `_ffi.py` + `_lite.py` | Python 3.10+ transport-neutral client, FFI compatibility wrapper, and dependency-free messages |
+| python | `lite` | `_lite.py` | Python dependency-free protobuf-lite messages only |
 | typescript | *(default)* | `_ffi.ts` + `_lite.ts` | TypeScript FFI client wrapper plus companion protobuf-lite message module when services are generated |
 | typescript | `lite` | `_lite.ts` | TypeScript protobuf-lite message classes with binary parse/serialize and JSON output |
+| swift | `lite` | `_lite.swift` | Swift protobuf-lite messages and FFI host bindings |
 | c | `native` | `_ffi_native.h` | C header with flattened per-method signatures |
 | c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
 
@@ -114,6 +119,7 @@ Host loads plugin as `.so`/`.dll` via `dlopen`/`LoadLibrary`.
 | Rust | Go/C++/Rust | ✓ | Experimental | Experimental |
 | Java/Android | Go/C++/Rust | ✓ | ✓ | Experimental |
 | C# (.NET) | Go/C++/Rust | ✓ | ✓ | Experimental |
+| Python 3.10+ | Go/C++/Rust | ✓ | ✓ | Experimental |
 
 ### Process Mode (IPC)
 
@@ -360,15 +366,49 @@ C++ and Rust backends: zero-copy in both directions.
 
 ### Prerequisites
 
-- **Go** 1.22+
+- **Go** 1.22+ (for the Go runtime and generated Go bindings)
 - **Flutter** 3.19+ (if using Flutter)
 - **protoc** (protobuf compiler)
+- **Rust** 1.80+ and Cargo (only when building the generator from source)
+- **Python** 3.10+ (only when using the Python host)
+
+### Install the code generator
+
+`protoc-gen-synurang-ffi` is now a Rust binary. The old Go implementation and
+the temporary `protoc-gen-synurang-ffi-rs` name are gone; `lang=go` still
+generates Go bindings.
+
+For an installation that does not require Rust, download the archive for your
+platform and `SHA256SUMS` from [GitHub Releases](https://github.com/ivere27/synurang/releases),
+verify it, extract it, and place `protoc-gen-synurang-ffi` (or the Windows
+`.exe`) on `PATH`. Release archives are provided for Linux x86-64, Linux
+AArch64, and Windows x86-64.
 
 ```bash
-# Install protoc plugins
+# Linux x86-64 example
+VERSION=0.6.3
+TARGET=x86_64-unknown-linux-musl
+ASSET="protoc-gen-synurang-ffi-${VERSION}-${TARGET}.tar.gz"
+BASE="https://github.com/ivere27/synurang/releases/download/v${VERSION}"
+curl -fsSLO "${BASE}/${ASSET}" -O "${BASE}/SHA256SUMS"
+grep -F "  ${ASSET}" SHA256SUMS | sha256sum --check
+tar -xzf "${ASSET}"
+mkdir -p ~/.local/bin
+install -m 0755 "${ASSET%.tar.gz}/protoc-gen-synurang-ffi" ~/.local/bin/
+```
+
+To build and install it with Cargo:
+
+```bash
+git clone https://github.com/ivere27/synurang.git
+cargo install --locked --path synurang/cmd/protoc-gen-synurang-ffi
+```
+
+Install any language-specific protobuf plugins separately:
+
+```bash
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-go install github.com/ivere27/synurang/cmd/protoc-gen-synurang-ffi@latest
 
 # For Dart
 dart pub global activate protoc_plugin
@@ -376,6 +416,37 @@ dart pub global activate protoc_plugin
 # For C++ (Process Mode)
 sudo apt-get install protobuf-compiler-grpc
 ```
+
+### Build and publish generator releases
+
+Release binaries are cross-compiled inside the version-pinned
+`Dockerfile.codegen` toolchain. `CODEGEN_VERSION` is required and may include
+a leading `v`.
+
+```bash
+# Optional: build only the release image
+make docker_codegen_image
+
+# Build all default targets into dist/codegen/
+make docker_codegen CODEGEN_VERSION=0.6.3
+
+# Publishing requires a clean checkout whose pushed v0.6.3 tag points at HEAD
+git tag -a v0.6.3 -m v0.6.3
+git push origin v0.6.3
+
+# Build and create a one-shot v0.6.3 release with all assets
+make publish_github_codegen CODEGEN_VERSION=0.6.3
+# `make publish_github ...` is an alias for the same generator release flow.
+```
+
+The default bundles are static Linux x86-64/AArch64 `.tar.gz` archives and a
+Windows x86-64 `.zip`, named
+`protoc-gen-synurang-ffi-<version>-<target>.<extension>`, plus `SHA256SUMS`.
+Override the whitespace-separated target list with `CODEGEN_TARGETS`, the
+image with `CODEGEN_DOCKER_IMAGE`, or the destination repository with
+`CODEGEN_GITHUB_REPO`. `CODEGEN_DIST_DIR` selects the host output directory.
+Publishing requires an authenticated `gh` command, refuses dirty or mismatched
+tagged source, and refuses to replace an existing release.
 
 ### Step 1: Define API
 
@@ -409,6 +480,11 @@ protoc -Iapi --synurang-ffi_out=./lib/src/generated --synurang-ffi_opt=lang=dart
 protoc -Iapi --synurang-ffi_out=./java/src --synurang-ffi_opt=lang=java,java_package=com.example.api service.proto
 protoc -Iapi --synurang-ffi_out=./csharp/src --synurang-ffi_opt=lang=csharp,csharp_namespace=Example.Api service.proto
 protoc -Iapi --synurang-ffi_out=./web/src/generated --synurang-ffi_opt=lang=typescript service.proto
+
+# Python 3.10+ neutral client (generates lite messages and service bindings)
+python3 -m pip install ./python
+protoc -Iapi --synurang-ffi_out=./generated \
+    --synurang-ffi_opt=lang=python service.proto
 
 # Rust native C ABI (flattened parameters, no protobuf at call site)
 protoc -Iapi --synurang-ffi_out=./rust/src --synurang-ffi_opt=lang=rust,mode=native service.proto
@@ -543,6 +619,8 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 **C# (.NET Framework 4.0+ / .NET Core 3.1+)**: `--synurang-ffi_opt=lang=csharp`. Full support including all streaming types. Pure managed interop — no native bridge required.
 
 **TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants plus service FFI client wrappers backed by a `PluginHost` abstraction. For proto files with generated services, the same invocation also emits the companion `_lite.ts` module used for `fromBinary()`/`parseFrom()`, `toBinary()`/`toByteArray()`, and `toJson()` helpers. `--synurang-ffi_opt=lang=typescript,mode=lite` generates only the protobuf-lite message module.
+
+**Python 3.10+**: `--synurang-ffi_opt=lang=python` (or `lang=py`). Generates dependency-free `_lite.py` protobuf message classes and a transport-neutral `_ffi.py` service client for proto3 schemas. The generated `ServiceClient` accepts either `FfiTransport` for an in-process shared library or the optional synchronous `GrpcTransport` for a remote server; the existing `ServiceFfi(PluginHost)` form remains available. All four RPC cardinalities are supported. `mode=lite` emits only messages. No `google.protobuf` runtime or `protoc --python_out` step is needed. Python 2 is not supported. Python does not currently provide a plugin server or process host.
 
 #### C# .NET Version Compatibility
 
@@ -760,7 +838,7 @@ make run_android_java
 synurang/
 ├── cmd/
 │   ├── server/main.go                # FFI entry point example
-│   └── protoc-gen-synurang-ffi/      # Code generator (go/dart/cpp/rust/java/csharp/typescript/c/wasm/activex)
+│   └── protoc-gen-synurang-ffi/      # Rust generator (Go/Dart/C++/Rust/Java/C#/TS/C/Swift/Python output)
 ├── pkg/
 │   ├── synurang/                     # Runtime library
 │   │   ├── synurang.go               # FfiClientConn
@@ -777,6 +855,7 @@ synurang/
 │   └── grpc/                         # gRPC module: SynurangChannel, SynurangClientCall (requires grpc-api)
 ├── csharp/                           # C# host library (pure managed)
 │   └── Synurang/                     # PluginHost, SynurangCallInvoker, ProcessHost
+├── python/                           # Python 3.10+ FFI + optional remote gRPC transports
 ├── example/                          # Working examples
 │   ├── go/                           # Go examples
 │   │   ├── service/                  # Shared service logic
@@ -800,10 +879,12 @@ synurang/
 
 ## Low-Level FFI API (No gRPC Dependency)
 
-All 6 host languages can call plugins directly without any gRPC library — just raw protobuf bytes via `invoke()` / `openStream()`. See [`FFI-API.md`](FFI-API.md) for details.
+All 7 low-level hosts (Go, Dart, C++, Rust, Java, C#, and Python) can call
+plugins directly without any gRPC library — just raw protobuf bytes via
+`invoke()` / `openStream()`. See [`FFI-API.md`](FFI-API.md) for details.
 
 ```bash
-make test_ffi   # Run all FFI API tests (Go, C++, Rust, Java, Dart, C#)
+make test_ffi   # Run all FFI API tests (Go, C++, Rust, Java, Dart, C#, Python)
 ```
 
 ---

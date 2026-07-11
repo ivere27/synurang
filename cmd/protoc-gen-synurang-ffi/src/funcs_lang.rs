@@ -589,7 +589,12 @@ pub fn cpp_lite_scalar_default(kind: &str) -> &'static str {
     }
 }
 
-pub fn cpp_lite_kind_default(kind: &str, type_name: &str, type_fqn: &str, is_local: bool) -> String {
+pub fn cpp_lite_kind_default(
+    kind: &str,
+    type_name: &str,
+    type_fqn: &str,
+    is_local: bool,
+) -> String {
     match kind {
         "bool" => "false".to_string(),
         "float" => "0.0f".to_string(),

@@ -13,7 +13,7 @@ mkdir -p "$ROOT_DIR/test/generated_cpp"
 
 echo "Building plugin..."
 cd "$ROOT_DIR"
-go build -o "$PLUGIN" ./cmd/protoc-gen-synurang-ffi
+make build_plugin
 
 echo "Generating C++ code from core.proto..."
 protoc -Iapi -I/usr/include \

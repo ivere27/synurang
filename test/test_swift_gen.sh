@@ -26,7 +26,7 @@ mkdir -p "$BIN_DIR" "$PROTO_DIR" "$SRC_DIR" "$TEST_DIR"
 
 echo "Building protoc-gen-synurang-ffi..."
 cd "$ROOT_DIR"
-go build -o "$PLUGIN" ./cmd/protoc-gen-synurang-ffi
+make build_plugin
 
 cat > "$PROTO_DIR/swift_core.proto" <<'EOF'
 syntax = "proto3";

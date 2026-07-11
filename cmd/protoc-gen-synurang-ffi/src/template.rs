@@ -7,22 +7,22 @@
 //! registry of helper functions. Anything outside that subset (notably
 //! `with`, `range` over a map, custom delimiters) is intentionally
 //! unsupported — the engine returns Err so future template changes fail loud
-//! instead of diverging silently from the Go generator.
+//! instead of silently changing the shipped template semantics.
 
 use std::collections::HashMap;
 
 use crate::funcs_lang::{
-    callmethod_name, cpp_field_name, cpp_lite_kind_default, cpp_lite_kind_type,
-    cpp_lite_not_default, cpp_lite_read_call, cpp_lite_scalar_default, cpp_lite_type,
-    cpp_lite_write_call, csharp_type, c_header_type, c_return_type, list_any,
-    lower_first_value, native_err_return, needs_len, needs_out_len, oneof_groups,
-    rust_c_type, rust_return_type, stream_type, swift_default, swift_enum_case,
-    swift_enum_zero_case, swift_escape, swift_kind_default, swift_kind_type,
-    swift_not_default, swift_read_call, swift_scalar_wire, swift_type, swift_write_call,
-    template_printf, ts_default_value, ts_type, wasm_err_return,
+    c_header_type, c_return_type, callmethod_name, cpp_field_name, cpp_lite_kind_default,
+    cpp_lite_kind_type, cpp_lite_not_default, cpp_lite_read_call, cpp_lite_scalar_default,
+    cpp_lite_type, cpp_lite_write_call, csharp_type, list_any, lower_first_value,
+    native_err_return, needs_len, needs_out_len, oneof_groups, rust_c_type, rust_return_type,
+    stream_type, swift_default, swift_enum_case, swift_enum_zero_case, swift_escape,
+    swift_kind_default, swift_kind_type, swift_not_default, swift_read_call, swift_scalar_wire,
+    swift_type, swift_write_call, template_printf, ts_default_value, ts_type, wasm_err_return,
 };
 use crate::names::{
-    lower_camel_from_snake, lower_first, to_screaming_snake, to_snake_case,
+    lower_camel_from_snake, lower_first, python_identifier, python_method_name, to_screaming_snake,
+    to_snake_case,
 };
 use crate::value::Value;
 
@@ -612,6 +612,8 @@ fn is_function(name: &str) -> bool {
             | "printf"
             | "index"
             | "snakeCase"
+            | "pythonIdent"
+            | "pythonMethodName"
             | "callMethod"
             | "grpcStreamType"
             | "ffiStreamType"
@@ -691,6 +693,8 @@ fn eval_function(name: &str, args: Vec<Value>, ctx: &RenderContext) -> Result<Va
             map.get(&key)
         }
         "snakeCase" => Value::s(to_snake_case(&v(0).as_str())),
+        "pythonIdent" => Value::s(python_identifier(&v(0).as_str())),
+        "pythonMethodName" => Value::s(python_method_name(&v(0).as_str())),
         "callMethod" => Value::s(callmethod_name(&v(0))),
         "grpcStreamType" => stream_type("grpc", &v(0), &v(1)),
         "ffiStreamType" => stream_type("ffi", &v(0), &v(1)),
@@ -776,11 +780,7 @@ fn eval_function(name: &str, args: Vec<Value>, ctx: &RenderContext) -> Result<Va
             &v(0).get("Name").as_str(),
         ))),
         "swiftMethodName" => Value::s(swift_escape(&lower_first(&v(0).as_str()))),
-        "swiftEnumCase" => Value::s(swift_enum_case(
-            &ctx.root,
-            &v(0).as_str(),
-            &v(1).as_str(),
-        )),
+        "swiftEnumCase" => Value::s(swift_enum_case(&ctx.root, &v(0).as_str(), &v(1).as_str())),
         "swiftEnumZeroCase" => Value::s(swift_enum_zero_case(&ctx.root, &v(0).as_str())),
         "swiftOneofCase" => Value::s(swift_escape(&lower_first(&v(0).as_str()))),
         "swiftWriteCall" => Value::s(swift_write_call(&v(0).as_str())),

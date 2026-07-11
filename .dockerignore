@@ -2,6 +2,12 @@
 !.dockerignore
 !Dockerfile
 !Dockerfile.desktop
+!Dockerfile.codegen
 !docker/
 !docker/build_android_aar_inside.sh
 !docker/build_desktop_jar.sh
+!docker/build_codegen_release.sh
+!docker/publish_codegen_release.sh
+!cmd/protoc-gen-synurang-ffi/
+!cmd/protoc-gen-synurang-ffi/**
+!LICENSE
