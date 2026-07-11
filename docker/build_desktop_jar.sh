@@ -8,10 +8,10 @@ set -euo pipefail
 #   synurang-desktop-{VERSION}.jar      = core classes + embedded JNI natives
 #   synurang-desktop-grpc-{VERSION}.jar  = grpc classes only
 #
-# Usage (inside Docker): VERSION=0.6.2 /opt/synurang/build_desktop_jar.sh
+# Usage (inside Docker): VERSION=0.7.0 /opt/synurang/build_desktop_jar.sh
 
 REPO_ROOT="${REPO_ROOT:-$(pwd)}"
-VERSION="${VERSION:-0.6.2}"
+VERSION="${VERSION:-0.7.0}"
 GROUP_ID="${GROUP_ID:-io.github.ivere27}"
 ARTIFACT_ID_CORE="${ARTIFACT_ID_CORE:-synurang-desktop}"
 ARTIFACT_ID_GRPC="${ARTIFACT_ID_GRPC:-synurang-desktop-grpc}"

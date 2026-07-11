@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'SynurangLite'
-  s.version          = '0.6.2'
+  s.version          = '0.7.0'
   s.summary          = 'Synurang FFI client (lite path) for Swift — zero dependencies.'
   s.description      = <<-DESC
 SynurangLite is the zero-dependency Swift runtime for Synurang FFI plugins.

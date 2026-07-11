@@ -1,4 +1,4 @@
-## Unreleased
+## 0.7.0
 
 *   **Canonical Rust generator**: Replaced the Go code-generator implementation and the temporary `protoc-gen-synurang-ffi-rs` binary with one Rust-based `protoc-gen-synurang-ffi`. Output selection is unchanged, including `lang=go` and the existing default Go/Dart generation behavior.
 *   **Python 3.10+ neutral clients and codegen**: Added dependency-free proto3 protobuf-lite messages, a neutral `RpcTransport`, `FfiTransport` over the `ctypes` plugin host, and an optional synchronous `GrpcTransport` for remote servers. The same generated `*Client` API supports all four RPC cardinalities over either transport, while `*Ffi(host)` remains compatible. `mode=lite` emits only messages; neither `google.protobuf` nor `protoc --python_out` is required. Python 2 is not supported.
