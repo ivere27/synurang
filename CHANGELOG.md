@@ -1,3 +1,7 @@
+## 0.7.2
+
+*   **Dependency-free C protobuf-lite messages**: Added `lang=c,mode=lite`, which emits `_lite.h` and `_lite.c` schema bindings with fixed-width enums, owned message values, and protobuf binary encode/decode/merge without a libprotobuf runtime. Nested-message decoding is depth-bounded (including across generated-file boundaries), numeric enum aliases are preserved (value-to-name uses the first declaration, parsing accepts every alias), and output keeps the input proto's relative directory so cross-file imports resolve. `google.protobuf.Empty` is supported directly; other `google.protobuf` well-known types are rejected instead of producing incomplete bindings.
+
 ## 0.7.0
 
 *   **Canonical Rust generator**: Replaced the Go code-generator implementation and the temporary `protoc-gen-synurang-ffi-rs` binary with one Rust-based `protoc-gen-synurang-ffi`. Output selection is unchanged, including `lang=go` and the existing default Go/Dart generation behavior.

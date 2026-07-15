@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(pwd)}"
-VERSION="${VERSION:-0.7.0}"
+VERSION="${VERSION:-0.7.2}"
 GROUP_ID="${GROUP_ID:-io.github.ivere27}"
 ARTIFACT_ID_CORE="${ARTIFACT_ID_CORE:-synurang-android}"
 ARTIFACT_ID_GRPC="${ARTIFACT_ID_GRPC:-synurang-android-grpc}"
