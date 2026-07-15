@@ -298,16 +298,39 @@ fn run() -> Result<(), PluginError> {
             )?;
         }
         if lang == "c" {
-            generate_from_template(
-                &mut response,
-                &engine,
-                &index,
-                file,
-                &service_list,
-                &active_x_options,
-                "c",
-                &mode,
-            )?;
+            if !matches!(
+                mode.as_str(),
+                "" | "default" | "native" | "activex" | "lite"
+            ) {
+                return Err(PluginError::Codegen(format!(
+                    "unsupported lang/mode: c/{mode}; expected default, native, activex, or lite"
+                )));
+            }
+            if mode == "lite" {
+                for output_mode in ["lite_header", "lite_source"] {
+                    generate_from_template(
+                        &mut response,
+                        &engine,
+                        &index,
+                        file,
+                        &service_list,
+                        &active_x_options,
+                        "c",
+                        output_mode,
+                    )?;
+                }
+            } else {
+                generate_from_template(
+                    &mut response,
+                    &engine,
+                    &index,
+                    file,
+                    &service_list,
+                    &active_x_options,
+                    "c",
+                    &mode,
+                )?;
+            }
         }
         if lang == "swift" {
             let mode_or_opt = if mode == "lite" { "lite" } else { &mode };

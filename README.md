@@ -97,6 +97,7 @@ kind of output. Omitting `lang` preserves the legacy combined Go/Dart output.
 | typescript | `lite` | `_lite.ts` | TypeScript protobuf-lite message classes with binary parse/serialize and JSON output |
 | swift | `lite` | `_lite.swift` | Swift protobuf-lite messages and FFI host bindings |
 | c | `native` | `_ffi_native.h` | C header with flattened per-method signatures |
+| c | `lite` | `_lite.h` + `_lite.c` | Dependency-free fixed-width enums, messages, and protobuf codecs |
 | c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
 
 The default `plugin_server` mode exports the standard Synurang ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`) — all data is serialized protobuf, and any Synurang host can load the plugin.
@@ -494,6 +495,9 @@ protoc -Iapi --synurang-ffi_out=./wasm/src --synurang-ffi_opt=lang=rust,mode=was
 
 # C native header (FFI contract for C/C++ plugins)
 protoc -Iapi --synurang-ffi_out=./native --synurang-ffi_opt=lang=c,mode=native service.proto
+
+# Dependency-free C protobuf-lite schema (no protobuf runtime)
+protoc -Iapi --synurang-ffi_out=./native --synurang-ffi_opt=lang=c,mode=lite service.proto
 ```
 
 ### Step 3: Implement Server
@@ -612,6 +616,8 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 
 **C Native**: `--synurang-ffi_opt=lang=c` or `--synurang-ffi_opt=lang=c,mode=native`. Generates a C header (`.h`) declaring per-method function signatures with flattened parameters. Companion to Rust native — implement in C/C++ and call directly without protobuf serialization.
 
+**C Lite**: `--synurang-ffi_opt=lang=c,mode=lite`. Generates dependency-free `<schema>_lite.h` and `<schema>_lite.c` files containing fixed-width enums, owned message values, explicit allocation helpers, and protobuf binary encode/decode/merge functions. It emits no service functions and requires no libprotobuf runtime. Numeric aliases are preserved; value-to-name uses the first declaration while parsing accepts every declared alias. Output keeps the input proto's relative directory, so imports remain unambiguous.
+
 **ActiveX**: `--synurang-ffi_opt=lang=c,mode=activex`. Generates a Windows COM/ActiveX dispatch header with DISPID constants, name lookup table, and re-includable dispatch macros. Driven by `(synurang.v1.activex_service)` service option in `.proto` files.
 
 **Java/Android**: `--synurang-ffi_opt=lang=java`. Full support including all streaming types via JNI.
@@ -619,6 +625,8 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 **C# (.NET Framework 4.0+ / .NET Core 3.1+)**: `--synurang-ffi_opt=lang=csharp`. Full support including all streaming types. Pure managed interop — no native bridge required.
 
 **TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants plus service FFI client wrappers backed by a `PluginHost` abstraction. For proto files with generated services, the same invocation also emits the companion `_lite.ts` module used for `fromBinary()`/`parseFrom()`, `toBinary()`/`toByteArray()`, and `toJson()` helpers. `--synurang-ffi_opt=lang=typescript,mode=lite` generates only the protobuf-lite message module.
+
+C lite generation accepts proto3 schemas. `google.protobuf.Empty` is supported directly; other `google.protobuf` well-known message types are rejected with a generator error instead of producing incomplete bindings. The runtime bounds nested-message decoding to protect against maliciously recursive input.
 
 **Python 3.10+**: `--synurang-ffi_opt=lang=python` (or `lang=py`). Generates dependency-free `_lite.py` protobuf message classes and a transport-neutral `_ffi.py` service client for proto3 schemas. The generated `ServiceClient` accepts either `FfiTransport` for an in-process shared library or the optional synchronous `GrpcTransport` for a remote server; the existing `ServiceFfi(PluginHost)` form remains available. All four RPC cardinalities are supported. `mode=lite` emits only messages. No `google.protobuf` runtime or `protoc --python_out` step is needed. Python 2 is not supported. Python does not currently provide a plugin server or process host.
 

@@ -14,11 +14,12 @@ use crate::funcs_lang::{cpp_guard_name, cpp_qualified_type, well_known_output_ty
 use crate::gofmt::final_content;
 use crate::model::{
     fqn_for_top, go_package_alias, ActiveXProperty, ActiveXServiceOption, DescriptorIndex,
-    EnumData, FieldData, FileData, FileInfo, MessageData, MessageInfo, MethodData, ServiceData,
+    EnumData, EnumInfo, FieldData, FileData, FileInfo, MessageData, MessageInfo, MethodData,
+    ServiceData,
 };
 use crate::names::{
     acronym_aware_snake_case, basename, go_camel, pascal_from_snake, python_identifier,
-    to_snake_case, trim_proto_suffix, upper_first,
+    to_screaming_snake, to_snake_case, trim_proto_suffix, upper_first,
 };
 use crate::template::TemplateEngine;
 use crate::value::Value;
@@ -40,6 +41,8 @@ pub const TEMPLATE_FILES: &[(&str, &str)] = &[
         "c_native.h.tmpl",
         include_str!("../templates/c_native.h.tmpl"),
     ),
+    ("c_lite.h.tmpl", include_str!("../templates/c_lite.h.tmpl")),
+    ("c_lite.c.tmpl", include_str!("../templates/c_lite.c.tmpl")),
     ("cpp.h.tmpl", include_str!("../templates/cpp.h.tmpl")),
     (
         "cpp_lite.hpp.tmpl",
@@ -226,6 +229,9 @@ pub fn generate_from_template(
     lang: &str,
     mode_or_opt: &str,
 ) -> Result<(), String> {
+    if lang == "c" && is_c_lite_mode(mode_or_opt) {
+        validate_dependency_free_lite_schema(index, file, lang)?;
+    }
     let data = build_file_data(
         index,
         file,
@@ -234,6 +240,9 @@ pub fn generate_from_template(
         lang,
         mode_or_opt,
     );
+    if lang == "c" && is_c_lite_mode(mode_or_opt) {
+        validate_c_lite_names(&data.enums, &data.local_messages)?;
+    }
     let value = data.to_value();
 
     if lang == "cpp" && mode_or_opt == "plugin_server" {
@@ -292,6 +301,9 @@ fn build_file_data(
         python_imports: Vec::new(),
         python_lite_imports: Vec::new(),
         python_lite_module: String::new(),
+        c_lite_dep_headers: Vec::new(),
+        c_lite_header_file: format!("{}_lite.h", trim_proto_suffix(&base_proto)),
+        c_lite_include_guard: c_lite_include_guard(&file.path),
         pb_dart_file: String::new(),
         pb_header_file: String::new(),
         pb_ts_lite_file: String::new(),
@@ -357,6 +369,12 @@ fn build_file_data(
         }
         "typescript" | "ts" => {
             data.pb_ts_lite_file = format!("./{}_lite.js", trim_proto_suffix(&base_proto));
+        }
+        "c" if is_c_lite_mode(mode_or_opt) => {
+            data.c_lite_dep_headers = lite_schema_dependencies(index, file)
+                .into_iter()
+                .map(|dependency| relative_c_lite_header(&file.path, &dependency))
+                .collect();
         }
         "python" | "py" => {
             data.python_lite_module = python_lite_module_name(&file.path);
@@ -480,19 +498,22 @@ fn build_file_data(
     }
     mark_box_fields(&mut data.messages);
 
-    let needs_local_types = lang == "typescript"
+    let needs_local_messages = lang == "typescript"
         || lang == "python"
+        || (lang == "c" && is_c_lite_mode(mode_or_opt))
         || (lang == "csharp" && mode_or_opt == "lite")
         || (lang == "swift" && mode_or_opt == "lite")
         || (lang == "cpp" && mode_or_opt == "lite");
-    if needs_local_types {
+    if needs_local_messages {
         let mut local_msg_seen = BTreeSet::new();
         for msg in &file.desc.message_type {
             let fqn = fqn_for_top(&file.package, msg.name.as_deref().unwrap_or(""));
             collect_local_messages(index, &mut data.local_messages, &fqn, &mut local_msg_seen);
         }
         data.local_messages.sort_by(|a, b| a.name.cmp(&b.name));
+    }
 
+    if needs_local_messages {
         let mut enum_seen = BTreeSet::new();
         for en in &file.desc.enum_type {
             let fqn = fqn_for_top(&file.package, en.name.as_deref().unwrap_or(""));
@@ -650,6 +671,8 @@ fn message_data(index: &DescriptorIndex, msg: &MessageInfo) -> MessageData {
         name: msg.go_name.clone(),
         fqn: msg.fqn.clone(),
         python_name: msg.python_name.clone(),
+        c_type_name: c_message_type_name(index, msg),
+        c_function_prefix: c_message_function_prefix(index, msg),
         fields: msg
             .desc
             .field
@@ -658,6 +681,191 @@ fn message_data(index: &DescriptorIndex, msg: &MessageInfo) -> MessageData {
             .collect(),
         is_handle: is_handle_message(index, msg),
     }
+}
+
+fn lite_schema_dependencies(index: &DescriptorIndex, file: &FileInfo) -> Vec<String> {
+    let mut dependencies = BTreeSet::new();
+    for message in index
+        .messages
+        .values()
+        .filter(|message| message.file_path == file.path)
+    {
+        for field in &message.desc.field {
+            let type_name = field.type_name.as_deref().unwrap_or("");
+            let defining_file = index
+                .message(type_name)
+                .map(|target| target.file_path.as_str())
+                .or_else(|| {
+                    index
+                        .enum_info(type_name)
+                        .map(|target| target.file_path.as_str())
+                });
+            if let Some(defining_file) = defining_file {
+                if defining_file != file.path && !defining_file.starts_with("google/protobuf/") {
+                    dependencies.insert(defining_file.to_string());
+                }
+            }
+        }
+    }
+    dependencies.into_iter().collect()
+}
+
+fn validate_dependency_free_lite_schema(
+    index: &DescriptorIndex,
+    root: &FileInfo,
+    lang: &str,
+) -> Result<(), String> {
+    let mut pending = vec![root.path.clone()];
+    let mut visited = BTreeSet::new();
+    while let Some(file_path) = pending.pop() {
+        if !visited.insert(file_path.clone()) {
+            continue;
+        }
+        let Some(file) = index.file(&file_path) else {
+            continue;
+        };
+        let syntax = file.desc.syntax.as_deref().unwrap_or("proto2");
+        if syntax != "proto3" {
+            return Err(format!(
+                "{lang} lite code generation supports proto3 schemas only: {} uses {syntax}",
+                file.path
+            ));
+        }
+
+        for message in index
+            .messages
+            .values()
+            .filter(|message| message.file_path == file.path)
+        {
+            for field in &message.desc.field {
+                let type_name = field
+                    .type_name
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim_start_matches('.');
+                if type_name.starts_with("google.protobuf.") && type_name != "google.protobuf.Empty"
+                {
+                    return Err(format!(
+                        "{lang} lite code generation does not support protobuf type {type_name} referenced by {}",
+                        file.path
+                    ));
+                }
+            }
+        }
+        pending.extend(lite_schema_dependencies(index, file));
+    }
+    Ok(())
+}
+
+fn relative_c_lite_header(current_proto: &str, dependency_proto: &str) -> String {
+    let mut current_dir: Vec<&str> = current_proto
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    current_dir.pop();
+
+    let target = format!("{}_lite.h", trim_proto_suffix(dependency_proto));
+    let target_parts: Vec<&str> = target
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    let common = current_dir
+        .iter()
+        .zip(&target_parts)
+        .take_while(|(left, right)| left == right)
+        .count();
+
+    let mut parts = Vec::new();
+    parts.extend(std::iter::repeat("..").take(current_dir.len() - common));
+    parts.extend(target_parts[common..].iter().copied());
+    parts.join("/")
+}
+
+fn c_package_prefix(package: &str) -> String {
+    package
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .map(go_camel)
+        .collect::<String>()
+}
+
+fn c_scope_prefix(package: &str, type_name: &str) -> String {
+    package
+        .split('.')
+        .chain(type_name.split('_'))
+        .filter(|part| !part.is_empty())
+        .map(acronym_aware_snake_case)
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn c_message_type_name(index: &DescriptorIndex, msg: &MessageInfo) -> String {
+    let package = index
+        .file(&msg.file_path)
+        .map(|file| file.package.as_str())
+        .unwrap_or("");
+    format!("{}{}", c_package_prefix(package), msg.go_name)
+}
+
+fn c_message_function_prefix(index: &DescriptorIndex, msg: &MessageInfo) -> String {
+    let package = index
+        .file(&msg.file_path)
+        .map(|file| file.package.as_str())
+        .unwrap_or("");
+    c_scope_prefix(package, &msg.go_name)
+}
+
+fn c_field_type_name(index: &DescriptorIndex, field: &FieldDescriptorProto) -> String {
+    use field_descriptor_proto::Type;
+
+    match field.r#type() {
+        Type::Bool => "int".to_string(),
+        Type::Int32 | Type::Sint32 | Type::Sfixed32 => "int32_t".to_string(),
+        Type::Int64 | Type::Sint64 | Type::Sfixed64 => "int64_t".to_string(),
+        Type::Uint32 | Type::Fixed32 => "uint32_t".to_string(),
+        Type::Uint64 | Type::Fixed64 => "uint64_t".to_string(),
+        Type::Float => "float".to_string(),
+        Type::Double => "double".to_string(),
+        Type::String => "SynurangLiteString".to_string(),
+        Type::Bytes => "SynurangLiteBytes".to_string(),
+        Type::Enum => field
+            .type_name
+            .as_deref()
+            .and_then(|fqn| index.enum_info(fqn))
+            .map(|en| c_enum_type_name(index, en))
+            .unwrap_or_else(|| "int32_t".to_string()),
+        Type::Message | Type::Group => field
+            .type_name
+            .as_deref()
+            .and_then(|fqn| index.message(fqn))
+            .map(|msg| {
+                if msg.fqn == "google.protobuf.Empty" {
+                    "SynurangProtobufEmpty".to_string()
+                } else {
+                    c_message_type_name(index, msg)
+                }
+            })
+            .unwrap_or_else(|| "SynurangLiteMessage".to_string()),
+    }
+}
+
+fn c_field_function_prefix(index: &DescriptorIndex, field: &FieldDescriptorProto) -> String {
+    field
+        .type_name
+        .as_deref()
+        .and_then(|fqn| index.message(fqn))
+        .map(|msg| {
+            if msg.fqn == "google.protobuf.Empty" {
+                "synurang_protobuf_empty".to_string()
+            } else {
+                c_message_function_prefix(index, msg)
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn is_c_lite_mode(mode: &str) -> bool {
+    matches!(mode, "lite" | "lite_header" | "lite_source")
 }
 
 fn field_data(
@@ -672,6 +880,13 @@ fn field_data(
     let is_repeated = field.label() == field_descriptor_proto::Label::Repeated && !is_map;
     let (kind, wire, field_type_name, field_type_fqn, type_is_local) =
         classify_field(index, field, &parent.file_path);
+    let is_packed = is_repeated
+        && !matches!(kind.as_str(), "string" | "bytes" | "message")
+        && field
+            .options
+            .as_ref()
+            .and_then(|options| options.packed)
+            .unwrap_or(true);
     let mut fd = FieldData {
         name: name.clone(),
         go_name: go_camel(&name),
@@ -682,6 +897,7 @@ fn field_data(
         type_fqn: field_type_fqn,
         type_is_local,
         is_repeated,
+        is_packed,
         is_map,
         is_oneof: field.oneof_index.is_some(),
         oneof_name: String::new(),
@@ -702,6 +918,10 @@ fn field_data(
         map_value_type_name: String::new(),
         map_value_fqn: String::new(),
         map_value_is_local: false,
+        c_type_name: c_field_type_name(index, field),
+        c_function_prefix: c_field_function_prefix(index, field),
+        map_value_c_type_name: String::new(),
+        map_value_c_function_prefix: String::new(),
     };
     if let Some(idx) = field.oneof_index {
         if let Some(oneof) = parent.desc.oneof_decl.get(idx as usize) {
@@ -724,6 +944,8 @@ fn field_data(
                         fd.map_value_type_name = tn;
                         fd.map_value_fqn = tf;
                         fd.map_value_is_local = local;
+                        fd.map_value_c_type_name = c_field_type_name(index, sub);
+                        fd.map_value_c_function_prefix = c_field_function_prefix(index, sub);
                     }
                     _ => {}
                 }
@@ -829,6 +1051,9 @@ fn collect_enum_data(
         name: en.go_name.clone(),
         fqn: en.fqn.clone(),
         python_name: en.python_name.clone(),
+        c_type_name: c_enum_type_name(index, en),
+        c_function_prefix: c_enum_function_prefix(index, en),
+        c_constant_prefix: c_enum_constant_prefix(index, en),
         values: en
             .desc
             .value
@@ -841,6 +1066,102 @@ fn collect_enum_data(
             })
             .collect(),
     });
+}
+
+fn c_enum_package<'a>(index: &'a DescriptorIndex, en: &EnumInfo) -> &'a str {
+    index
+        .file(&en.file_path)
+        .map(|file| file.package.as_str())
+        .unwrap_or("")
+}
+
+fn c_enum_type_name(index: &DescriptorIndex, en: &EnumInfo) -> String {
+    let package_prefix = c_enum_package(index, en)
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .map(go_camel)
+        .collect::<String>();
+    format!("{package_prefix}{}", en.go_name)
+}
+
+fn c_enum_scope_parts<'a>(index: &'a DescriptorIndex, en: &'a EnumInfo) -> Vec<&'a str> {
+    c_enum_package(index, en)
+        .split('.')
+        .chain(en.go_name.split('_'))
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+fn c_enum_function_prefix(index: &DescriptorIndex, en: &EnumInfo) -> String {
+    c_enum_scope_parts(index, en)
+        .into_iter()
+        .map(acronym_aware_snake_case)
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn c_enum_constant_prefix(index: &DescriptorIndex, en: &EnumInfo) -> String {
+    c_enum_scope_parts(index, en)
+        .into_iter()
+        .map(to_screaming_snake)
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn validate_c_lite_names(enums: &[EnumData], messages: &[MessageData]) -> Result<(), String> {
+    let mut type_names = BTreeMap::new();
+    let mut function_prefixes = BTreeMap::new();
+    let mut constant_prefixes = BTreeMap::new();
+    for runtime_type in [
+        "SynurangLiteStatus",
+        "SynurangLiteAllocateFn",
+        "SynurangLiteDeallocateFn",
+        "SynurangLiteAllocator",
+        "SynurangLiteBytes",
+        "SynurangProtobufEmpty",
+    ] {
+        type_names.insert(runtime_type.to_string(), "the C lite runtime".to_string());
+    }
+    for en in enums {
+        for (kind, name, names) in [
+            ("type", &en.c_type_name, &mut type_names),
+            (
+                "function prefix",
+                &en.c_function_prefix,
+                &mut function_prefixes,
+            ),
+            (
+                "constant prefix",
+                &en.c_constant_prefix,
+                &mut constant_prefixes,
+            ),
+        ] {
+            if let Some(previous) = names.insert(name.clone(), en.fqn.clone()) {
+                return Err(format!(
+                    "C lite {kind} {name:?} collides between {previous} and {}",
+                    en.fqn
+                ));
+            }
+        }
+    }
+    for message in messages {
+        for (kind, name, names) in [
+            ("type", &message.c_type_name, &mut type_names),
+            (
+                "function prefix",
+                &message.c_function_prefix,
+                &mut function_prefixes,
+            ),
+        ] {
+            if let Some(previous) = names.insert(name.clone(), message.fqn.clone()) {
+                return Err(format!(
+                    "C lite {kind} {name:?} collides between {previous} and {}",
+                    message.fqn
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn collect_local_message_enums(
@@ -1032,7 +1353,10 @@ pub fn select_template(lang: &str, mode_or_opt: &str) -> Option<&'static str> {
         },
         "c" => match mode_or_opt {
             "activex" => "c_activex.h.tmpl",
-            _ => "c_native.h.tmpl",
+            "lite_header" => "c_lite.h.tmpl",
+            "lite_source" => "c_lite.c.tmpl",
+            "" | "default" | "native" => "c_native.h.tmpl",
+            _ => return None,
         },
         "java" => "java.java.tmpl",
         "python" | "py" => {
@@ -1062,7 +1386,8 @@ pub fn select_template(lang: &str, mode_or_opt: &str) -> Option<&'static str> {
 }
 
 fn output_filename_with_mode(file: &FileInfo, lang: &str, mode: &str, ext: &str) -> String {
-    let mut base = trim_proto_suffix(&file.path);
+    let source_relative_base = trim_proto_suffix(&file.path);
+    let mut base = source_relative_base.clone();
     if let Some(idx) = base.rfind('/') {
         base = base[idx + 1..].to_string();
     }
@@ -1082,6 +1407,12 @@ fn output_filename_with_mode(file: &FileInfo, lang: &str, mode: &str, ext: &str)
     }
     if mode == "activex" && lang == "c" {
         return format!("{base}_activex.h");
+    }
+    if mode == "lite_header" && lang == "c" {
+        return format!("{source_relative_base}_lite.h");
+    }
+    if mode == "lite_source" && lang == "c" {
+        return format!("{source_relative_base}_lite.c");
     }
     if mode == "native" {
         return match lang {
@@ -1151,6 +1482,17 @@ fn add_dart_import(
 fn compute_file_prefix(path: &str) -> String {
     let base = trim_proto_suffix(&basename(path));
     upper_first(&base)
+}
+
+fn c_lite_include_guard(path: &str) -> String {
+    let mut guard = String::from("SYNURANG_");
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for byte in path.as_bytes() {
+        guard.push(HEX[(byte >> 4) as usize] as char);
+        guard.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    guard.push_str("_LITE_H_INCLUDED");
+    guard
 }
 
 fn native_prefix(svc: &ServiceData) -> String {

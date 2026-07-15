@@ -3,7 +3,7 @@
 //! Each `*Data` struct knows how to convert itself into the dynamic [`Value`]
 //! tree that the template engine sees as `dot`/`$`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto};
 
@@ -21,6 +21,7 @@ pub struct FieldData {
     pub type_fqn: String,
     pub type_is_local: bool,
     pub is_repeated: bool,
+    pub is_packed: bool,
     pub is_map: bool,
     pub is_oneof: bool,
     pub oneof_name: String,
@@ -37,6 +38,10 @@ pub struct FieldData {
     pub map_value_type_name: String,
     pub map_value_fqn: String,
     pub map_value_is_local: bool,
+    pub c_type_name: String,
+    pub c_function_prefix: String,
+    pub map_value_c_type_name: String,
+    pub map_value_c_function_prefix: String,
 }
 
 impl FieldData {
@@ -51,6 +56,7 @@ impl FieldData {
             ("TypeFQN".into(), Value::s(&self.type_fqn)),
             ("TypeIsLocal".into(), Value::Bool(self.type_is_local)),
             ("IsRepeated".into(), Value::Bool(self.is_repeated)),
+            ("IsPacked".into(), Value::Bool(self.is_packed)),
             ("IsMap".into(), Value::Bool(self.is_map)),
             ("IsOneof".into(), Value::Bool(self.is_oneof)),
             ("OneofName".into(), Value::s(&self.oneof_name)),
@@ -76,6 +82,16 @@ impl FieldData {
                 "MapValueIsLocal".into(),
                 Value::Bool(self.map_value_is_local),
             ),
+            ("CTypeName".into(), Value::s(&self.c_type_name)),
+            ("CFunctionPrefix".into(), Value::s(&self.c_function_prefix)),
+            (
+                "MapValueCTypeName".into(),
+                Value::s(&self.map_value_c_type_name),
+            ),
+            (
+                "MapValueCFunctionPrefix".into(),
+                Value::s(&self.map_value_c_function_prefix),
+            ),
         ])
     }
 }
@@ -85,6 +101,8 @@ pub struct MessageData {
     pub name: String,
     pub fqn: String,
     pub python_name: String,
+    pub c_type_name: String,
+    pub c_function_prefix: String,
     pub fields: Vec<FieldData>,
     pub is_handle: bool,
 }
@@ -95,6 +113,8 @@ impl MessageData {
             ("Name".into(), Value::s(&self.name)),
             ("Fqn".into(), Value::s(&self.fqn)),
             ("PythonName".into(), Value::s(&self.python_name)),
+            ("CTypeName".into(), Value::s(&self.c_type_name)),
+            ("CFunctionPrefix".into(), Value::s(&self.c_function_prefix)),
             (
                 "Fields".into(),
                 Value::list(self.fields.iter().map(FieldData::to_value).collect()),
@@ -109,24 +129,37 @@ pub struct EnumData {
     pub name: String,
     pub fqn: String,
     pub python_name: String,
+    pub c_type_name: String,
+    pub c_function_prefix: String,
+    pub c_constant_prefix: String,
     pub values: Vec<(String, i32)>,
 }
 
 impl EnumData {
     pub fn to_value(&self) -> Value {
+        let mut canonical_numbers = BTreeSet::new();
         Value::map([
             ("Name".into(), Value::s(&self.name)),
             ("Fqn".into(), Value::s(&self.fqn)),
             ("PythonName".into(), Value::s(&self.python_name)),
+            ("CTypeName".into(), Value::s(&self.c_type_name)),
+            ("CFunctionPrefix".into(), Value::s(&self.c_function_prefix)),
+            ("CConstantPrefix".into(), Value::s(&self.c_constant_prefix)),
             (
                 "Values".into(),
                 Value::list(
                     self.values
                         .iter()
                         .map(|(name, number)| {
+                            let is_canonical = canonical_numbers.insert(*number);
                             Value::map([
                                 ("Name".into(), Value::s(name)),
                                 ("Number".into(), Value::Int(*number as i64)),
+                                (
+                                    "CName".into(),
+                                    Value::s(format!("{}_{}", self.c_constant_prefix, name)),
+                                ),
+                                ("IsCanonical".into(), Value::Bool(is_canonical)),
                             ])
                         })
                         .collect(),
@@ -234,6 +267,9 @@ pub struct FileData {
     pub python_imports: Vec<(String, String)>,
     pub python_lite_imports: Vec<(String, String)>,
     pub python_lite_module: String,
+    pub c_lite_dep_headers: Vec<String>,
+    pub c_lite_header_file: String,
+    pub c_lite_include_guard: String,
     pub pb_dart_file: String,
     pub pb_header_file: String,
     pub pb_ts_lite_file: String,
@@ -317,6 +353,15 @@ impl FileData {
             (
                 "PythonLiteModule".into(),
                 Value::s(&self.python_lite_module),
+            ),
+            (
+                "CLiteDepHeaders".into(),
+                Value::list(self.c_lite_dep_headers.iter().map(Value::s).collect()),
+            ),
+            ("CLiteHeaderFile".into(), Value::s(&self.c_lite_header_file)),
+            (
+                "CLiteIncludeGuard".into(),
+                Value::s(&self.c_lite_include_guard),
             ),
             ("PbDartFile".into(), Value::s(&self.pb_dart_file)),
             ("PbHeaderFile".into(), Value::s(&self.pb_header_file)),

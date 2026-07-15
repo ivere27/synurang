@@ -111,6 +111,7 @@ run_case csharp "-Iexample/api -Iapi -I/usr/include" "lang=csharp" example.proto
 run_case csharp_lite "-Iexample/api -Iapi -I/usr/include" "lang=csharp,mode=lite" example.proto
 run_case typescript "-Iexample/api -Iapi -I/usr/include" "lang=typescript" example.proto
 run_case typescript_lite "-Iexample/api -Iapi -I/usr/include" "lang=typescript,mode=lite" example.proto
+run_case c_lite "-I$EDGE_DIR -Iapi -I/usr/include" "lang=c,mode=lite" edge_enum.proto
 run_case swift_lite "-Iexample/api -Iapi -I/usr/include" "lang=swift,mode=lite" example.proto
 run_case swift_edge "-I$EDGE_DIR -Iapi -I/usr/include" "lang=swift,mode=lite" edge_enum.proto
 run_case python "-Iexample/api -Iapi -I/usr/include" "lang=python" example.proto
