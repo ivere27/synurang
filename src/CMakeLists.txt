@@ -5,6 +5,37 @@ cmake_minimum_required(VERSION 3.10)
 
 project(synurang_library VERSION 0.0.1 LANGUAGES C)
 
+# Pure-C service/stream runtime used by generated C bindings. It is kept as a
+# separate target so applications can link it without the prebuilt Go library.
+if(EMSCRIPTEN)
+  set(_synurang_no_threads_default ON)
+else()
+  set(_synurang_no_threads_default OFF)
+endif()
+option(SYNURANG_C_RUNTIME_NO_THREADS
+  "Build the C runtime with the manual-poll executor only"
+  ${_synurang_no_threads_default})
+unset(_synurang_no_threads_default)
+
+add_library(synurang_c_runtime STATIC c_runtime.c)
+add_library(synurang::c_runtime ALIAS synurang_c_runtime)
+target_include_directories(synurang_c_runtime PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>"
+  "$<INSTALL_INTERFACE:include>"
+)
+set_target_properties(synurang_c_runtime PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED ON
+  POSITION_INDEPENDENT_CODE ON
+)
+if(SYNURANG_C_RUNTIME_NO_THREADS)
+  target_compile_definitions(synurang_c_runtime
+    PUBLIC SYNURANG_RUNTIME_NO_THREADS=1)
+elseif(NOT WIN32)
+  find_package(Threads REQUIRED)
+  target_link_libraries(synurang_c_runtime PUBLIC Threads::Threads)
+endif()
+
 # synurang uses a prebuilt Go shared library
 # The library is built via `make shared_linux` in the synurang package
 

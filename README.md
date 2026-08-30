@@ -96,13 +96,39 @@ kind of output. Omitting `lang` preserves the legacy combined Go/Dart output.
 | typescript | *(default)* | `_ffi.ts` + `_lite.ts` | TypeScript FFI client wrapper plus companion protobuf-lite message module when services are generated |
 | typescript | `lite` | `_lite.ts` | TypeScript protobuf-lite message classes with binary parse/serialize and JSON output |
 | swift | `lite` | `_lite.swift` | Swift protobuf-lite messages and FFI host bindings |
-| c | `native` | `_ffi_native.h` | C header with flattened per-method signatures |
+| c | *(default)* | `_lite.h` + `_lite.c` + `_ffi.h` + `_ffi.c` | Complete dependency-free C messages, typed service implementation, direct-call functions, and plugin ABI |
 | c | `lite` | `_lite.h` + `_lite.c` | Dependency-free fixed-width enums, messages, and protobuf codecs |
+| c | `native` | Same as C default | Deprecated compatibility alias for the complete C binding |
 | c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
 
-The default `plugin_server` mode exports the standard Synurang ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`) — all data is serialized protobuf, and any Synurang host can load the plugin.
+Plugin-server outputs and the complete C binding export the standard Synurang ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`) — all data is serialized protobuf, and any Synurang host can load the plugin.
 
-Native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). Callers pass scalars directly - no protobuf serialization at the call site. This is for direct FFI from C/C++/WASM without the Synurang host infrastructure. Native mode emits `_pb` fallbacks for methods with `repeated`, `oneof`, or `map` fields. WASM mode emits a `_pb` variant for every unary RPC and stream APIs for streaming RPCs (`*_stream_open`, `*_stream_send`, `*_stream_recv`, `*_stream_close_send`, `*_stream_close`).
+Rust native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). The complete C binding also retains compatible flattened unary entry points, with `_pb` fallbacks for methods whose inputs contain `repeated`, `oneof`, or `map` fields, while adding typed service handlers and the standard raw-protobuf plugin ABI.
+
+### Complete C binding and runtime
+
+The normal C command is deliberately the short one:
+
+```bash
+protoc --synurang-ffi_out=. --synurang-ffi_opt=lang=c service.proto
+```
+
+For `api/service.proto`, this produces source-relative files:
+
+```text
+api/service_lite.h
+api/service_lite.c
+api/service_ffi.h
+api/service_ffi.c
+```
+
+Files without a selected service emit only the two lite files. Applications and service implementations include only `service_ffi.h`; it includes `service_lite.h` and `<synurang/c_runtime.h>`. Use `mode=lite` when only messages and enums are needed. `mode=native` remains accepted as a deprecated alias for the default output and no longer creates `_ffi_native*` or separate server headers.
+
+Generated streaming handlers are event-driven: `on_open`, `on_message`, `on_half_close`, `on_writable`, `on_cancel`, and `on_destroy`. `on_open` may return per-stream state, and generated typed `*_send`, `*_finish`, and `*_fail` helpers handle serialization and completion. `finish`/`fail` terminate the whole RPC, reject later input, and preserve already queued responses before EOF/error. Callback message and stream pointers are borrowed; retain/release the stream when asynchronous work outlives a callback.
+
+The generated `*_register(&handlers, user_data)` function uses the process-wide threaded runtime by default. For libuv or single-threaded WebAssembly, create a manual runtime, arrange for its `wakeup` callback to schedule work on the embedding loop, register with `*_register_with_runtime(...)`, and call `synurang_runtime_poll()` without blocking. A wakeup can mean callback work or newly readable stream output, so the loop should also retry pending receives. In manual mode, use `Synurang_Stream_TrySend`/`Synurang_Stream_TryRecv`; receive status `SYNURANG_PENDING` means no result is ready yet, and `SYNURANG_WOULD_BLOCK` is handled after `on_writable`.
+
+Before unloading a C service shared library, close its streams. Destroy an explicitly created runtime before unregistering the service. For the default runtime, unregister every service that uses it and then call `synurang_runtime_shutdown_default()` before `dlclose`. See [Low-Level FFI API](FFI-API.md#c) for the complete API and lifecycle.
 
 ---
 
@@ -493,10 +519,10 @@ protoc -Iapi --synurang-ffi_out=./rust/src --synurang-ffi_opt=lang=rust,mode=nat
 # Rust WASM (wasm-bindgen exports)
 protoc -Iapi --synurang-ffi_out=./wasm/src --synurang-ffi_opt=lang=rust,mode=wasm service.proto
 
-# C native header (FFI contract for C/C++ plugins)
-protoc -Iapi --synurang-ffi_out=./native --synurang-ffi_opt=lang=c,mode=native service.proto
+# Complete C binding (lite messages + typed service/plugin implementation)
+protoc -Iapi --synurang-ffi_out=./native --synurang-ffi_opt=lang=c service.proto
 
-# Dependency-free C protobuf-lite schema (no protobuf runtime)
+# C messages/enums only (no service functions)
 protoc -Iapi --synurang-ffi_out=./native --synurang-ffi_opt=lang=c,mode=lite service.proto
 ```
 
@@ -600,7 +626,7 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 - Code generation: `protoc-gen-synurang-ffi`
 - Thread-safe: Isolates and goroutines managed automatically
 - Platforms: Android, iOS, macOS, Windows, Linux, WebAssembly
-- Native C ABI: Per-method functions with flattened parameters (Rust/C, no protobuf at call site)
+- Complete C binding: Dependency-free messages, typed unary/stream handlers, plugin ABI, and threaded/manual-poll runtime
 
 ---
 
@@ -614,9 +640,13 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 
 **Rust WASM**: `--synurang-ffi_opt=lang=rust,mode=wasm`. Generates `#[wasm_bindgen]` exports for browser/JS execution. Same flattened signature convention as native mode with idiomatic Rust types (`&str`, `&[u8]`), plus stream exports for streaming RPCs (`*_stream_open/send/recv/close_send/close`). `*_stream_recv` returns `[status, payload...]` where status is `0=data`, `1=eof`, `2=error`, `3=pending`.
 
-**C Native**: `--synurang-ffi_opt=lang=c` or `--synurang-ffi_opt=lang=c,mode=native`. Generates a C header (`.h`) declaring per-method function signatures with flattened parameters. Companion to Rust native — implement in C/C++ and call directly without protobuf serialization.
+**C**: `--synurang-ffi_opt=lang=c`. Generates source-relative `<schema>_lite.h/.c` plus `<schema>_ffi.h/.c` for files with services. The single FFI header contains flattened unary callers, typed unary and event-driven streaming handler contracts, and the standard `Synurang_Invoke_*` / `Synurang_Stream_*_Open` plugin ABI. The generated source uses the shared `<synurang/c_runtime.h>` runtime. `mode=native` is a deprecated alias for this same output.
 
-**C Lite**: `--synurang-ffi_opt=lang=c,mode=lite`. Generates dependency-free `<schema>_lite.h` and `<schema>_lite.c` files containing fixed-width enums, owned message values, explicit allocation helpers, and protobuf binary encode/decode/merge functions. It emits no service functions and requires no libprotobuf runtime. Numeric aliases are preserved; value-to-name uses the first declaration while parsing accepts every declared alias. Output keeps the input proto's relative directory, so imports remain unambiguous.
+**C Lite**: `--synurang-ffi_opt=lang=c,mode=lite`. Generates only dependency-free `<schema>_lite.h` and `<schema>_lite.c` files for proto3 schemas, containing fixed-width enums, owned message values, explicit allocation helpers, and protobuf binary encode/decode/merge functions. It emits no service functions and requires no libprotobuf runtime. Numeric aliases are preserved; value-to-name uses the first declaration while parsing accepts every declared alias. Output keeps the input proto's relative directory, so imports remain unambiguous.
+
+The C codec supplies `google.protobuf.Empty`, `google.protobuf.Timestamp`, and `google.protobuf.Duration` itself, so schemas using them need no protobuf runtime. Any other `google.protobuf.*` type is rejected up front rather than emitting C that will not compile. Nested decoding uses a shared recursion limit, including inside these well-known messages.
+
+**C enum constant style**: `--synurang-ffi_opt=lang=c,enum_names=short`. A C enum constant is its prefix plus the full proto value name, so protobuf's convention of prefixing values with the enum name repeats it: enum `DataType` with value `DATA_TYPE_F32` becomes `EXAMPLE_V1_DATA_TYPE_DATA_TYPE_F32`. `enum_names=short` drops the repeated segment — `EXAMPLE_V1_DATA_TYPE_F32` — matching protobuf-c and hand-written C APIs. It is opt-in because it renames every constant. Only `short` and `qualified` (the default) are accepted, and the option affects C output only.
 
 **ActiveX**: `--synurang-ffi_opt=lang=c,mode=activex`. Generates a Windows COM/ActiveX dispatch header with DISPID constants, name lookup table, and re-includable dispatch macros. Driven by `(synurang.v1.activex_service)` service option in `.proto` files.
 
@@ -625,8 +655,6 @@ Structured `FfiError(core.v1.Error)` usage, plugin-side return examples, and end
 **C# (.NET Framework 4.0+ / .NET Core 3.1+)**: `--synurang-ffi_opt=lang=csharp`. Full support including all streaming types. Pure managed interop — no native bridge required.
 
 **TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants plus service FFI client wrappers backed by a `PluginHost` abstraction. For proto files with generated services, the same invocation also emits the companion `_lite.ts` module used for `fromBinary()`/`parseFrom()`, `toBinary()`/`toByteArray()`, and `toJson()` helpers. `--synurang-ffi_opt=lang=typescript,mode=lite` generates only the protobuf-lite message module.
-
-C lite generation accepts proto3 schemas. `google.protobuf.Empty` is supported directly; other `google.protobuf` well-known message types are rejected with a generator error instead of producing incomplete bindings. The runtime bounds nested-message decoding to protect against maliciously recursive input.
 
 **Python 3.10+**: `--synurang-ffi_opt=lang=python` (or `lang=py`). Generates dependency-free `_lite.py` protobuf message classes and a transport-neutral `_ffi.py` service client for proto3 schemas. The generated `ServiceClient` accepts either `FfiTransport` for an in-process shared library or the optional synchronous `GrpcTransport` for a remote server; the existing `ServiceFfi(PluginHost)` form remains available. All four RPC cardinalities are supported. `mode=lite` emits only messages. No `google.protobuf` runtime or `protoc --python_out` step is needed. Python 2 is not supported. Python does not currently provide a plugin server or process host.
 

@@ -54,7 +54,36 @@ export interface PluginStream {
   closeSend(): void;
   close(): void;
 }
+
+// Asynchronous host.
+//
+// The synchronous PluginHost above suits an engine that is itself synchronous,
+// such as a wasm module the caller drives directly. An engine whose work is
+// inherently asynchronous — a browser GPU queue, a worker, a network hop —
+// cannot block the caller's thread, so it implements this interface instead
+// and callers use the *FfiAsync client. The operations, messages and
+// semantics are identical; only the call convention differs.
+
+export interface PluginHostAsync {
+  invoke(serviceName: string, methodName: string, data: Uint8Array): Promise<Uint8Array>;
+}
 {{- range $svc := .Services}}
+
+export class {{$svc.GoName}}FfiAsync {
+  constructor(private readonly host: PluginHostAsync) {}
+{{range $m := .Methods}}
+{{- if $m.IsUnary}}
+  async {{lowerFirst $m.Name}}(request: pb.{{$m.InputType}}): Promise<pb.{{$m.OutputType}}> {
+    const result = await this.host.invoke(
+      {{printf "%q" $svc.GoName}},
+      {{printf "%q" $m.FullMethodName}},
+      request.toBinary(),
+    );
+    return pb.{{$m.OutputType}}.fromBinary(result);
+  }
+{{- end}}
+{{- end}}
+}
 
 export class {{$svc.GoName}}Ffi {
   constructor(private readonly host: PluginHost) {}

@@ -231,6 +231,7 @@ int main(void) {
     DependencyV1Imported merged_imported;
     CLiteV1Recursive recursive;
     CLiteV1Packing packing;
+    CLiteV1Everything overflow_probe;
     TestBuffer recursion;
 
     c_lite_v1_everything_init(&source);
@@ -240,6 +241,13 @@ int main(void) {
     dependency_v1_imported_init(&merged_imported);
     c_lite_v1_recursive_init(&recursive);
     c_lite_v1_packing_init(&packing);
+    c_lite_v1_everything_init(&overflow_probe);
+    overflow_probe.field_children.cap =
+        SIZE_MAX / sizeof(CLiteV1Nested) + 1u;
+    overflow_probe.field_children.len = overflow_probe.field_children.cap;
+    CHECK(c_lite_v1_everything_add_children(&overflow_probe) == NULL, 78);
+    overflow_probe.field_children.len = 0u;
+    overflow_probe.field_children.cap = 0u;
     CHECK(synurang_protobuf_empty_decode(
         &standalone_empty, empty_unknowns, sizeof(empty_unknowns)) == SYNURANG_LITE_OK, 51);
     CHECK(synurang_protobuf_empty_decode(
@@ -470,6 +478,7 @@ int main(void) {
 
     c_lite_v1_recursive_free(&recursive);
     c_lite_v1_packing_free(&packing);
+    c_lite_v1_everything_free(&overflow_probe);
     dependency_v1_imported_free(&merged_imported);
     c_lite_v1_everything_free(&unpacked);
     c_lite_v1_everything_free(&decoded);

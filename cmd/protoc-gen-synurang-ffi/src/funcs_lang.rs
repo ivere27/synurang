@@ -120,6 +120,20 @@ pub fn native_err_return(m: &Value) -> &'static str {
     }
 }
 
+/// The C statement a generated native dispatcher uses to bail out, matching
+/// the return type `c_return_type` declares for the same method.
+pub fn c_native_err_return(m: &Value) -> &'static str {
+    if m.get("OutputIsHandle").as_bool() {
+        return "return -1;";
+    }
+    match m.get("OutputWKT").as_str().as_str() {
+        "Empty" | "BoolValue" => "return -1;",
+        "Int32Value" => "return INT32_MIN;",
+        "DoubleValue" => "return (double)NAN;",
+        _ => "{ if (out_len) *out_len = 0; return NULL; }",
+    }
+}
+
 pub fn wasm_err_return(m: &Value) -> &'static str {
     if m.get("OutputWKT").as_str() == "Empty" {
         "return;"

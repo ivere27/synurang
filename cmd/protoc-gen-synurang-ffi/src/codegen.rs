@@ -6,6 +6,7 @@
 //! to the protoc protocol.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use prost_types::compiler::{code_generator_response, CodeGeneratorResponse};
 use prost_types::{field_descriptor_proto, FieldDescriptorProto};
@@ -40,6 +41,10 @@ pub const TEMPLATE_FILES: &[(&str, &str)] = &[
     (
         "c_native.h.tmpl",
         include_str!("../templates/c_native.h.tmpl"),
+    ),
+    (
+        "c_native.c.tmpl",
+        include_str!("../templates/c_native.c.tmpl"),
     ),
     ("c_lite.h.tmpl", include_str!("../templates/c_lite.h.tmpl")),
     ("c_lite.c.tmpl", include_str!("../templates/c_lite.c.tmpl")),
@@ -144,7 +149,48 @@ const KNOWN_FLAGS: &[&str] = &[
     "java_package",
     "csharp_namespace",
     "services",
+    // enum_names=short drops the enum name repeated inside each C constant.
+    // Off by default: turning it on renames every generated constant.
+    "enum_names",
 ];
+
+/// Whether this invocation asked for short C enum constants (`enum_names=short`).
+///
+/// A protoc plugin serves one `CodeGeneratorRequest` per process, so request
+/// scope and process scope coincide and this stays a plain global. It is a
+/// *store*, not a one-shot latch: `set_enum_name_style` is authoritative every
+/// time it runs, so re-using the generator in-process (the unit tests do)
+/// always renders with the style that call asked for instead of silently
+/// keeping whichever one happened to run first.
+static SHORT_ENUM_NAMES: AtomicBool = AtomicBool::new(false);
+
+pub fn set_enum_name_style(flags: &HashMap<String, String>) -> Result<(), String> {
+    let short = match flags.get("enum_names").map(String::as_str) {
+        None | Some("") | Some("qualified") => false,
+        Some("short") => true,
+        Some(other) => {
+            return Err(format!(
+                "unknown enum_names value {other:?}; want \"short\" or \"qualified\""
+            ))
+        }
+    };
+    SHORT_ENUM_NAMES.store(short, Ordering::Relaxed);
+    Ok(())
+}
+
+fn short_enum_names() -> bool {
+    SHORT_ENUM_NAMES.load(Ordering::Relaxed)
+}
+
+/// Serialises the tests that read or write [`SHORT_ENUM_NAMES`]. Production
+/// code needs no lock -- one process serves one request -- but `cargo test`
+/// runs cases in parallel inside a single process, so a case that changes the
+/// style must not overlap one that renders C.
+#[cfg(test)]
+pub(crate) fn enum_name_style_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 pub fn parse_params(raw: &str) -> Result<ParsedParams, String> {
     let mut flags = HashMap::new();
@@ -229,8 +275,36 @@ pub fn generate_from_template(
     lang: &str,
     mode_or_opt: &str,
 ) -> Result<(), String> {
+    generate_from_template_with_generated_files(
+        response,
+        engine,
+        index,
+        file,
+        service_list,
+        active_x_options,
+        &BTreeSet::new(),
+        lang,
+        mode_or_opt,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn generate_from_template_with_generated_files(
+    response: &mut CodeGeneratorResponse,
+    engine: &TemplateEngine,
+    index: &DescriptorIndex,
+    file: &FileInfo,
+    service_list: &BTreeSet<String>,
+    active_x_options: &BTreeMap<(String, String), ActiveXServiceOption>,
+    generated_files: &BTreeSet<String>,
+    lang: &str,
+    mode_or_opt: &str,
+) -> Result<(), String> {
     if lang == "c" && is_c_lite_mode(mode_or_opt) {
         validate_dependency_free_lite_schema(index, file, lang)?;
+    }
+    if lang == "c" && matches!(mode_or_opt, "ffi_header" | "ffi_source") {
+        validate_c_native_dispatch(index, file, service_list)?;
     }
     let data = build_file_data(
         index,
@@ -241,7 +315,16 @@ pub fn generate_from_template(
         mode_or_opt,
     );
     if lang == "c" && is_c_lite_mode(mode_or_opt) {
-        validate_c_lite_names(&data.enums, &data.local_messages)?;
+        validate_c_lite_file_names(
+            index,
+            file,
+            generated_files,
+            &data.enums,
+            &data.local_messages,
+        )?;
+    }
+    if lang == "c" && matches!(mode_or_opt, "ffi_header" | "ffi_source") {
+        validate_c_ffi_names(index, file, service_list, generated_files, &data)?;
     }
     let value = data.to_value();
 
@@ -302,7 +385,19 @@ fn build_file_data(
         python_lite_imports: Vec::new(),
         python_lite_module: String::new(),
         c_lite_dep_headers: Vec::new(),
+        c_lite_seconds_nanos_types: C_SECONDS_NANOS_WELL_KNOWN
+            .iter()
+            .map(|(proto_name, type_name, prefix)| {
+                (
+                    (*proto_name).to_string(),
+                    (*type_name).to_string(),
+                    (*prefix).to_string(),
+                )
+            })
+            .collect(),
+        c_ffi_dep_headers: Vec::new(),
         c_lite_header_file: format!("{}_lite.h", trim_proto_suffix(&base_proto)),
+        c_ffi_header_file: format!("{}_ffi.h", trim_proto_suffix(&base_proto)),
         c_lite_include_guard: c_lite_include_guard(&file.path),
         pb_dart_file: String::new(),
         pb_header_file: String::new(),
@@ -376,6 +471,12 @@ fn build_file_data(
                 .map(|dependency| relative_c_lite_header(&file.path, &dependency))
                 .collect();
         }
+        "c" if matches!(mode_or_opt, "ffi_header" | "ffi_source") => {
+            data.c_ffi_dep_headers = lite_service_dependencies(index, file, service_list)
+                .into_iter()
+                .map(|dependency| relative_c_lite_header(&file.path, &dependency))
+                .collect();
+        }
         "python" | "py" => {
             data.python_lite_module = python_lite_module_name(&file.path);
             let mut imports = BTreeMap::new();
@@ -430,6 +531,7 @@ fn build_file_data(
                 input_type: input_go_name.clone(),
                 output_type: output_go_name.clone(),
                 input_type_key: input_fqn.trim_start_matches('.').to_string(),
+                output_type_key: output_fqn.trim_start_matches('.').to_string(),
                 input_cpp_type: cpp_qualified_type(input.map(|m| m.fqn.as_str()).unwrap_or("")),
                 output_cpp_type: cpp_qualified_type(output.map(|m| m.fqn.as_str()).unwrap_or("")),
                 input_lite_type: cpp_lite_message_type(input, file),
@@ -500,30 +602,13 @@ fn build_file_data(
 
     let needs_local_messages = lang == "typescript"
         || lang == "python"
-        || (lang == "c" && is_c_lite_mode(mode_or_opt))
+        || (lang == "c"
+            && (is_c_lite_mode(mode_or_opt) || matches!(mode_or_opt, "ffi_header" | "ffi_source")))
         || (lang == "csharp" && mode_or_opt == "lite")
         || (lang == "swift" && mode_or_opt == "lite")
         || (lang == "cpp" && mode_or_opt == "lite");
     if needs_local_messages {
-        let mut local_msg_seen = BTreeSet::new();
-        for msg in &file.desc.message_type {
-            let fqn = fqn_for_top(&file.package, msg.name.as_deref().unwrap_or(""));
-            collect_local_messages(index, &mut data.local_messages, &fqn, &mut local_msg_seen);
-        }
-        data.local_messages.sort_by(|a, b| a.name.cmp(&b.name));
-    }
-
-    if needs_local_messages {
-        let mut enum_seen = BTreeSet::new();
-        for en in &file.desc.enum_type {
-            let fqn = fqn_for_top(&file.package, en.name.as_deref().unwrap_or(""));
-            collect_enum_data(index, &mut data.enums, &fqn, &mut enum_seen);
-        }
-        for msg in &file.desc.message_type {
-            let fqn = fqn_for_top(&file.package, msg.name.as_deref().unwrap_or(""));
-            collect_local_message_enums(index, &mut data.enums, &fqn, &mut enum_seen);
-        }
-        data.enums.sort_by(|a, b| a.name.cmp(&b.name));
+        (data.local_messages, data.enums) = collect_local_c_schema_data(index, file);
     }
 
     if lang == "c" && mode_or_opt == "activex" {
@@ -683,7 +768,7 @@ fn message_data(index: &DescriptorIndex, msg: &MessageInfo) -> MessageData {
     }
 }
 
-fn lite_schema_dependencies(index: &DescriptorIndex, file: &FileInfo) -> Vec<String> {
+fn lite_message_dependencies(index: &DescriptorIndex, file: &FileInfo) -> BTreeSet<String> {
     let mut dependencies = BTreeSet::new();
     for message in index
         .messages
@@ -707,7 +792,41 @@ fn lite_schema_dependencies(index: &DescriptorIndex, file: &FileInfo) -> Vec<Str
             }
         }
     }
-    dependencies.into_iter().collect()
+    dependencies
+}
+
+fn lite_service_dependencies(
+    index: &DescriptorIndex,
+    file: &FileInfo,
+    service_list: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut dependencies = BTreeSet::new();
+    for service in &file.desc.service {
+        let service_go_name = go_camel(service.name.as_deref().unwrap_or(""));
+        if !should_generate_service(&service_go_name, service_list) {
+            continue;
+        }
+        for method in &service.method {
+            for type_name in [method.input_type.as_deref(), method.output_type.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                let Some(message) = index.message(type_name) else {
+                    continue;
+                };
+                if message.file_path != file.path
+                    && !message.file_path.starts_with("google/protobuf/")
+                {
+                    dependencies.insert(message.file_path.clone());
+                }
+            }
+        }
+    }
+    dependencies
+}
+
+fn lite_schema_dependencies(index: &DescriptorIndex, file: &FileInfo) -> Vec<String> {
+    lite_message_dependencies(index, file).into_iter().collect()
 }
 
 fn validate_dependency_free_lite_schema(
@@ -743,16 +862,16 @@ fn validate_dependency_free_lite_schema(
                     .as_deref()
                     .unwrap_or("")
                     .trim_start_matches('.');
-                if type_name.starts_with("google.protobuf.") && type_name != "google.protobuf.Empty"
-                {
+                if !is_c_lite_supported_type(type_name) {
                     return Err(format!(
-                        "{lang} lite code generation does not support protobuf type {type_name} referenced by {}",
-                        file.path
+                        "{lang} lite code generation does not support protobuf type {type_name} referenced by {}; supported well-known types are {}",
+                        file.path,
+                        c_lite_supported_well_known_types()
                     ));
                 }
             }
         }
-        pending.extend(lite_schema_dependencies(index, file));
+        pending.extend(lite_message_dependencies(index, file));
     }
     Ok(())
 }
@@ -800,6 +919,9 @@ fn c_scope_prefix(package: &str, type_name: &str) -> String {
 }
 
 fn c_message_type_name(index: &DescriptorIndex, msg: &MessageInfo) -> String {
+    if let Some((name, _)) = c_well_known_names(&msg.fqn) {
+        return name.to_string();
+    }
     let package = index
         .file(&msg.file_path)
         .map(|file| file.package.as_str())
@@ -807,7 +929,130 @@ fn c_message_type_name(index: &DescriptorIndex, msg: &MessageInfo) -> String {
     format!("{}{}", c_package_prefix(package), msg.go_name)
 }
 
+/// `google.protobuf.Empty` is supplied by the shared C lite runtime block
+/// (see `c_lite.h.tmpl`) under a `synurang_protobuf_empty` name rather than a
+/// name derived from its package, so the model must agree with the template.
+/// The C dispatch materializes every request and response as a lite message,
+/// so a method type the C lite codec does not define cannot be dispatched.
+/// Only `Empty` is supplied by the shared runtime; the value wrappers are not.
+/// Fail here rather than emitting C that will not compile.
+fn validate_c_native_dispatch(
+    index: &DescriptorIndex,
+    file: &FileInfo,
+    service_list: &BTreeSet<String>,
+) -> Result<(), String> {
+    let mut message_files = BTreeSet::new();
+    for service in &file.desc.service {
+        let service_go_name = go_camel(service.name.as_deref().unwrap_or(""));
+        if !should_generate_service(&service_go_name, service_list) {
+            continue;
+        }
+        for method in &service.method {
+            for (role, type_fqn) in [
+                ("request", method.input_type.as_deref()),
+                ("response", method.output_type.as_deref()),
+            ] {
+                let type_fqn = type_fqn.unwrap_or("");
+                let trimmed = type_fqn.trim_start_matches('.');
+                if !is_c_lite_supported_type(trimmed) {
+                    return Err(format!(
+                        "lang=c cannot dispatch {}.{}: the C lite codec defines no type for {trimmed}; \
+use a message declared in your schema as the {role}, or one of {}",
+                        service_go_name,
+                        method.name.as_deref().unwrap_or(""),
+                        c_lite_supported_well_known_types()
+                    ));
+                }
+                let Some(message) = index.message(type_fqn) else {
+                    return Err(format!(
+                        "lang=c cannot dispatch {}.{}: {role} type {trimmed} is not in the descriptor set",
+                        service_go_name,
+                        method.name.as_deref().unwrap_or(""),
+                    ));
+                };
+                if !message.file_path.starts_with("google/protobuf/") {
+                    message_files.insert(message.file_path.clone());
+                }
+            }
+        }
+    }
+    for file_path in message_files {
+        let dependency = index.file(&file_path).ok_or_else(|| {
+            format!("lang=c cannot dispatch message types declared in missing file {file_path}")
+        })?;
+        validate_dependency_free_lite_schema(index, dependency, "C FFI")?;
+    }
+    Ok(())
+}
+
+/// Well-known messages the shared C lite runtime block defines itself, as
+/// `(proto name, C type name, C function prefix)`. Anything listed here can be
+/// used by generated C exactly like a message from the user's own schema; a
+/// `google.protobuf.*` type that is *not* listed is rejected up front rather
+/// than emitting C that references an undefined codec.
+///
+/// `Timestamp` and `Duration` share one `seconds`/`nanos` codec, so they are
+/// kept together in `C_SECONDS_NANOS_WELL_KNOWN` and the template iterates it
+/// to emit both without duplicating the body.
+const C_SECONDS_NANOS_WELL_KNOWN: &[(&str, &str, &str)] = &[
+    (
+        "google.protobuf.Timestamp",
+        "SynurangProtobufTimestamp",
+        "synurang_protobuf_timestamp",
+    ),
+    (
+        "google.protobuf.Duration",
+        "SynurangProtobufDuration",
+        "synurang_protobuf_duration",
+    ),
+];
+
+/// Every message-like C lite type exposes this common helper surface.  Keep
+/// the list shared by schema validation and the built-in well-known types so
+/// adding a helper cannot silently leave the collision validator behind.
+const C_LITE_MESSAGE_HELPER_SUFFIXES: &[&str] = &[
+    "init",
+    "init_with_allocator",
+    "free",
+    "encode",
+    "decode",
+    "merge",
+    "merge_at_depth",
+];
+
+fn c_well_known_names(fqn: &str) -> Option<(&'static str, &'static str)> {
+    let fqn = fqn.trim_start_matches('.');
+    if fqn == "google.protobuf.Empty" {
+        return Some(("SynurangProtobufEmpty", "synurang_protobuf_empty"));
+    }
+    C_SECONDS_NANOS_WELL_KNOWN
+        .iter()
+        .find(|(proto_name, _, _)| *proto_name == fqn)
+        .map(|(_, type_name, prefix)| (*type_name, *prefix))
+}
+
+/// True when the C lite codec can represent `fqn`. Non-`google.protobuf.*`
+/// types are always the user's own and are generated normally.
+fn is_c_lite_supported_type(fqn: &str) -> bool {
+    let fqn = fqn.trim_start_matches('.');
+    !fqn.starts_with("google.protobuf.") || c_well_known_names(fqn).is_some()
+}
+
+/// Comma-separated list of the supported well-known types, for error messages.
+fn c_lite_supported_well_known_types() -> String {
+    let mut names = vec!["google.protobuf.Empty".to_string()];
+    names.extend(
+        C_SECONDS_NANOS_WELL_KNOWN
+            .iter()
+            .map(|(proto_name, _, _)| (*proto_name).to_string()),
+    );
+    names.join(", ")
+}
+
 fn c_message_function_prefix(index: &DescriptorIndex, msg: &MessageInfo) -> String {
+    if let Some((_, prefix)) = c_well_known_names(&msg.fqn) {
+        return prefix.to_string();
+    }
     let package = index
         .file(&msg.file_path)
         .map(|file| file.package.as_str())
@@ -834,17 +1079,14 @@ fn c_field_type_name(index: &DescriptorIndex, field: &FieldDescriptorProto) -> S
             .and_then(|fqn| index.enum_info(fqn))
             .map(|en| c_enum_type_name(index, en))
             .unwrap_or_else(|| "int32_t".to_string()),
+        // `c_message_type_name` already resolves the well-known types the
+        // shared lite runtime block defines, so message fields need no
+        // special-casing here.
         Type::Message | Type::Group => field
             .type_name
             .as_deref()
             .and_then(|fqn| index.message(fqn))
-            .map(|msg| {
-                if msg.fqn == "google.protobuf.Empty" {
-                    "SynurangProtobufEmpty".to_string()
-                } else {
-                    c_message_type_name(index, msg)
-                }
-            })
+            .map(|msg| c_message_type_name(index, msg))
             .unwrap_or_else(|| "SynurangLiteMessage".to_string()),
     }
 }
@@ -854,13 +1096,7 @@ fn c_field_function_prefix(index: &DescriptorIndex, field: &FieldDescriptorProto
         .type_name
         .as_deref()
         .and_then(|fqn| index.message(fqn))
-        .map(|msg| {
-            if msg.fqn == "google.protobuf.Empty" {
-                "synurang_protobuf_empty".to_string()
-            } else {
-                c_message_function_prefix(index, msg)
-            }
-        })
+        .map(|msg| c_message_function_prefix(index, msg))
         .unwrap_or_default()
 }
 
@@ -1035,6 +1271,32 @@ fn collect_local_messages(
     }
 }
 
+fn collect_local_c_schema_data(
+    index: &DescriptorIndex,
+    file: &FileInfo,
+) -> (Vec<MessageData>, Vec<EnumData>) {
+    let mut messages = Vec::new();
+    let mut message_seen = BTreeSet::new();
+    for message in &file.desc.message_type {
+        let fqn = fqn_for_top(&file.package, message.name.as_deref().unwrap_or(""));
+        collect_local_messages(index, &mut messages, &fqn, &mut message_seen);
+    }
+    messages.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut enums = Vec::new();
+    let mut enum_seen = BTreeSet::new();
+    for en in &file.desc.enum_type {
+        let fqn = fqn_for_top(&file.package, en.name.as_deref().unwrap_or(""));
+        collect_enum_data(index, &mut enums, &fqn, &mut enum_seen);
+    }
+    for message in &file.desc.message_type {
+        let fqn = fqn_for_top(&file.package, message.name.as_deref().unwrap_or(""));
+        collect_local_message_enums(index, &mut enums, &fqn, &mut enum_seen);
+    }
+    enums.sort_by(|left, right| left.name.cmp(&right.name));
+    (messages, enums)
+}
+
 fn collect_enum_data(
     index: &DescriptorIndex,
     out: &mut Vec<EnumData>,
@@ -1054,6 +1316,7 @@ fn collect_enum_data(
         c_type_name: c_enum_type_name(index, en),
         c_function_prefix: c_enum_function_prefix(index, en),
         c_constant_prefix: c_enum_constant_prefix(index, en),
+        short_value_names: short_enum_names(),
         values: en
             .desc
             .value
@@ -1108,56 +1371,492 @@ fn c_enum_constant_prefix(index: &DescriptorIndex, en: &EnumInfo) -> String {
         .join("_")
 }
 
-fn validate_c_lite_names(enums: &[EnumData], messages: &[MessageData]) -> Result<(), String> {
-    let mut type_names = BTreeMap::new();
-    let mut function_prefixes = BTreeMap::new();
-    let mut constant_prefixes = BTreeMap::new();
-    for runtime_type in [
+fn insert_c_symbol(
+    symbols: &mut BTreeMap<String, String>,
+    surface: &str,
+    name: impl Into<String>,
+    origin: impl Into<String>,
+) -> Result<(), String> {
+    let name = name.into();
+    let origin = origin.into();
+    if let Some(previous) = symbols.insert(name.clone(), origin.clone()) {
+        return Err(format!(
+            "{surface} symbol collision for {name:?}: {previous} collides with {origin}"
+        ));
+    }
+    Ok(())
+}
+
+fn register_c_lite_runtime_symbols(
+    symbols: &mut BTreeMap<String, String>,
+    surface: &str,
+) -> Result<(), String> {
+    for name in [
+        "SYNURANG_LITE_C_RUNTIME_TYPES_INCLUDED",
+        "SYNURANG_LITE_C_INTERNAL",
         "SynurangLiteStatus",
         "SynurangLiteAllocateFn",
         "SynurangLiteDeallocateFn",
         "SynurangLiteAllocator",
         "SynurangLiteBytes",
-        "SynurangProtobufEmpty",
+        "SYNURANG_LITE_OK",
+        "SYNURANG_LITE_MALFORMED",
+        "SYNURANG_LITE_OUT_OF_MEMORY",
+        "SYNURANG_LITE_OVERFLOW",
+        "SYNURANG_LITE_INVALID_ARGUMENT",
+        "SYNURANG_LITE_MAX_MESSAGE_DEPTH",
+        "SYNURANG_LITE_SECONDS_NANOS_MAX_ENCODED",
+        "synurang_lite_c_malloc",
+        "synurang_lite_c_free",
+        "synurang_lite_default_allocator",
+        "synurang_lite_allocator_or_default",
+        "synurang_lite_release",
+        "synurang_lite_bytes_clear",
+        "synurang_lite_bytes_assign",
+        "synurang_lite_read_varint",
+        "synurang_lite_skip_field",
+        "synurang_lite_write_varint",
+        "synurang_lite_seconds_nanos_merge",
+        "synurang_lite_seconds_nanos_encode",
     ] {
-        type_names.insert(runtime_type.to_string(), "the C lite runtime".to_string());
+        insert_c_symbol(symbols, surface, name, "the shared C lite runtime")?;
     }
+
+    for (proto_name, type_name, prefix) in std::iter::once((
+        "google.protobuf.Empty",
+        "SynurangProtobufEmpty",
+        "synurang_protobuf_empty",
+    ))
+    .chain(C_SECONDS_NANOS_WELL_KNOWN.iter().copied())
+    {
+        insert_c_symbol(
+            symbols,
+            surface,
+            type_name,
+            format!("the shared C lite {proto_name} type"),
+        )?;
+        for suffix in C_LITE_MESSAGE_HELPER_SUFFIXES {
+            insert_c_symbol(
+                symbols,
+                surface,
+                format!("{prefix}_{suffix}"),
+                format!("the shared C lite {proto_name} {suffix} helper"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn register_c_lite_symbols(
+    symbols: &mut BTreeMap<String, String>,
+    surface: &str,
+    enums: &[EnumData],
+    messages: &[MessageData],
+) -> Result<(), String> {
+    register_c_lite_runtime_symbols(symbols, surface)?;
+    register_c_lite_schema_symbols(symbols, surface, enums, messages)
+}
+
+fn register_c_lite_schema_symbols(
+    symbols: &mut BTreeMap<String, String>,
+    surface: &str,
+    enums: &[EnumData],
+    messages: &[MessageData],
+) -> Result<(), String> {
     for en in enums {
-        for (kind, name, names) in [
-            ("type", &en.c_type_name, &mut type_names),
-            (
-                "function prefix",
-                &en.c_function_prefix,
-                &mut function_prefixes,
-            ),
-            (
-                "constant prefix",
-                &en.c_constant_prefix,
-                &mut constant_prefixes,
-            ),
-        ] {
-            if let Some(previous) = names.insert(name.clone(), en.fqn.clone()) {
-                return Err(format!(
-                    "C lite {kind} {name:?} collides between {previous} and {}",
-                    en.fqn
-                ));
+        insert_c_symbol(
+            symbols,
+            surface,
+            en.c_type_name.clone(),
+            format!("{} enum type", en.fqn),
+        )?;
+        for suffix in ["name", "parse"] {
+            insert_c_symbol(
+                symbols,
+                surface,
+                format!("{}_{}", en.c_function_prefix, suffix),
+                format!("{} enum {suffix} helper", en.fqn),
+            )?;
+        }
+        for (value_name, _) in &en.values {
+            insert_c_symbol(
+                symbols,
+                surface,
+                en.c_value_name(value_name),
+                format!("{}.{} enum value", en.fqn, value_name),
+            )?;
+        }
+    }
+
+    for message in messages {
+        insert_c_symbol(
+            symbols,
+            surface,
+            message.c_type_name.clone(),
+            format!("{} message type", message.fqn),
+        )?;
+        for suffix in C_LITE_MESSAGE_HELPER_SUFFIXES {
+            insert_c_symbol(
+                symbols,
+                surface,
+                format!("{}_{}", message.c_function_prefix, suffix),
+                format!("{} message {suffix} helper", message.fqn),
+            )?;
+        }
+        for field in &message.fields {
+            if field.is_map {
+                insert_c_symbol(
+                    symbols,
+                    surface,
+                    format!("{}_{}_entry", message.c_type_name, field.name),
+                    format!("{}.{} map entry type", message.fqn, field.name),
+                )?;
+            } else if field.is_repeated {
+                insert_c_symbol(
+                    symbols,
+                    surface,
+                    format!("{}_add_{}", message.c_function_prefix, field.name),
+                    format!("{}.{} repeated add helper", message.fqn, field.name),
+                )?;
             }
         }
     }
-    for message in messages {
-        for (kind, name, names) in [
-            ("type", &message.c_type_name, &mut type_names),
-            (
-                "function prefix",
-                &message.c_function_prefix,
-                &mut function_prefixes,
-            ),
-        ] {
-            if let Some(previous) = names.insert(name.clone(), message.fqn.clone()) {
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_c_lite_names(enums: &[EnumData], messages: &[MessageData]) -> Result<(), String> {
+    let mut symbols = BTreeMap::new();
+    register_c_lite_symbols(&mut symbols, "C lite", enums, messages)
+}
+
+fn register_c_lite_dependency_symbols(
+    symbols: &mut BTreeMap<String, String>,
+    surface: &str,
+    index: &DescriptorIndex,
+    root: &FileInfo,
+    generated_files: &BTreeSet<String>,
+    mut pending: BTreeSet<String>,
+) -> Result<(), String> {
+    let mut visited = BTreeSet::from([root.path.clone()]);
+    while let Some(file_path) = pending.iter().next().cloned() {
+        pending.remove(&file_path);
+        if file_path.starts_with("google/protobuf/") || !visited.insert(file_path.clone()) {
+            continue;
+        }
+        let dependency = index.file(&file_path).ok_or_else(|| {
+            format!("lang=c cannot validate generated symbols from missing file {file_path}")
+        })?;
+        let (messages, enums) = collect_local_c_schema_data(index, dependency);
+        if generated_files.contains(&dependency.path) {
+            register_c_lite_schema_symbols(symbols, surface, &enums, &messages)?;
+        } else {
+            register_c_lite_dependency_file_symbols(
+                symbols, surface, dependency, &enums, &messages,
+            )?;
+        }
+        pending.extend(lite_message_dependencies(index, dependency));
+    }
+    Ok(())
+}
+
+fn register_c_lite_dependency_file_symbols(
+    symbols: &mut BTreeMap<String, String>,
+    surface: &str,
+    dependency: &FileInfo,
+    enums: &[EnumData],
+    messages: &[MessageData],
+) -> Result<(), String> {
+    let mut candidates = Vec::new();
+    let mut invalid_styles = Vec::new();
+    let mut runtime_symbols = BTreeMap::new();
+    register_c_lite_runtime_symbols(&mut runtime_symbols, surface)?;
+
+    // Dependency headers may have been generated independently with either
+    // enum_names spelling.  Build each complete surface in isolation: names
+    // from mutually exclusive styles must not collide with one another.  Seed
+    // each map with the shared runtime too, because a style that collides with
+    // either its own schema or the common header could not produce a valid
+    // dependency header.
+    for (style, short_value_names) in [("qualified", false), ("short", true)] {
+        let mut styled_enums = enums.to_vec();
+        for en in &mut styled_enums {
+            en.short_value_names = short_value_names;
+        }
+        let mut styled_symbols = runtime_symbols.clone();
+        match register_c_lite_schema_symbols(&mut styled_symbols, surface, &styled_enums, messages)
+        {
+            Ok(()) => {
+                for name in runtime_symbols.keys() {
+                    styled_symbols.remove(name);
+                }
+                candidates.push((style, styled_symbols));
+            }
+            Err(error) => invalid_styles.push((style, error)),
+        }
+    }
+
+    if candidates.is_empty() {
+        let details = invalid_styles
+            .into_iter()
+            .map(|(style, error)| format!("{style}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "{surface} dependency {} has no valid C symbol surface: {details}",
+            dependency.path
+        ));
+    }
+
+    // Compare every viable dependency spelling with symbols already emitted
+    // by the root/runtime or reserved by an earlier dependency.  Only after
+    // those checks pass do we merge the style union for later files/services.
+    let mut possible_symbols: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (style, styled_symbols) in candidates {
+        for (name, origin) in styled_symbols {
+            let candidate_origin = format!(
+                "{origin} from dependency {} ({style} enum_names spelling)",
+                dependency.path
+            );
+            if let Some(previous) = symbols.get(&name) {
                 return Err(format!(
-                    "C lite {kind} {name:?} collides between {previous} and {}",
-                    message.fqn
+                    "{surface} symbol collision for {name:?}: {previous} collides with {candidate_origin}"
                 ));
+            }
+            possible_symbols
+                .entry(name)
+                .or_default()
+                .insert(candidate_origin);
+        }
+    }
+    for (name, origins) in possible_symbols {
+        symbols.insert(name, origins.into_iter().collect::<Vec<_>>().join(" or "));
+    }
+    Ok(())
+}
+
+fn validate_c_lite_file_names(
+    index: &DescriptorIndex,
+    file: &FileInfo,
+    generated_files: &BTreeSet<String>,
+    enums: &[EnumData],
+    messages: &[MessageData],
+) -> Result<(), String> {
+    let surface = "C lite";
+    let mut symbols = BTreeMap::new();
+    register_c_lite_symbols(&mut symbols, surface, enums, messages)?;
+    register_c_lite_dependency_symbols(
+        &mut symbols,
+        surface,
+        index,
+        file,
+        generated_files,
+        lite_message_dependencies(index, file),
+    )
+}
+
+fn register_c_runtime_symbols(
+    symbols: &mut BTreeMap<String, String>,
+    surface: &str,
+) -> Result<(), String> {
+    for name in [
+        "SynurangRuntime",
+        "SynurangStream",
+        "SynurangStatus",
+        "SynurangExecutionMode",
+        "SynurangWakeupFn",
+        "SynurangRuntimeOptions",
+        "SynurangStreamCallbacks",
+        "SYNURANG_OK",
+        "SYNURANG_EOF",
+        "SYNURANG_PENDING",
+        "SYNURANG_ERROR",
+        "SYNURANG_INVALID_ARGUMENT",
+        "SYNURANG_NOT_FOUND",
+        "SYNURANG_CLOSED",
+        "SYNURANG_WOULD_BLOCK",
+        "SYNURANG_OUT_OF_MEMORY",
+        "SYNURANG_SHUTTING_DOWN",
+        "SYNURANG_INTERNAL",
+        "SYNURANG_EXECUTION_THREADED",
+        "SYNURANG_EXECUTION_MANUAL",
+        "SYNURANG_DEFAULT_STREAM_QUEUE_CAPACITY",
+        "SYNURANG_RUNTIME_OPTIONS_INIT",
+        "SYNURANG_STREAM_CALLBACKS_INIT",
+        "synurang_runtime_create",
+        "synurang_runtime_default",
+        "synurang_runtime_shutdown_default",
+        "synurang_runtime_poll",
+        "synurang_runtime_has_pending",
+        "synurang_runtime_destroy",
+        "synurang_stream_open",
+        "synurang_stream_handle",
+        "synurang_stream_retain",
+        "synurang_stream_release",
+        "synurang_stream_write",
+        "synurang_stream_finish",
+        "synurang_stream_fail",
+        "synurang_stream_fail_error",
+        "synurang_response_copy",
+        "synurang_error_response_copy",
+        "synurang_response_free",
+        "Synurang_Stream_Send",
+        "Synurang_Stream_TrySend",
+        "Synurang_Stream_Recv",
+        "Synurang_Stream_TryRecv",
+        "Synurang_Stream_CloseSend",
+        "Synurang_Stream_Close",
+        "Synurang_Free",
+    ] {
+        insert_c_symbol(symbols, surface, name, "the shared C stream runtime")?;
+    }
+    Ok(())
+}
+
+fn validate_c_ffi_names(
+    index: &DescriptorIndex,
+    file: &FileInfo,
+    service_list: &BTreeSet<String>,
+    generated_files: &BTreeSet<String>,
+    data: &FileData,
+) -> Result<(), String> {
+    let surface = "C FFI";
+    let mut symbols = BTreeMap::new();
+    register_c_lite_symbols(&mut symbols, surface, &data.enums, &data.local_messages)?;
+    register_c_runtime_symbols(&mut symbols, surface)?;
+
+    let mut pending = lite_message_dependencies(index, file);
+    pending.extend(lite_service_dependencies(index, file, service_list));
+    register_c_lite_dependency_symbols(
+        &mut symbols,
+        surface,
+        index,
+        file,
+        generated_files,
+        pending,
+    )?;
+
+    for service in &data.services {
+        let prefix = &service.native_prefix;
+        let service_name = &service.go_name;
+        insert_c_symbol(
+            &mut symbols,
+            surface,
+            format!("{service_name}Handlers"),
+            format!("{service_name} handler table type"),
+        )?;
+
+        for (suffix, description) in [
+            ("handlers", "handler table storage"),
+            ("registered", "registration flag"),
+            ("runtime", "runtime storage"),
+            ("user_data", "service state storage"),
+            ("error", "thread-local error storage"),
+            ("error_len", "thread-local error length"),
+            ("clear_error", "error reset helper"),
+            ("error_response", "wire error helper"),
+            ("free", "generated free API"),
+            ("last_error", "generated last-error API"),
+            ("set_error", "generated set-error API"),
+            ("register", "generated register API"),
+            ("register_with_runtime", "generated runtime register API"),
+            ("unregister", "generated unregister API"),
+        ] {
+            insert_c_symbol(
+                &mut symbols,
+                surface,
+                format!("{prefix}_{suffix}"),
+                format!("{service_name} {description}"),
+            )?;
+        }
+        insert_c_symbol(
+            &mut symbols,
+            surface,
+            format!("Synurang_Invoke_{service_name}"),
+            format!("{service_name} raw invoke API"),
+        )?;
+        if service.methods.iter().any(|method| !method.is_unary) {
+            insert_c_symbol(
+                &mut symbols,
+                surface,
+                format!("Synurang_Stream_{service_name}_Open"),
+                format!("{service_name} raw stream-open API"),
+            )?;
+        }
+
+        let mut handler_members = BTreeMap::new();
+        for method in &service.methods {
+            let method_origin = format!("{service_name}.{}", method.name);
+            let method_name = to_snake_case(&method.name);
+            if let Some(previous) =
+                handler_members.insert(method_name.clone(), method_origin.clone())
+            {
+                return Err(format!(
+                    "{surface} symbol collision for {method_name:?} in {service_name}Handlers: {previous} collides with {method_origin}"
+                ));
+            }
+
+            if method.is_unary {
+                let input = data.messages.get(&method.input_type_key).ok_or_else(|| {
+                    format!(
+                        "lang=c cannot validate {method_origin}: request type {} is unavailable",
+                        method.input_type_key
+                    )
+                })?;
+                let needs_pb = input
+                    .fields
+                    .iter()
+                    .any(|field| field.is_repeated || field.is_oneof || field.is_map);
+                let suffix = if needs_pb {
+                    format!("{method_name}_pb")
+                } else {
+                    method_name
+                };
+                insert_c_symbol(
+                    &mut symbols,
+                    surface,
+                    format!("{prefix}_{suffix}"),
+                    method_origin,
+                )?;
+                continue;
+            }
+
+            let method_type_prefix = format!("{service_name}{}", method.go_name);
+            for (suffix, description) in [
+                ("Stream", "stream handle type"),
+                ("Handlers", "stream handler type"),
+                ("State", "generated stream state type"),
+            ] {
+                insert_c_symbol(
+                    &mut symbols,
+                    surface,
+                    format!("{method_type_prefix}{suffix}"),
+                    format!("{method_origin} {description}"),
+                )?;
+            }
+            for suffix in ["send", "finish", "fail"] {
+                insert_c_symbol(
+                    &mut symbols,
+                    surface,
+                    format!("{prefix}_{method_name}_{suffix}"),
+                    format!("{method_origin} generated {suffix} API"),
+                )?;
+            }
+            for suffix in [
+                "on_open",
+                "on_message",
+                "on_half_close",
+                "on_writable",
+                "on_cancel",
+                "on_destroy",
+                "callbacks",
+            ] {
+                insert_c_symbol(
+                    &mut symbols,
+                    surface,
+                    format!("{prefix}_{method_name}_{suffix}"),
+                    format!("{method_origin} generated {suffix} adapter"),
+                )?;
             }
         }
     }
@@ -1355,7 +2054,8 @@ pub fn select_template(lang: &str, mode_or_opt: &str) -> Option<&'static str> {
             "activex" => "c_activex.h.tmpl",
             "lite_header" => "c_lite.h.tmpl",
             "lite_source" => "c_lite.c.tmpl",
-            "" | "default" | "native" => "c_native.h.tmpl",
+            "ffi_source" => "c_native.c.tmpl",
+            "" | "default" | "native" | "ffi_header" => "c_native.h.tmpl",
             _ => return None,
         },
         "java" => "java.java.tmpl",
@@ -1414,10 +2114,16 @@ fn output_filename_with_mode(file: &FileInfo, lang: &str, mode: &str, ext: &str)
     if mode == "lite_source" && lang == "c" {
         return format!("{source_relative_base}_lite.c");
     }
+    if mode == "ffi_header" && lang == "c" {
+        return format!("{source_relative_base}_ffi.h");
+    }
+    if mode == "ffi_source" && lang == "c" {
+        return format!("{source_relative_base}_ffi.c");
+    }
     if mode == "native" {
         return match lang {
             "rust" => format!("{base}_ffi_native.rs"),
-            "c" => format!("{base}_ffi_native.h"),
+            "c" => format!("{source_relative_base}_ffi.h"),
             _ => format!("{base}_ffi"),
         };
     }
@@ -1438,7 +2144,7 @@ fn output_filename_with_mode(file: &FileInfo, lang: &str, mode: &str, ext: &str)
         "go" => format!("{base}_ffi.pb.go"),
         "dart" => format!("{base}_ffi.pb.dart"),
         "cpp" => format!("{base}_ffi.h"),
-        "c" => format!("{base}_ffi_native.h"),
+        "c" => format!("{source_relative_base}_ffi.h"),
         "rust" => format!("{base}_ffi.rs"),
         "java" => format!("{base}_ffi.java"),
         "csharp" => format!("{base}_ffi.cs"),
@@ -1536,5 +2242,100 @@ fn infer_dispatch_type(
         "int_put".to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod c_symbol_tests {
+    use super::*;
+
+    fn short_enum(values: &[&str]) -> EnumData {
+        EnumData {
+            name: "Foo".to_string(),
+            fqn: "test.Foo".to_string(),
+            python_name: "Foo".to_string(),
+            c_type_name: "TestFoo".to_string(),
+            c_function_prefix: "test_foo".to_string(),
+            c_constant_prefix: "TEST_FOO".to_string(),
+            short_value_names: true,
+            values: values
+                .iter()
+                .enumerate()
+                .map(|(number, name)| ((*name).to_string(), number as i32))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn c_lite_validation_uses_final_short_enum_constant_names() {
+        validate_c_lite_names(&[short_enum(&["FOO_READY", "FOO_DONE"])], &[]).unwrap();
+
+        let error = validate_c_lite_names(&[short_enum(&["FOO_READY", "READY"])], &[]).unwrap_err();
+        assert!(error.contains("C lite symbol collision"), "{error}");
+        assert!(error.contains("TEST_FOO_READY"), "{error}");
+        assert!(error.contains("test.Foo.FOO_READY"), "{error}");
+        assert!(error.contains("test.Foo.READY"), "{error}");
+    }
+
+    #[test]
+    fn c_lite_supports_exactly_the_well_known_types_it_defines() {
+        for supported in [
+            "google.protobuf.Empty",
+            "google.protobuf.Timestamp",
+            "google.protobuf.Duration",
+            ".google.protobuf.Timestamp",
+        ] {
+            assert!(
+                is_c_lite_supported_type(supported),
+                "{supported} should be supported"
+            );
+            assert!(c_well_known_names(supported).is_some(), "{supported}");
+        }
+        for unsupported in [
+            "google.protobuf.Struct",
+            "google.protobuf.Any",
+            "google.protobuf.StringValue",
+        ] {
+            assert!(
+                !is_c_lite_supported_type(unsupported),
+                "{unsupported} should be rejected"
+            );
+            assert!(c_well_known_names(unsupported).is_none(), "{unsupported}");
+        }
+        // A type from the user's own schema is never a well-known type.
+        assert!(is_c_lite_supported_type("example.v1.Request"));
+        assert!(c_well_known_names("example.v1.Request").is_none());
+
+        // The rejection message names every supported type so the fix is
+        // obvious from the error alone.
+        let supported = c_lite_supported_well_known_types();
+        for name in [
+            "google.protobuf.Empty",
+            "google.protobuf.Timestamp",
+            "google.protobuf.Duration",
+        ] {
+            assert!(supported.contains(name), "{supported}");
+        }
+    }
+
+    #[test]
+    fn enum_name_style_is_authoritative_on_every_call() {
+        let _guard = enum_name_style_test_lock();
+        let short = HashMap::from([("enum_names".to_string(), "short".to_string())]);
+        let qualified = HashMap::from([("enum_names".to_string(), "qualified".to_string())]);
+
+        set_enum_name_style(&short).unwrap();
+        assert!(short_enum_names());
+        // A OnceLock would have kept the first value here.
+        set_enum_name_style(&qualified).unwrap();
+        assert!(!short_enum_names());
+        set_enum_name_style(&HashMap::new()).unwrap();
+        assert!(!short_enum_names());
+
+        let bad = HashMap::from([("enum_names".to_string(), "brief".to_string())]);
+        let error = set_enum_name_style(&bad).unwrap_err();
+        assert!(error.contains("unknown enum_names value"), "{error}");
+        // A rejected value must not change the style either.
+        assert!(!short_enum_names());
     }
 }

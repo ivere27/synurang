@@ -851,6 +851,275 @@ with PluginHost.load("./libmyplugin.so") as plugin:
 
 ---
 
+## C
+
+The C generator has two primary forms:
+
+```sh
+# Complete binding: messages plus service/plugin implementation
+protoc --synurang-ffi_out=. --synurang-ffi_opt=lang=c \
+       your_service.proto
+
+# Messages and enums only
+protoc --synurang-ffi_out=. --synurang-ffi_opt=lang=c,mode=lite \
+       your_service.proto
+```
+
+For `api/your_service.proto`, the complete form emits source-relative files:
+
+```text
+api/your_service_lite.h
+api/your_service_lite.c
+api/your_service_ffi.h
+api/your_service_ffi.c
+```
+
+A proto file without a selected service emits only its lite files. The
+complete binding has one public include:
+
+```c
+#include "api/your_service_ffi.h"
+```
+
+That header includes the generated lite messages and
+`<synurang/c_runtime.h>`. It declares the flattened unary call functions,
+typed implementation handlers, typed streaming helpers, and the standard raw
+plugin ABI. The generated `.c` file supplies the adapters. Link it with the
+lite sources and `src/c_runtime.c`; no protobuf or gRPC C runtime is required.
+
+`lang=c,mode=native` is accepted as a deprecated compatibility alias for the
+complete form. It emits the same `_lite.*` and `_ffi.*` files; the old
+`_ffi_native*` and separate server-header layout is not generated.
+
+### Typed service implementation
+
+For a `GreeterService` with unary `SayHello` and bidirectional `Chat` methods,
+the generated contract follows this shape (exact message names come from the
+proto package):
+
+```c
+static int say_hello(
+    const ExampleHelloRequest* request,
+    ExampleHelloReply* response,
+    void* service_user_data) {
+    /* request is borrowed; response is initialized and owned by the adapter. */
+    return 0;
+}
+
+static void* chat_open(
+    GreeterServiceChatStream stream,
+    void* service_user_data) {
+    /* Allocate or select state for this stream. This example borrows the
+       shared service state; returning it does not transfer its ownership. */
+    return service_user_data;
+}
+
+static void chat_message(
+    GreeterServiceChatStream stream,
+    const ExampleChatRequest* message,
+    void* stream_user_data) {
+    ExampleChatReply reply;
+    example_chat_reply_init(&reply);
+    /* Fill reply using its allocator. */
+    if (greeter_chat_send(stream, &reply) == SYNURANG_WOULD_BLOCK) {
+        /* Retain the logical reply and retry after on_writable. */
+    }
+    example_chat_reply_free(&reply);
+}
+
+static void chat_half_close(
+    GreeterServiceChatStream stream,
+    void* stream_user_data) {
+    (void)stream_user_data;
+    (void)greeter_chat_finish(stream);
+}
+
+static void chat_cancel(
+    GreeterServiceChatStream stream,
+    void* stream_user_data) {
+    /* Ask outstanding async work to stop and release retained stream refs.
+       Do not perform the final stream-state free here. */
+    (void)stream;
+    (void)stream_user_data;
+}
+
+static void chat_destroy(void* stream_user_data) {
+    /* The sole final-free point for state owned by this stream. This example
+       returned borrowed service state, so there is nothing to free here. */
+    (void)stream_user_data;
+}
+
+GreeterServiceHandlers handlers = {0};
+handlers.say_hello = say_hello;
+handlers.chat.on_open = chat_open;
+handlers.chat.on_message = chat_message;
+handlers.chat.on_half_close = chat_half_close;
+handlers.chat.on_cancel = chat_cancel;
+handlers.chat.on_destroy = chat_destroy;
+
+if (greeter_register(&handlers, app_state) != 0) {
+    /* Already registered or invalid table. */
+}
+```
+
+Each generated streaming method has `on_open`, `on_message`,
+`on_half_close`, `on_writable`, `on_cancel`, and `on_destroy` slots.
+When an `on_open` handler is present, its return value is passed to later
+callbacks as that stream's state. If the stream is cancelled before `on_open`
+runs, `on_open` is skipped and both `on_cancel` and `on_destroy` receive `NULL`:
+no per-stream state was created. `on_cancel` is the cancellation notification;
+use it to stop asynchronous work and arrange release of retained stream
+references, but do not finally free owned stream state there. `on_destroy` is
+called exactly once after all stream references are gone and is the one place
+to perform that final free.
+
+If the `on_open` slot itself is omitted, later callbacks receive the registered
+`service_user_data` as a convenience. That pointer remains shared, borrowed
+service state; ownership is not transferred to each stream. Because
+`on_destroy` runs once per stream, it must not free shared service state. Free
+that state only after every stream has delivered `on_destroy` and the service
+owner has completed the unregister/shutdown lifecycle.
+Callbacks for one stream are serialized. Different streams may execute
+concurrently in the threaded runtime.
+
+Incoming typed messages and callback stream pointers are borrowed. Do not
+retain a message pointer. If asynchronous work must use a stream after the
+callback returns, call `synurang_stream_retain()` first and
+`synurang_stream_release()` from the completion or cancellation path.
+`on_destroy` runs exactly once after the handle and every retained stream
+reference have been released.
+
+Generated `*_send` helpers encode and copy the response before returning.
+Queues are bounded (16 entries by default); `SYNURANG_WOULD_BLOCK` means the
+response must be retried after `on_writable`. `*_finish` publishes EOF after
+queued responses, while `*_fail` publishes a serialized `core.v1.Error` and a
+negative stream status. Both operations terminate the whole RPC: later sends
+return `SYNURANG_CLOSED`, queued input callbacks are discarded, and normal
+completion does not call `on_cancel`. For a server-streaming method, the
+generated adapter accepts exactly one request message and fails a second one.
+
+### Threaded runtime (default)
+
+`greeter_register(&handlers, app_state)` selects a lazily-created,
+process-wide runtime. On native threaded builds it owns one worker by default;
+the worker executes the same non-blocking dispatch core exposed by
+`synurang_runtime_poll()`. This is the simple choice for an ordinary C shared
+library and remains compatible with blocking plugin hosts using
+`Synurang_Stream_Recv`.
+
+The pointer returned by `synurang_runtime_default()` is borrowed. Do not cache
+or use it concurrently with `synurang_runtime_shutdown_default()`; pass `NULL`
+to `synurang_stream_open()` (as generated adapters do) so open and shutdown are
+synchronized internally.
+
+For custom worker and queue settings, create a threaded runtime explicitly and
+pass it to the generated registration function:
+
+```c
+SynurangRuntimeOptions options = SYNURANG_RUNTIME_OPTIONS_INIT;
+options.execution_mode = SYNURANG_EXECUTION_THREADED;
+options.worker_count = 4;
+
+SynurangRuntime* runtime = synurang_runtime_create(&options);
+if (!runtime ||
+    greeter_register_with_runtime(runtime, &handlers, app_state) != 0) {
+    /* Handle initialization failure. */
+}
+```
+
+### Manual polling for libuv and WebAssembly
+
+Manual execution creates no runtime worker. `synurang_runtime_poll()` never
+blocks; callbacks execute on the thread that calls it.
+
+```c
+static void schedule_poll(void* user_data) {
+    AppLoop* app = (AppLoop*)user_data;
+    /* libuv: uv_async_send(&app->stream_async);
+       WebAssembly: ask JavaScript to queue a microtask. */
+}
+
+SynurangRuntimeOptions options = SYNURANG_RUNTIME_OPTIONS_INIT;
+options.execution_mode = SYNURANG_EXECUTION_MANUAL;
+options.wakeup = schedule_poll;
+options.wakeup_user_data = app_loop;
+
+SynurangRuntime* runtime = synurang_runtime_create(&options);
+greeter_register_with_runtime(runtime, &handlers, app_state);
+```
+
+The scheduled event-loop callback drains a bounded amount of work and
+reschedules itself when necessary:
+
+```c
+void service_poll_callback(AppLoop* app) {
+    (void)synurang_runtime_poll(app->runtime, 64);
+    if (synurang_runtime_has_pending(app->runtime)) {
+        schedule_poll(app);
+    }
+}
+```
+
+In a libuv embedding, `schedule_poll` normally calls `uv_async_send`; in a
+single-threaded WebAssembly embedding it normally schedules an exported poll
+call with `queueMicrotask`. A build with `SYNURANG_RUNTIME_NO_THREADS` accepts
+manual execution only, and its default runtime is also manual.
+
+`wakeup` also runs when asynchronous work publishes the first readable
+response, EOF, or error to a previously empty stream. Therefore the scheduled
+loop task should both poll callbacks and retry `TryRecv` for handles it is
+waiting on, draining each until it reaches `SYNURANG_PENDING`, EOF, or an
+error. Wakeups are readiness hints and are not guaranteed one-for-one with
+messages.
+
+Event-loop integrations should use `Synurang_Stream_TrySend` and
+`Synurang_Stream_TryRecv`. These functions do not directly pump the runtime,
+but making work ready can invoke `wakeup`; if that hook synchronously calls
+`synurang_runtime_poll()`, callbacks may re-enter before the `Try` call returns.
+The usual libuv or microtask wakeup only schedules a later poll:
+
+```c
+char* data = Synurang_Stream_TryRecv(handle, &data_len, &status);
+if (!data && status == SYNURANG_PENDING) {
+    /* Poll and try again later. */
+}
+```
+
+The blocking names `Synurang_Stream_Send` and `Synurang_Stream_Recv` also
+return without blocking on a manual runtime, but they are not inert: the
+calling thread becomes the executor and dispatches pending callbacks until the
+operation can complete or a pass dispatches nothing. That is what lets a stock
+blocking host — which knows only the plugin ABI and never calls
+`synurang_runtime_poll()` — drive a manual or threadless plugin. `WOULD_BLOCK`
+and `PENDING` are therefore reported only once no callback can make further
+progress. Inside an event loop prefer the explicit `Try` names, which never run
+the poll loop directly and keep backpressure handling on your own schedule;
+the synchronous-`wakeup` re-entry caveat above still applies.
+
+### Shutdown and shared-library unload
+
+Generated `*_unregister()` removes the service's global handler table and
+allows later registration. It does not cancel active streams. Do not race it
+with unary calls or new stream opens; already-open streams keep their own
+callback-table copy. Keep service and per-stream user data alive until the
+runtime has delivered `on_destroy`. Use this order before unloading code that
+owns handlers:
+
+1. Stop accepting work and close/cancel every stream.
+2. Release asynchronous retained stream references.
+3. For an explicit runtime, call `synurang_runtime_destroy(runtime)` and then
+   the generated `*_unregister()`.
+4. For the process-wide default, unregister every service using it, then call
+   `synurang_runtime_shutdown_default()` before `dlclose`.
+
+The default shutdown call releases the current runtime; a later default
+registration/open lazily creates a fresh one.
+In a threadless build, final runtime storage is deferred until the last
+retained stream is released if step 2 is violated; the runtime is still
+logically destroyed and must not be used again.
+
+---
+
 ## Structured FFI Errors
 
 Synurang carries `core.v1.Error` over FFI/plugin boundaries. The canonical structured error is `FfiError`.
@@ -1045,19 +1314,27 @@ The example plugins in `example/go/plugin/main.go`, `example/cpp/plugin/main.cpp
 
 ## C ABI reference
 
-Every Synurang plugin exports these symbols:
+Every Synurang plugin exports these baseline symbols:
 
 ```c
 // Unary RPC
-char* Synurang_Invoke_<Service>(char* method, char* data, int data_len, int* resp_len);
+char* Synurang_Invoke_<Service>(const char* method, const char* data, int data_len, int* resp_len);
 void  Synurang_Free(char* ptr);
 
 // Streaming RPC
-uint64_t Synurang_Stream_<Service>_Open(char* method);
+uint64_t Synurang_Stream_<Service>_Open(const char* method);
 int      Synurang_Stream_Send(uint64_t handle, char* data, int data_len);
 char*    Synurang_Stream_Recv(uint64_t handle, int* resp_len, int* status);
 void     Synurang_Stream_CloseSend(uint64_t handle);
 void     Synurang_Stream_Close(uint64_t handle);
+```
+
+The shared C runtime additionally exports explicit non-blocking forms for
+manual event loops:
+
+```c
+int   Synurang_Stream_TrySend(uint64_t handle, const char* data, int data_len);
+char* Synurang_Stream_TryRecv(uint64_t handle, int* resp_len, int* status);
 ```
 
 **Response format:**
@@ -1066,8 +1343,20 @@ void     Synurang_Stream_Close(uint64_t handle);
   - `resp_len >= 0`: success, payload is raw protobuf bytes
   - `resp_len < 0`: error, payload is serialized `core.v1.Error`
 - Stream Recv:
-  - `status == 0`: success, payload is raw protobuf bytes
-  - `status == 1`: EOF
+  - `status == SYNURANG_OK` (`0`): success, payload is raw protobuf bytes
+  - `status == SYNURANG_EOF` (`1`): EOF
+  - `status == SYNURANG_PENDING` (`3`): C runtime extension, returned only by `TryRecv` or by `Recv` on a manual runtime that has no callback left to run. Hosts that predate this status treat it as an error, so a plugin meant for blocking hosts should keep the threaded default.
   - `status < 0`: error, payload is serialized `core.v1.Error`
 
 Empty protobuf payloads are valid successes. That means `resp_len == 0` for unary or `status == 0` with `resp_len == 0` for streaming is not an error by itself.
+
+`Send`/`Recv` may block only with a threaded runtime. On a manual runtime they
+never block and instead dispatch pending callbacks on the calling thread until
+the operation completes, so an ordinary blocking host keeps working against a
+manual or threadless plugin. Event loops should prefer the explicit
+`TrySend`/`TryRecv` forms. They do not directly pump callbacks, although a
+configured `wakeup` hook can synchronously poll and re-enter them.
+`SYNURANG_WOULD_BLOCK` (`-4`) means a bounded queue has no capacity yet.
+Generated typed service handlers receive `on_writable` when response capacity
+becomes available. See the [C runtime section](#manual-polling-for-libuv-and-webassembly)
+for polling and lifecycle rules.

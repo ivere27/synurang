@@ -43,70 +43,58 @@ echo "Building plugin..."
 cd "$ROOT_DIR"
 make build_plugin
 
-# nativePrefix("NativeTestService") strips "Service" → "NativeTest" → "native_test"
-PREFIX="native_test"
-
 # =========================================================================
-# Generate C native header
+# Generate complete C binding through the deprecated native alias
 # =========================================================================
 echo ""
-echo "=== C Native Header (lang=c, mode=native) ==="
-protoc -I"$SCRIPT_DIR/api" -Iapi -I/usr/include \
+echo "=== C Full Binding (lang=c, mode=native alias) ==="
+protoc -I"$SCRIPT_DIR" \
     --plugin=protoc-gen-synurang-ffi="$PLUGIN" \
     --synurang-ffi_out="$OUT_DIR" \
     --synurang-ffi_opt=lang=c,mode=native \
-    native_test.proto
+    api/c_ffi/dependency.proto api/c_ffi/service.proto
 
-C_HDR="$OUT_DIR/native_test_ffi_native.h"
+C_HDR="$OUT_DIR/api/c_ffi/service_ffi.h"
+C_SRC="$OUT_DIR/api/c_ffi/service_ffi.c"
 if [ ! -f "$C_HDR" ]; then
-    echo "FAIL: native_test_ffi_native.h was not generated!"
+    echo "FAIL: api/c_ffi/service_ffi.h was not generated!"
     exit 1
 fi
 
-echo "--- Empty request (Ping) ---"
-assert_contains "$C_HDR" "${PREFIX}_ping(" "Ping function exists"
-# No leading comma before out_len
-assert_not_contains "$C_HDR" 'ping(,' "Ping has no leading comma"
+echo "--- Unified full/lite surface ---"
+assert_contains "$C_HDR" '#include <synurang/c_runtime.h>' "runtime header included"
+assert_contains "$C_HDR" 'typedef struct TestServiceHandlers' "typed service table generated"
+assert_contains "$C_HDR" 'typedef struct TestServiceBidiStreamHandlers' "typed stream callbacks generated"
+assert_contains "$C_HDR" 'test_register_with_runtime(' "advanced runtime registration generated"
+assert_contains "$C_HDR" 'Synurang_Stream_TestService_Open' "plugin stream Open generated"
+assert_contains "$C_SRC" 'synurang_stream_open(' "stream adapter uses common runtime"
+assert_contains "$C_HDR" 'test_unary(' "flattened unary caller function generated"
+assert_contains "$C_HDR" 'test_free(' "memory management function generated"
 
-echo "--- Void prototype (NoOp) ---"
-assert_contains "$C_HDR" "${PREFIX}_no_op(void)" "NoOp emits void for strict C prototype"
+for generated in \
+    "$OUT_DIR/api/c_ffi/dependency_lite.h" \
+    "$OUT_DIR/api/c_ffi/dependency_lite.c" \
+    "$OUT_DIR/api/c_ffi/service_lite.h" \
+    "$OUT_DIR/api/c_ffi/service_lite.c" \
+    "$OUT_DIR/api/c_ffi/service_ffi.h" \
+    "$OUT_DIR/api/c_ffi/service_ffi.c"; do
+    if [ -f "$generated" ]; then
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: missing generated file: $generated"
+        FAIL=$((FAIL + 1))
+    fi
+done
+if find "$OUT_DIR" -type f \( -name '*_ffi_native*' -o -name '*_native_server*' \) \
+    -print -quit | grep -q .; then
+    echo "  FAIL: deprecated native alias emitted a legacy C filename"
+    FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
 
-echo "--- uint64 field ---"
-assert_contains "$C_HDR" 'uint64_t d' "uint64 field mapped to uint64_t"
-
-echo "--- Imported input (core.v1.Error) ---"
-assert_contains "$C_HDR" "${PREFIX}_imported_input(" "ImportedInput function exists"
-assert_contains "$C_HDR" 'int32_t code' "imported Error.code field present"
-assert_contains "$C_HDR" 'message, int32_t message_len' "imported Error.message field with length"
-
-echo "--- Oneof request → _pb variant ---"
-assert_contains "$C_HDR" "${PREFIX}_oneof_input_pb(" "OneofInput routes to _pb"
-# The _pb function name also matches _pb(, so check there's no flat variant without _pb
-assert_not_contains "$C_HDR" "${PREFIX}_oneof_input(" "OneofInput has no flat variant"
-
-echo "--- Repeated request → _pb variant ---"
-assert_contains "$C_HDR" "${PREFIX}_repeated_input_pb(" "RepeatedInput routes to _pb"
-
-echo "--- Mixed request → _pb variant ---"
-assert_contains "$C_HDR" "${PREFIX}_mixed_input_pb(" "MixedInput routes to _pb"
-
-echo "--- Map request → _pb variant ---"
-assert_contains "$C_HDR" "${PREFIX}_map_input_pb(" "MapInput routes to _pb"
-assert_not_contains "$C_HDR" "${PREFIX}_map_input(" "MapInput has no flat variant"
-
-echo "--- Recursive message (TreeOp) ---"
-assert_contains "$C_HDR" "${PREFIX}_tree_op(" "TreeOp function exists (generator did not crash)"
-assert_contains "$C_HDR" 'child, int32_t child_len' "recursive TreeNode.child serialized as bytes+len"
-
-echo "--- All scalar types present ---"
-assert_contains "$C_HDR" 'int32_t a' "int32 field"
-assert_contains "$C_HDR" 'int64_t b' "int64 field"
-assert_contains "$C_HDR" 'uint32_t c' "uint32 field"
-assert_contains "$C_HDR" 'float e' "float field"
-assert_contains "$C_HDR" 'double f' "double field"
-
-echo "--- Memory management ---"
-assert_contains "$C_HDR" "${PREFIX}_free(" "free function exists"
+# nativePrefix("NativeTestService") strips "Service" → "NativeTest" → "native_test"
+PREFIX="native_test"
 
 # =========================================================================
 # Generate Rust native
@@ -222,11 +210,13 @@ if command -v gcc >/dev/null 2>&1; then
     # Include the header from a .c file to avoid #pragma once warning
     COMPILE_TEST="$OUT_DIR/_compile_test.c"
     echo "#include \"$(basename "$C_HDR")\"" > "$COMPILE_TEST"
-    if gcc -fsyntax-only -std=c11 -Wstrict-prototypes -Werror -I"$(dirname "$C_HDR")" "$COMPILE_TEST" 2>/dev/null; then
+    if gcc -fsyntax-only -std=c11 -Wstrict-prototypes -Werror \
+        -I"$(dirname "$C_HDR")" -I"$ROOT_DIR/include" "$COMPILE_TEST" 2>/dev/null; then
         PASS=$((PASS + 1))
     else
         echo "  FAIL: C header fails strict compilation"
-        gcc -fsyntax-only -std=c11 -Wstrict-prototypes -Werror -I"$(dirname "$C_HDR")" "$COMPILE_TEST" 2>&1 | head -5
+        gcc -fsyntax-only -std=c11 -Wstrict-prototypes -Werror \
+            -I"$(dirname "$C_HDR")" -I"$ROOT_DIR/include" "$COMPILE_TEST" 2>&1 | head -5
         FAIL=$((FAIL + 1))
     fi
 else

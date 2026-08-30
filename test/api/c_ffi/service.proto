@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package cffi.test.v1;
+
+import "api/c_ffi/dependency.proto";
+
+message Request {
+  string value = 1;
+  cffi.dependency.v1.Imported imported = 2;
+}
+
+message Response {
+  string value = 1;
+}
+
+service TestService {
+  rpc Unary(Request) returns (Response);
+  rpc ServerStream(Request) returns (stream Response);
+  rpc ClientStream(stream Request) returns (Response);
+  rpc BidiStream(stream Request) returns (stream Response);
+}

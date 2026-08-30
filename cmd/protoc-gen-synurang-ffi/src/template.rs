@@ -12,13 +12,14 @@
 use std::collections::HashMap;
 
 use crate::funcs_lang::{
-    c_header_type, c_return_type, callmethod_name, cpp_field_name, cpp_lite_kind_default,
-    cpp_lite_kind_type, cpp_lite_not_default, cpp_lite_read_call, cpp_lite_scalar_default,
-    cpp_lite_type, cpp_lite_write_call, csharp_type, list_any, lower_first_value,
-    native_err_return, needs_len, needs_out_len, oneof_groups, rust_c_type, rust_return_type,
-    stream_type, swift_default, swift_enum_case, swift_enum_zero_case, swift_escape,
-    swift_kind_default, swift_kind_type, swift_not_default, swift_read_call, swift_scalar_wire,
-    swift_type, swift_write_call, template_printf, ts_default_value, ts_type, wasm_err_return,
+    c_header_type, c_native_err_return, c_return_type, callmethod_name, cpp_field_name,
+    cpp_lite_kind_default, cpp_lite_kind_type, cpp_lite_not_default, cpp_lite_read_call,
+    cpp_lite_scalar_default, cpp_lite_type, cpp_lite_write_call, csharp_type, list_any,
+    lower_first_value, native_err_return, needs_len, needs_out_len, oneof_groups, rust_c_type,
+    rust_return_type, stream_type, swift_default, swift_enum_case, swift_enum_zero_case,
+    swift_escape, swift_kind_default, swift_kind_type, swift_not_default, swift_read_call,
+    swift_scalar_wire, swift_type, swift_write_call, template_printf, ts_default_value, ts_type,
+    wasm_err_return,
 };
 use crate::names::{
     lower_camel_from_snake, lower_first, python_identifier, python_method_name, to_screaming_snake,
@@ -634,6 +635,7 @@ fn is_function(name: &str) -> bool {
             | "needsPbFallback"
             | "nonOneofFields"
             | "nativeErrReturn"
+            | "cNativeErrReturn"
             | "wasmErrReturn"
             | "lowerFirst"
             | "serviceHasStreaming"
@@ -729,6 +731,7 @@ fn eval_function(name: &str, args: Vec<Value>, ctx: &RenderContext) -> Result<Va
             _ => Value::list(Vec::new()),
         },
         "nativeErrReturn" => Value::s(native_err_return(&v(0))),
+        "cNativeErrReturn" => Value::s(c_native_err_return(&v(0))),
         "wasmErrReturn" => Value::s(wasm_err_return(&v(0))),
         "lowerFirst" => Value::s(lower_first_value(&v(0))),
         "serviceHasStreaming" => {

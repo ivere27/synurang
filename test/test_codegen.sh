@@ -104,7 +104,8 @@ run_case rust "-Iapi -I/usr/include" "lang=rust" core.proto
 run_case rust_native "-Itest/api -Iapi -I/usr/include" "lang=rust,mode=native" native_test.proto
 run_case rust_wasm "-Itest/api -Iapi -I/usr/include" "lang=rust,mode=wasm" native_test.proto
 run_case rust_plugin "-Iexample/api -Iapi -I/usr/include" "lang=rust,mode=plugin_server,services=GoGreeterService" example.proto
-run_case c_native "-Iapi -I/usr/include" "lang=c,mode=native" core.proto
+run_case c_native "-Itest -Iapi -I/usr/include" "lang=c,mode=native" \
+    api/c_ffi/dependency.proto api/c_ffi/service.proto
 run_case c_activex "-I$AX_DIR -Iapi -I/usr/include" "lang=c,mode=activex" activex_fixture.proto
 run_case java "-Iexample/api -Iapi -I/usr/include" "lang=java" example.proto
 run_case csharp "-Iexample/api -Iapi -I/usr/include" "lang=csharp" example.proto

@@ -132,10 +132,35 @@ pub struct EnumData {
     pub c_type_name: String,
     pub c_function_prefix: String,
     pub c_constant_prefix: String,
+    /// Drop the enum's own name when a value already repeats it.
+    ///
+    /// Protobuf style puts the enum name inside every value
+    /// (`DataType.DATA_TYPE_F32`), and the C constant prefix adds it again, so
+    /// the default spelling stutters:
+    /// `VOLVOXAI_V1_DATA_TYPE_DATA_TYPE_F32`. With this set the redundant copy
+    /// is removed — `VOLVOXAI_V1_DATA_TYPE_F32` — which is what protobuf-c and
+    /// hand-written C APIs do. Opt-in, because it renames every constant.
+    pub short_value_names: bool,
     pub values: Vec<(String, i32)>,
 }
 
 impl EnumData {
+    /// The C constant for one value name, honouring `short_value_names`.
+    pub(crate) fn c_value_name(&self, value_name: &str) -> String {
+        if self.short_value_names {
+            // `c_constant_prefix` already ends with the enum name in
+            // SCREAMING_SNAKE; when the value repeats it, keep only the
+            // distinguishing tail.
+            let screaming = crate::names::to_screaming_snake(&self.name);
+            if let Some(tail) = value_name.strip_prefix(&format!("{screaming}_")) {
+                if !tail.is_empty() && !tail.chars().next().unwrap_or('0').is_ascii_digit() {
+                    return format!("{}_{}", self.c_constant_prefix, tail);
+                }
+            }
+        }
+        format!("{}_{}", self.c_constant_prefix, value_name)
+    }
+
     pub fn to_value(&self) -> Value {
         let mut canonical_numbers = BTreeSet::new();
         Value::map([
@@ -155,10 +180,7 @@ impl EnumData {
                             Value::map([
                                 ("Name".into(), Value::s(name)),
                                 ("Number".into(), Value::Int(*number as i64)),
-                                (
-                                    "CName".into(),
-                                    Value::s(format!("{}_{}", self.c_constant_prefix, name)),
-                                ),
+                                ("CName".into(), Value::s(self.c_value_name(name))),
                                 ("IsCanonical".into(), Value::Bool(is_canonical)),
                             ])
                         })
@@ -177,6 +199,7 @@ pub struct MethodData {
     pub input_type: String,
     pub output_type: String,
     pub input_type_key: String,
+    pub output_type_key: String,
     pub input_cpp_type: String,
     pub output_cpp_type: String,
     pub input_lite_type: String,
@@ -202,6 +225,7 @@ impl MethodData {
             ("InputType".into(), Value::s(&self.input_type)),
             ("OutputType".into(), Value::s(&self.output_type)),
             ("InputTypeKey".into(), Value::s(&self.input_type_key)),
+            ("OutputTypeKey".into(), Value::s(&self.output_type_key)),
             ("InputCppType".into(), Value::s(&self.input_cpp_type)),
             ("OutputCppType".into(), Value::s(&self.output_cpp_type)),
             ("InputLiteType".into(), Value::s(&self.input_lite_type)),
@@ -268,7 +292,12 @@ pub struct FileData {
     pub python_lite_imports: Vec<(String, String)>,
     pub python_lite_module: String,
     pub c_lite_dep_headers: Vec<String>,
+    /// Well-known messages the shared C lite block defines with one
+    /// `seconds`/`nanos` codec, as `(proto name, C type name, prefix)`.
+    pub c_lite_seconds_nanos_types: Vec<(String, String, String)>,
+    pub c_ffi_dep_headers: Vec<String>,
     pub c_lite_header_file: String,
+    pub c_ffi_header_file: String,
     pub c_lite_include_guard: String,
     pub pb_dart_file: String,
     pub pb_header_file: String,
@@ -358,7 +387,27 @@ impl FileData {
                 "CLiteDepHeaders".into(),
                 Value::list(self.c_lite_dep_headers.iter().map(Value::s).collect()),
             ),
+            (
+                "CLiteSecondsNanosTypes".into(),
+                Value::list(
+                    self.c_lite_seconds_nanos_types
+                        .iter()
+                        .map(|(proto_name, type_name, prefix)| {
+                            Value::map(vec![
+                                ("ProtoName".into(), Value::s(proto_name)),
+                                ("TypeName".into(), Value::s(type_name)),
+                                ("Prefix".into(), Value::s(prefix)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "CFfiDepHeaders".into(),
+                Value::list(self.c_ffi_dep_headers.iter().map(Value::s).collect()),
+            ),
             ("CLiteHeaderFile".into(), Value::s(&self.c_lite_header_file)),
+            ("CFfiHeaderFile".into(), Value::s(&self.c_ffi_header_file)),
             (
                 "CLiteIncludeGuard".into(),
                 Value::s(&self.c_lite_include_guard),

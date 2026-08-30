@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package cffi.dependency.v1;
+
+message Imported {
+  string note = 1;
+}
