@@ -50,7 +50,7 @@ if [[ "${SYNURANG_CODEGEN_IN_DOCKER:-0}" != "1" ]]; then
   [[ -f "${repo_root}/Dockerfile.codegen" ]] || \
     die "Dockerfile.codegen not found at ${repo_root}/Dockerfile.codegen"
   [[ -n "${CODEGEN_VERSION:-}" ]] || \
-    die "CODEGEN_VERSION is required (for example: CODEGEN_VERSION=0.7.2 $0)"
+    die "CODEGEN_VERSION is required (for example: CODEGEN_VERSION=0.7.3 $0)"
   validate_build_jobs
 
   if [[ "${#requested_targets[@]}" -eq 0 && -n "${CODEGEN_TARGETS:-}" ]]; then
