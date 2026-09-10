@@ -188,15 +188,15 @@ if [ ! -f "$SCHEMA_LITE_TS" ]; then
 fi
 
 assert_contains "$SCHEMA_LITE_TS" 'export class ClickEvent' "schema_types_lite.ts missing ClickEvent class"
-assert_contains "$SCHEMA_LITE_TS" 'static fromBinary(data: Uint8Array): ClickEvent' "schema_types_lite.ts missing fromBinary"
+assert_contains "$SCHEMA_LITE_TS" 'declare static fromBinary: (data: Uint8Array) => ClickEvent;' "schema_types_lite.ts missing typed fromBinary"
 assert_contains "$SCHEMA_LITE_TS" 'toJson(): ProtoJsonObject' "schema_types_lite.ts missing toJson"
-assert_contains "$SCHEMA_LITE_TS" 'export enum GridEventEventOneofCase' "schema_types_lite.ts missing oneof case enum"
+assert_contains "$SCHEMA_LITE_TS" 'export const GridEventEventOneofCase' "schema_types_lite.ts missing oneof case values"
 assert_contains "$SCHEMA_LITE_TS" 'oneof: "eventCase"' "schema_types_lite.ts missing oneof metadata"
 assert_contains "$SCHEMA_LITE_TS" 'eventId: bigint = 0n' "schema_types_lite.ts missing int64 bigint field"
 assert_contains "$SCHEMA_LITE_TS" 'export class ScalarTypes' "schema_types_lite.ts missing ScalarTypes class"
-assert_contains "$SCHEMA_LITE_TS" 'kind: "sint32"' "schema_types_lite.ts missing sint32 wire kind"
-assert_contains "$SCHEMA_LITE_TS" 'kind: "fixed64"' "schema_types_lite.ts missing fixed64 wire kind"
-assert_contains "$SCHEMA_LITE_TS" 'kind: "sfixed32"' "schema_types_lite.ts missing sfixed32 wire kind"
+assert_contains "$SCHEMA_LITE_TS" '"sint32_value", "sint32"' "schema_types_lite.ts missing sint32 wire kind"
+assert_contains "$SCHEMA_LITE_TS" '"fixed64_value", "fixed64"' "schema_types_lite.ts missing fixed64 wire kind"
+assert_contains "$SCHEMA_LITE_TS" '"sfixed32_value", "sfixed32"' "schema_types_lite.ts missing sfixed32 wire kind"
 tsc --target ES2020 --module ES2020 --strict --noEmit "$SCHEMA_LITE_TS"
 
 echo "Validating TypeScript lite wire compatibility with protobuf-es..."
@@ -501,32 +501,36 @@ EOF
     "$OUT_DIR/protobuf_es_roundtrip.ts"
 node "$OUT_DIR/dist/protobuf_es_roundtrip.js"
 
-echo "Validating TypeScript lite constructor copies and minified nested messages..."
-protoc -I"$SCRIPT_DIR/typescript" \
+echo "Validating TypeScript lite constructors, metadata and minified nested messages..."
+for fixture in codec_regressions shared_message_methods compact_metadata; do
+  protoc -I"$SCRIPT_DIR/typescript" \
     --experimental_allow_proto3_optional \
     --plugin=protoc-gen-synurang-ffi="$PLUGIN" \
     --synurang-ffi_out="$OUT_DIR" \
     --synurang-ffi_opt=lang=typescript,mode=lite \
-    codec_regressions.proto
-cp "$SCRIPT_DIR/typescript/codec_regressions.ts" "$OUT_DIR/codec_regressions.ts"
+    "$fixture.proto"
+  cp "$SCRIPT_DIR/typescript/$fixture.ts" "$OUT_DIR/$fixture.ts"
 
-# Define unset class fields as own undefined properties to exercise copying
-# decoded messages with the same semantics as modern JavaScript class fields.
-"$OUT_DIR/node_modules/.bin/tsc" --target ES2020 \
+  # Define unset class fields as own undefined properties to exercise copying
+  # decoded messages with the same semantics as modern JavaScript class fields.
+  "$OUT_DIR/node_modules/.bin/tsc" --target ES2020 \
     --module NodeNext \
     --moduleResolution NodeNext \
     --strict \
+    --declaration \
+    --noImplicitOverride \
     --useDefineForClassFields true \
     --outDir "$OUT_DIR/dist" \
-    "$OUT_DIR/codec_regressions.ts"
-node "$OUT_DIR/dist/codec_regressions.js"
+    "$OUT_DIR/$fixture.ts"
+  node "$OUT_DIR/dist/$fixture.js"
 
-# Bundle the actual generated codec and let the minifier rename its classes.
-"$OUT_DIR/node_modules/.bin/esbuild" "$OUT_DIR/codec_regressions.ts" \
+  # Bundle the actual generated codec and let the minifier rename its classes.
+  "$OUT_DIR/node_modules/.bin/esbuild" "$OUT_DIR/$fixture.ts" \
     --bundle --minify --platform=node --target=es2022 --format=esm \
     --tsconfig-raw='{"compilerOptions":{"useDefineForClassFields":true}}' \
-    --outfile="$OUT_DIR/codec_regressions.min.mjs"
-node "$OUT_DIR/codec_regressions.min.mjs" --minified
+    --outfile="$OUT_DIR/$fixture.min.mjs"
+  node --disallow-code-generation-from-strings "$OUT_DIR/$fixture.min.mjs" --minified
+done
 
 echo "TypeScript Generation Test Passed!"
 rm -rf "$OUT_DIR"

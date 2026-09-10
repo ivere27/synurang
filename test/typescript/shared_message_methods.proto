@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package shared.methods;
+
+// Common user message names must not collide with the generated base class.
+message Message {
+  uint64 request_id = 1;
+  repeated string tags = 2;
+  optional int32 optional_count = 3;
+  bytes raw = 4;
+}
+
+message ProtoMessage {
+  Message message = 1;
+  repeated Message messages = 2;
+}
+
+message Choice {
+  oneof value {
+    int32 count = 1;
+    string label = 2;
+    Message message = 3;
+  }
+}
+
+message Empty {}
+
+// Exercise every field declaration form with inherited Object member names.
+// The message name must also coexist with generated enum value types.
+message Exclude {
+  string to_string = 1;
+  repeated int32 value_of = 2;
+  Message has_own_property = 3;
+  bytes is_prototype_of = 4;
+  optional int32 property_is_enumerable = 5;
+  oneof selection {
+    string to_locale_string = 6;
+  }
+}

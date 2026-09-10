@@ -656,6 +656,10 @@ The C codec supplies `google.protobuf.Empty`, `google.protobuf.Timestamp`, and `
 
 **TypeScript**: `--synurang-ffi_opt=lang=typescript`. Generates lightweight TypeScript schema constants plus service FFI client wrappers backed by a `PluginHost` abstraction. For proto files with generated services, the same invocation also emits the companion `_lite.ts` module used for `fromBinary()`/`parseFrom()`, `toBinary()`/`toByteArray()`, and `toJson()` helpers. `--synurang-ffi_opt=lang=typescript,mode=lite` generates only the protobuf-lite message module.
 
+Message classes share binary/JSON conversion methods within each generated module. Each class retains its own fields, constructor defaults and concrete decoder return type. Static decoders also work as callbacks, for example `payloads.map(Response.fromBinary)`, including in minified bundles.
+
+The lite module emits compact field declarations and expands them once when the module loads. `Message.fields` retains the complete metadata, and `MessageFields` derives its field numbers from that same declaration. Enums and oneof cases use constant objects with shared numeric reverse lookup, plus TypeScript value types. Use `Status.READY` as a value, `Status` as the enum type, and `typeof Status.READY` as a single-member type. These helpers require neither an external runtime nor dynamic code evaluation; message initialization and serialization keep their existing execution paths.
+
 **Python 3.10+**: `--synurang-ffi_opt=lang=python` (or `lang=py`). Generates dependency-free `_lite.py` protobuf message classes and a transport-neutral `_ffi.py` service client for proto3 schemas. The generated `ServiceClient` accepts either `FfiTransport` for an in-process shared library or the optional synchronous `GrpcTransport` for a remote server; the existing `ServiceFfi(PluginHost)` form remains available. All four RPC cardinalities are supported. `mode=lite` emits only messages. No `google.protobuf` runtime or `protoc --python_out` step is needed. Python 2 is not supported. Python does not currently provide a plugin server or process host.
 
 #### C# .NET Version Compatibility

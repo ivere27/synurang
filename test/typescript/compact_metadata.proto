@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package compact.metadata;
+
+enum Status {
+  option allow_alias = true;
+  STATUS_UNSPECIFIED = 0;
+  STATUS_READY = 1;
+  STATUS_ALIAS = 1;
+  STATUS_REJECTED = -1;
+}
+
+// Legal protobuf names also need to work as JavaScript object keys and types.
+enum Keywords {
+  unknown = 0;
+  string = 1;
+  default = 2;
+  constructor = 3;
+  __proto__ = 4;
+}
+
+// Schema names must not shadow TypeScript utilities used by generated types.
+enum Exclude {
+  EXCLUDE_UNSPECIFIED = 0;
+  EXCLUDE_SELECTED = 1;
+}
+
+message Excluded {
+  Exclude exclusion = 1;
+}
+
+message Metadata {
+  uint64 request_id = 1;
+  string URL_value = 2;
+  string snake__name = 3;
+  optional int32 _explicit_zero = 4;
+  repeated Status statuses = 5;
+  bytes payload = 6;
+  Nested nested = 7;
+  oneof selection {
+    int32 count = 8;
+    string label = 9;
+  }
+  Status status = 10;
+}
+
+message Nested {
+  string value = 1;
+}
+
+message NoFields {}

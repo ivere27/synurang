@@ -41,6 +41,22 @@ type ProtoFieldInfo = {
   readonly enumType?: EnumLike;
 };
 
+// Expand schema metadata once, leaving the binary/JSON codec's field access
+// unchanged. '$' keeps helpers distinct from every protobuf identifier.
+function $field(no: number, name: string, kind: ProtoKind, extra: Partial<ProtoFieldInfo> = {}): ProtoFieldInfo {
+  const [first, ...parts] = name.split("_");
+  const jsonName = first + parts.map((part) => part.length ? part[0].toUpperCase() + part.slice(1) : "").join("");
+  return { no, name, kind, jsonName, prop: jsonName, ...(extra.oneof != null ? { oneofCase: no } : {}), ...extra };
+}
+
+function $enum<T extends Record<string, number>>(values: T): T & { readonly [n: number]: string } {
+  // Numeric enums keep both lookups; the last alias supplies the reverse name.
+  for (const name of Object.keys(values)) {
+    (values as Record<string, number | string>)[values[name]] = name;
+  }
+  return values as T & { readonly [n: number]: string };
+}
+
 const PRESENT = Symbol("synurang.present");
 
 type LiteMessage = {
@@ -55,15 +71,51 @@ type MessageConstructor<T extends LiteMessage = LiteMessage> = {
   readonly typeName: string;
   readonly fields: readonly ProtoFieldInfo[];
   fromBinary(data: Uint8Array): T;
+  parseFrom(data: Uint8Array): T;
 };
+
+// '$' cannot occur in a protobuf identifier, so the shared base cannot collide
+// with a generated message name. Only schema-specific fields and initialization
+// belong in the derived classes.
+class $Message implements LiteMessage {
+  toBinary(): Uint8Array {
+    return encodeMessage(this, (this.constructor as MessageConstructor).fields);
+  }
+
+  toByteArray(): Uint8Array {
+    return this.toBinary();
+  }
+
+  toJson(): ProtoJsonObject {
+    return messageToJson(this, (this.constructor as MessageConstructor).fields);
+  }
+}
 
 const MESSAGE_TYPES: Record<string, MessageConstructor> = {};
 const FIELD_TABLES = new WeakMap<MessageConstructor, ReadonlyMap<number, ProtoFieldInfo>>();
 
-function registerMessage(ctor: MessageConstructor): void {
+function registerMessage<T extends LiteMessage>(ctor: MessageConstructor<T>): void {
   // Protobuf names remain stable when bundlers rename JavaScript classes.
   MESSAGE_TYPES[ctor.typeName] = ctor;
   FIELD_TABLES.set(ctor, new Map(ctor.fields.map((field) => [field.no, field])));
+  // Capture the concrete constructor so detached decoder callbacks keep their
+  // original message type. Preserve ordinary static method descriptors.
+  Object.defineProperties(ctor, {
+    fromBinary: {
+      value: (data: Uint8Array): T => decodeMessage(ctor, data),
+      writable: true,
+      configurable: true,
+    },
+    parseFrom: {
+      value: (data: Uint8Array): T => ctor.fromBinary(data),
+      writable: true,
+      configurable: true,
+    },
+  });
+}
+
+function $fieldNumbers(ctor: Pick<MessageConstructor, "fields">): Record<string, number> {
+  return Object.fromEntries(ctor.fields.map((field) => [field.name, field.no]));
 }
 
 function markPresent(msg: LiteMessage, fieldNo: number): void {
@@ -679,92 +731,85 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 {{- range .Enums}}
-export enum {{.Name}} {
+export const {{.Name}} = $enum({
 {{- range .Values}}
-  {{.Name}} = {{.Number}},
+  [{{printf "%q" .Name}}]: {{.Number}},
 {{- end}}
-}
-
-{{- end}}
-{{- range .LocalMessages}}
-export const {{.Name}}Fields = {
-{{- range .Fields}}
-  {{printf "%q" .Name}}: {{.Number}},
-{{- end}}
-} as const;
+} as const);
+export type {{.Name}} = (typeof {{.Name}})[keyof typeof {{.Name}} & string];
 
 {{- end}}
 {{- range $msg := .LocalMessages}}
 {{- $groups := oneofGroups $msg.Fields}}
 {{- range $g := $groups}}
-export enum {{tsOneofCaseEnumName $msg.Name $g.GoName}} {
-  None = 0,
+export const {{tsOneofCaseEnumName $msg.Name $g.GoName}} = $enum({
+  None: 0,
 {{- range $f := $g.Fields}}
-  {{$f.GoName}} = {{$f.Number}},
+  {{$f.GoName}}: {{$f.Number}},
 {{- end}}
-}
+} as const);
+export type {{tsOneofCaseEnumName $msg.Name $g.GoName}} = (typeof {{tsOneofCaseEnumName $msg.Name $g.GoName}})[keyof typeof {{tsOneofCaseEnumName $msg.Name $g.GoName}} & string];
 
 {{- end}}
-export class {{$msg.Name}} implements LiteMessage {
+export class {{$msg.Name}} extends $Message {
   static readonly typeName = {{printf "%q" $msg.Fqn}} as const;
   static readonly fields: readonly ProtoFieldInfo[] = [
 {{- range $f := $msg.Fields}}
-    {
-      no: {{$f.Number}},
-      name: {{printf "%q" $f.Name}},
-      jsonName: {{printf "%q" (tsJsonName $f)}},
-      prop: {{printf "%q" (tsPropName $f)}},
-      kind: {{printf "%q" $f.WireKind}} as ProtoKind{{if $f.IsRepeated}},
-      repeated: true{{end}}{{if $f.IsOptional}},
-      optional: true{{end}}{{if and $f.IsOneof (not $f.IsOptional)}},
+    $field({{$f.Number}}, {{printf "%q" $f.Name}}, {{printf "%q" $f.WireKind}}{{if or $f.IsRepeated $f.IsOptional $f.IsOneof (eq $f.ProtoKind "message") (eq $f.ProtoKind "enum") (ne (tsPropName $f) (tsJsonName $f))}}, {
+{{- if $f.IsRepeated}}
+      repeated: true,
+{{- end}}
+{{- if $f.IsOptional}}
+      optional: true,
+{{- end}}
+{{- if and $f.IsOneof (not $f.IsOptional)}}
       oneof: {{printf "%q" (tsOneofCaseProperty $f)}},
-      oneofCase: {{tsOneofCaseValue $msg.Name $f}}{{end}}{{if eq $f.ProtoKind "message"}},
-      messageType: {{printf "%q" $f.TypeFQN}}{{end}}{{if eq $f.ProtoKind "enum"}},
-      enumType: {{$f.TypeName}}{{end}},
-    },
+{{- end}}
+{{- if eq $f.ProtoKind "message"}}
+      messageType: {{printf "%q" $f.TypeFQN}},
+{{- end}}
+{{- if eq $f.ProtoKind "enum"}}
+      enumType: {{$f.TypeName}},
+{{- end}}
+{{- if ne (tsPropName $f) (tsJsonName $f)}}
+      prop: {{printf "%q" (tsPropName $f)}},
+{{- end}}
+    }{{end}}),
 {{- end}}
   ];
+
+  declare static fromBinary: (data: Uint8Array) => {{$msg.Name}};
+  declare static parseFrom: (data: Uint8Array) => {{$msg.Name}};
 
 {{- range $g := $groups}}
   {{lowerFirst $g.GoName}}Case: {{tsOneofCaseEnumName $msg.Name $g.GoName}} = {{tsOneofCaseEnumName $msg.Name $g.GoName}}.None;
 {{- end}}
 {{- range $f := $msg.Fields}}
+{{- $prop := tsPropName $f}}
+{{- $overridesObject := or (eq $prop "toString") (eq $prop "toLocaleString") (eq $prop "valueOf") (eq $prop "hasOwnProperty") (eq $prop "isPrototypeOf") (eq $prop "propertyIsEnumerable")}}
 {{- if and $f.IsOneof (not $f.IsOptional)}}
-  {{tsPropName $f}}?: {{tsType $f}};
+  {{if $overridesObject}}override {{end}}{{$prop}}?: {{tsType $f}};
 {{- else if $f.IsRepeated}}
-  {{tsPropName $f}}: {{tsType $f}}[] = [];
+  {{if $overridesObject}}override {{end}}{{$prop}}: {{tsType $f}}[] = [];
 {{- else if or (eq $f.ProtoKind "message") (eq $f.ProtoKind "bytes")}}
-  {{tsPropName $f}}?: {{tsType $f}};
+  {{if $overridesObject}}override {{end}}{{$prop}}?: {{tsType $f}};
 {{- else}}
-  {{tsPropName $f}}: {{tsType $f}} = {{tsDefaultValue $f}};
+  {{if $overridesObject}}override {{end}}{{$prop}}: {{tsType $f}} = {{tsDefaultValue $f}};
 {{- end}}
 {{- end}}
 
   constructor(init?: Partial<{{$msg.Name}}>) {
+    super();
+    // Derived field initializers must run before supplied values and presence.
     initMessage(this, {{$msg.Name}}.fields, init as Record<string, unknown> | undefined);
-  }
-
-  static fromBinary(data: Uint8Array): {{$msg.Name}} {
-    return decodeMessage({{$msg.Name}}, data);
-  }
-
-  static parseFrom(data: Uint8Array): {{$msg.Name}} {
-    return {{$msg.Name}}.fromBinary(data);
-  }
-
-  toBinary(): Uint8Array {
-    return encodeMessage(this, {{$msg.Name}}.fields);
-  }
-
-  toByteArray(): Uint8Array {
-    return this.toBinary();
-  }
-
-  toJson(): ProtoJsonObject {
-    return messageToJson(this, {{$msg.Name}}.fields);
   }
 }
 registerMessage({{$msg.Name}});
+export const {{$msg.Name}}Fields = $fieldNumbers({{$msg.Name}}) as {
+{{- range $f := $msg.Fields}}
+  readonly {{printf "%q" $f.Name}}: {{$f.Number}};
+{{- end}}
+};
 
 {{- end}}
 {{- range .Services}}

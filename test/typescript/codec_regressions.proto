@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package codec.regressions;
+
+message LeftScope {
+  message Item {
+    string value = 1;
+  }
+  Item item = 1;
+}
+
+message RightScope {
+  message Item {
+    int32 value = 1;
+  }
+  Item item = 1;
+}
+
+message Envelope {
+  LeftScope left = 1;
+  RightScope right = 2;
+  repeated LeftScope.Item items = 3;
+}
+
+message View {
+  int32 offset = 1;
+  int32 length = 2;
+}
+
+enum DataKind {
+  DATA_KIND_UNSPECIFIED = 0;
+  DATA_KIND_FLOAT = 1;
+}
+
+message Tensor {
+  oneof data {
+    bytes inline = 1;
+    View view = 2;
+    int32 count = 3;
+    bool flag = 4;
+    string text = 5;
+    int64 position = 6;
+    DataKind kind = 7;
+  }
+}
+
+message Defaults {
+  int32 count = 1;
+  bool flag = 2;
+  string text = 3;
+  int64 position = 4;
+  repeated int32 sizes = 5;
+  optional int32 optional_count = 6;
+}
