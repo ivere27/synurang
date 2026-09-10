@@ -1,3 +1,10 @@
+## 0.7.4
+
+*   **TypeScript message identity**: Use protobuf fully qualified names for message registration and references so nested messages encode and decode correctly after minification, including messages with the same name in different scopes.
+*   **TypeScript oneof copies**: Message constructors skip undefined fields and preserve explicit oneof selectors, keeping selected payloads and valid default values intact when copying decoded messages.
+*   **TypeScript decoding performance**: Reuse a field-number lookup table per message class instead of searching the field list for every decoded tag.
+*   **C lite build fix**: Avoid unused allocator warnings when clearing scalar-only oneofs. Added strict C build coverage alongside TypeScript minification and oneof roundtrip regression tests.
+
 ## 0.7.3
 
 *   **Complete C bindings**: `lang=c` now emits source-relative dependency-free `_lite.h/.c` files plus a single `_ffi.h/.c` service surface with flattened unary calls, typed unary/stream handlers, and the standard plugin ABI. `mode=lite` remains message-only; `mode=native` is a deprecated alias for the complete output.
