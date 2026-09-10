@@ -58,10 +58,12 @@ type MessageConstructor<T extends LiteMessage = LiteMessage> = {
 };
 
 const MESSAGE_TYPES: Record<string, MessageConstructor> = {};
+const FIELD_TABLES = new WeakMap<MessageConstructor, ReadonlyMap<number, ProtoFieldInfo>>();
 
 function registerMessage(ctor: MessageConstructor): void {
+  // Protobuf names remain stable when bundlers rename JavaScript classes.
   MESSAGE_TYPES[ctor.typeName] = ctor;
-  MESSAGE_TYPES[ctor.name] = ctor;
+  FIELD_TABLES.set(ctor, new Map(ctor.fields.map((field) => [field.no, field])));
 }
 
 function markPresent(msg: LiteMessage, fieldNo: number): void {
@@ -88,6 +90,15 @@ function initMessage(msg: LiteMessage, fields: readonly ProtoFieldInfo[], init?:
   }
   for (const field of fields) {
     if (!Object.prototype.hasOwnProperty.call(init, field.prop)) {
+      continue;
+    }
+    // Unset class fields must not select a oneof case or acquire presence.
+    if (init[field.prop] === undefined) {
+      continue;
+    }
+    // A decoded message can retain payloads from earlier oneof cases.
+    if (field.oneof != null && typeof init[field.oneof] === "number" &&
+        init[field.oneof] !== field.oneofCase) {
       continue;
     }
     (msg as any)[field.prop] = init[field.prop];
@@ -466,12 +477,13 @@ function readFieldValue(reader: ProtoReader, field: ProtoFieldInfo): unknown {
 function decodeMessage<T extends LiteMessage>(ctor: MessageConstructor<T>, data: Uint8Array): T {
   const reader = new ProtoReader(data);
   const msg = new ctor();
+  const fields = FIELD_TABLES.get(ctor)!;
   while (!reader.eof) {
     const tag = reader.readTag();
     if (tag == null) {
       break;
     }
-    const field = ctor.fields.find((candidate) => candidate.no === tag.fieldNo);
+    const field = fields.get(tag.fieldNo);
     if (field == null) {
       reader.skipField(tag.wireType);
       continue;
@@ -694,7 +706,7 @@ export enum {{tsOneofCaseEnumName $msg.Name $g.GoName}} {
 
 {{- end}}
 export class {{$msg.Name}} implements LiteMessage {
-  static readonly typeName = {{printf "%q" (printf "%s.%s" $.Package $msg.Name)}} as const;
+  static readonly typeName = {{printf "%q" $msg.Fqn}} as const;
   static readonly fields: readonly ProtoFieldInfo[] = [
 {{- range $f := $msg.Fields}}
     {
@@ -707,7 +719,7 @@ export class {{$msg.Name}} implements LiteMessage {
       optional: true{{end}}{{if and $f.IsOneof (not $f.IsOptional)}},
       oneof: {{printf "%q" (tsOneofCaseProperty $f)}},
       oneofCase: {{tsOneofCaseValue $msg.Name $f}}{{end}}{{if eq $f.ProtoKind "message"}},
-      messageType: {{printf "%q" $f.TypeName}}{{end}}{{if eq $f.ProtoKind "enum"}},
+      messageType: {{printf "%q" $f.TypeFQN}}{{end}}{{if eq $f.ProtoKind "enum"}},
       enumType: {{$f.TypeName}}{{end}},
     },
 {{- end}}

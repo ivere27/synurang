@@ -209,6 +209,7 @@ cat > "$OUT_DIR/package.json" <<'EOF'
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "2.11.0",
+    "esbuild": "0.25.12",
     "typescript": "^5.6.0"
   }
 }
@@ -499,6 +500,33 @@ EOF
     "$PROTOBUF_ES_OUT/schema_types_pb.ts" \
     "$OUT_DIR/protobuf_es_roundtrip.ts"
 node "$OUT_DIR/dist/protobuf_es_roundtrip.js"
+
+echo "Validating TypeScript lite constructor copies and minified nested messages..."
+protoc -I"$SCRIPT_DIR/typescript" \
+    --experimental_allow_proto3_optional \
+    --plugin=protoc-gen-synurang-ffi="$PLUGIN" \
+    --synurang-ffi_out="$OUT_DIR" \
+    --synurang-ffi_opt=lang=typescript,mode=lite \
+    codec_regressions.proto
+cp "$SCRIPT_DIR/typescript/codec_regressions.ts" "$OUT_DIR/codec_regressions.ts"
+
+# Define unset class fields as own undefined properties to exercise copying
+# decoded messages with the same semantics as modern JavaScript class fields.
+"$OUT_DIR/node_modules/.bin/tsc" --target ES2020 \
+    --module NodeNext \
+    --moduleResolution NodeNext \
+    --strict \
+    --useDefineForClassFields true \
+    --outDir "$OUT_DIR/dist" \
+    "$OUT_DIR/codec_regressions.ts"
+node "$OUT_DIR/dist/codec_regressions.js"
+
+# Bundle the actual generated codec and let the minifier rename its classes.
+"$OUT_DIR/node_modules/.bin/esbuild" "$OUT_DIR/codec_regressions.ts" \
+    --bundle --minify --platform=node --target=es2022 --format=esm \
+    --tsconfig-raw='{"compilerOptions":{"useDefineForClassFields":true}}' \
+    --outfile="$OUT_DIR/codec_regressions.min.mjs"
+node "$OUT_DIR/codec_regressions.min.mjs" --minified
 
 echo "TypeScript Generation Test Passed!"
 rm -rf "$OUT_DIR"

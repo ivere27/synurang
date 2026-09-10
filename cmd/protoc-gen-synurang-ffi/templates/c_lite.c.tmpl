@@ -523,6 +523,7 @@ static void {{$msg.CFunctionPrefix}}_clear_{{$g.Name}}(
     {{$msg.CTypeName}}* message) {
     const SynurangLiteAllocator* allocator =
         synurang_lite_allocator_or_default(message->_allocator);
+    (void)allocator; /* Scalar-only oneofs own no allocations. */
     switch (message->which_{{$g.Name}}) {
 {{- range $f := $g.Fields}}
         case {{$f.Number}}:

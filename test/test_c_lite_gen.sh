@@ -63,6 +63,14 @@ message Packing {
   repeated int32 explicit_unpacked = 2 [packed = false];
 }
 
+message ScalarSelection {
+  oneof selection {
+    int32 selected_count = 1;
+    bool selected_flag = 2;
+    Kind selected_kind = 3;
+  }
+}
+
 message Everything {
   int32 int32_value = 1;
   sint32 sint32_value = 2;
@@ -231,6 +239,7 @@ int main(void) {
     DependencyV1Imported merged_imported;
     CLiteV1Recursive recursive;
     CLiteV1Packing packing;
+    CLiteV1ScalarSelection scalar_selection;
     CLiteV1Everything overflow_probe;
     TestBuffer recursion;
 
@@ -241,6 +250,7 @@ int main(void) {
     dependency_v1_imported_init(&merged_imported);
     c_lite_v1_recursive_init(&recursive);
     c_lite_v1_packing_init(&packing);
+    c_lite_v1_scalar_selection_init(&scalar_selection);
     c_lite_v1_everything_init(&overflow_probe);
     overflow_probe.field_children.cap =
         SIZE_MAX / sizeof(CLiteV1Nested) + 1u;
@@ -405,6 +415,31 @@ int main(void) {
         merged_imported.field_kind == DEPENDENCY_V1_IMPORTED_KIND_IMPORTED_KIND_READY, 58);
 
     {
+        static const uint8_t selected_count[] = {0x08, 0x2a};
+        static const uint8_t selected_flag[] = {0x10, 0x01};
+        static const uint8_t selected_kind[] = {0x18, 0x07};
+        /* Scalar-only oneofs must compile without unused-allocator warnings
+         * and clear the previous payload when merge switches the case. */
+        CHECK(c_lite_v1_scalar_selection_merge(
+            &scalar_selection, selected_count, sizeof(selected_count)) ==
+            SYNURANG_LITE_OK, 79);
+        CHECK(scalar_selection.which_selection == 1 &&
+            scalar_selection.field_selected_count == 42, 80);
+        CHECK(c_lite_v1_scalar_selection_merge(
+            &scalar_selection, selected_flag, sizeof(selected_flag)) ==
+            SYNURANG_LITE_OK, 81);
+        CHECK(scalar_selection.which_selection == 2 &&
+            scalar_selection.field_selected_count == 0 &&
+            scalar_selection.field_selected_flag == 1, 82);
+        CHECK(c_lite_v1_scalar_selection_merge(
+            &scalar_selection, selected_kind, sizeof(selected_kind)) ==
+            SYNURANG_LITE_OK, 83);
+        CHECK(scalar_selection.which_selection == 3 &&
+            scalar_selection.field_selected_flag == 0 &&
+            scalar_selection.field_selected_kind == C_LITE_V1_KIND_KIND_READY, 84);
+    }
+
+    {
         static const uint8_t expected_packing[] = {
             0x0a, 0x02, 0x01, 0x02, 0x10, 0x03, 0x10, 0x04
         };
@@ -478,6 +513,7 @@ int main(void) {
 
     c_lite_v1_recursive_free(&recursive);
     c_lite_v1_packing_free(&packing);
+    c_lite_v1_scalar_selection_free(&scalar_selection);
     c_lite_v1_everything_free(&overflow_probe);
     dependency_v1_imported_free(&merged_imported);
     c_lite_v1_everything_free(&unpacked);
