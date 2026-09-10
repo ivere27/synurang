@@ -413,7 +413,7 @@ AArch64, and Windows x86-64.
 
 ```bash
 # Linux x86-64 example
-VERSION=0.6.3
+VERSION=0.7.5
 TARGET=x86_64-unknown-linux-musl
 ASSET="protoc-gen-synurang-ffi-${VERSION}-${TARGET}.tar.gz"
 BASE="https://github.com/ivere27/synurang/releases/download/v${VERSION}"
@@ -455,14 +455,14 @@ a leading `v`.
 make docker_codegen_image
 
 # Build all default targets into dist/codegen/
-make docker_codegen CODEGEN_VERSION=0.6.3
+make docker_codegen CODEGEN_VERSION=0.7.5
 
-# Publishing requires a clean checkout whose pushed v0.6.3 tag points at HEAD
-git tag -a v0.6.3 -m v0.6.3
-git push origin v0.6.3
+# Publishing requires a clean checkout whose pushed v0.7.5 tag points at HEAD
+git tag -a v0.7.5 -m v0.7.5
+git push origin v0.7.5
 
-# Build and create a one-shot v0.6.3 release with all assets
-make publish_github_codegen CODEGEN_VERSION=0.6.3
+# Build and create a one-shot v0.7.5 release with all assets
+make publish_github_codegen CODEGEN_VERSION=0.7.5
 # `make publish_github ...` is an alias for the same generator release flow.
 ```
 
@@ -811,13 +811,13 @@ The desktop JAR auto-extracts the native library at runtime — no `-Djava.libra
 
 ```groovy
 // Android (build.gradle)
-implementation 'io.github.ivere27:synurang-android:0.7.4'
-implementation 'io.github.ivere27:synurang-android-grpc:0.7.4'  // optional, for gRPC channel
+implementation 'io.github.ivere27:synurang-android:0.7.5'
+implementation 'io.github.ivere27:synurang-android-grpc:0.7.5'  // optional, for gRPC channel
 implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
 
 // Desktop (build.gradle)
-implementation 'io.github.ivere27:synurang-desktop:0.7.4'
-implementation 'io.github.ivere27:synurang-desktop-grpc:0.7.4'  // optional, for gRPC channel
+implementation 'io.github.ivere27:synurang-desktop:0.7.5'
+implementation 'io.github.ivere27:synurang-desktop-grpc:0.7.5'  // optional, for gRPC channel
 implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
 ```
 

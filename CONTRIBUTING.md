@@ -87,14 +87,14 @@ host toolchain. `CODEGEN_VERSION` is mandatory; a leading `v` is accepted.
 
 ```bash
 # Build Linux x86-64/AArch64 and Windows x86-64 bundles plus SHA256SUMS
-make docker_codegen CODEGEN_VERSION=0.6.3
+make docker_codegen CODEGEN_VERSION=0.7.5
 
 # From a clean checkout, tag the release commit and push the tag first
-git tag -a v0.6.3 -m v0.6.3
-git push origin v0.6.3
+git tag -a v0.7.5 -m v0.7.5
+git push origin v0.7.5
 
-# Build and publish v0.6.3 (requires an authenticated GitHub CLI)
-make publish_github_codegen CODEGEN_VERSION=0.6.3
+# Build and publish v0.7.5 (requires an authenticated GitHub CLI)
+make publish_github_codegen CODEGEN_VERSION=0.7.5
 ```
 
 Artifacts are written to `dist/codegen`. Use `CODEGEN_TARGETS` to select a

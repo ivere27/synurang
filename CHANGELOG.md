@@ -1,3 +1,9 @@
+## 0.7.5
+
+*   **Smaller TypeScript lite messages**: Share binary/JSON conversion methods across message classes instead of emitting five wrappers per message. Concrete decoder types, detached decoder callbacks, constructor defaults and oneof presence are preserved, including after minification.
+*   **Compact TypeScript lite metadata**: Expand repeated field metadata once at module load, derive field-number maps from the same declaration, and share enum reverse-lookup construction. Messages retain individual constructors and the existing binary/JSON codec. Lite enums and oneof cases are constant objects with numeric value types; use `typeof Enum.MEMBER` for a single-member type. Aliases, negative values and minified nested messages remain supported.
+*   **TypeScript compilation fixes**: Avoid utility type collisions for schemas named `Exclude` and emit `override` for fields that shadow Object members when using `noImplicitOverride`.
+
 ## 0.7.4
 
 *   **TypeScript message identity**: Use protobuf fully qualified names for message registration and references so nested messages encode and decode correctly after minification, including messages with the same name in different scopes.

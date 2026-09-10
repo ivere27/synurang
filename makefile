@@ -33,7 +33,7 @@ ANDROID_CC_X86_64 := $(NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_6
 
 # Docker Android AAR packaging
 AAR_DOCKER_IMAGE ?= synurang-android-aar:latest
-AAR_VERSION ?= 0.7.4
+AAR_VERSION ?= 0.7.5
 AAR_BUILD_TYPE ?= Release
 AAR_GROUP_ID ?= io.github.ivere27
 AAR_ARTIFACT_ID_CORE ?= synurang-android
@@ -51,7 +51,7 @@ MAVEN_REPO_URL ?= https://central.sonatype.com/api/v1/publisher/upload
 
 # Docker Desktop JAR packaging
 DESKTOP_DOCKER_IMAGE ?= synurang-desktop-jar:latest
-DESKTOP_VERSION ?= 0.7.4
+DESKTOP_VERSION ?= 0.7.5
 DESKTOP_GROUP_ID ?= io.github.ivere27
 DESKTOP_ARTIFACT_ID_CORE ?= synurang-desktop
 DESKTOP_ARTIFACT_ID_GRPC ?= synurang-desktop-grpc
@@ -377,7 +377,7 @@ docker_codegen_image:
 
 docker_codegen:
 	@test -n "$(CODEGEN_VERSION)" || { \
-		echo "Error: CODEGEN_VERSION is required (for example: make docker_codegen CODEGEN_VERSION=0.6.3)."; \
+		echo "Error: CODEGEN_VERSION is required (for example: make docker_codegen CODEGEN_VERSION=0.7.5)."; \
 		exit 1; \
 	}
 	CODEGEN_VERSION="$(CODEGEN_VERSION)" \
@@ -1268,5 +1268,5 @@ help:
 	@echo "  make test_host_java            # Java host test (desktop)"
 	@echo "  make test_host_swift           # Swift host test (Docker swift:5.9)"
 	@echo "  make test_bruteforce_swift BRUTE_DURATION=30s # Swift FFI stress, 30s"
-	@echo "  make docker_android_aar AAR_VERSION=0.7.4 # Build core + grpc AAR bundles"
-	@echo "  make docker_android_aar_debug AAR_VERSION=0.7.4-SNAPSHOT # Build debug AAR bundles"
+	@echo "  make docker_android_aar AAR_VERSION=0.7.5 # Build core + grpc AAR bundles"
+	@echo "  make docker_android_aar_debug AAR_VERSION=0.7.5-SNAPSHOT # Build debug AAR bundles"
