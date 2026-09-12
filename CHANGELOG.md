@@ -1,3 +1,10 @@
+## 0.8.0
+
+*   **Native and WebAssembly call modules**: Added `mode=module` providers for C/C++, Rust and Go with a shared asynchronous `Synurang_GetApi` call ABI. All four RPC forms support bounded queues, backpressure, cancellation, deadlines and coordinated shutdown, with each provider using its own runtime.
+*   **Typed module clients and hosts**: Added `mode=client` generation for TypeScript, Dart, Java, C#, Python and Swift, plus native C++, Rust and Go hosts and optional gRPC adapters. Browser/Node WebAssembly and Worker hosts support the same call contract, and Dart can register in-process services. See [CALL-RUNTIME.md](CALL-RUNTIME.md) for supported language and target combinations.
+*   **TypeScript gRPC integration**: Added `grpc=js` generation for grpc-js service definitions, server interfaces and clients using lite messages. `PluginChannel` lets the same client call a network server or an FFI plugin with streaming, deadlines, cancellation and structured `ServiceError` handling.
+*   **Shared-memory examples and conformance coverage**: Added Linux Python/C++ callers with a C backend for shared buffers and FIFO, Latest and Batch frame queues, plus native and WebAssembly call lifecycle, streaming, backpressure and cleanup checks across language hosts.
+
 ## 0.7.5
 
 *   **Smaller TypeScript lite messages**: Share binary/JSON conversion methods across message classes instead of emitting five wrappers per message. Concrete decoder types, detached decoder callbacks, constructor defaults and oneof presence are preserved, including after minification.
