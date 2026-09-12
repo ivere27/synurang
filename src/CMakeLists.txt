@@ -5,9 +5,26 @@ cmake_minimum_required(VERSION 3.10)
 
 project(synurang_library VERSION 0.0.1 LANGUAGES C)
 
+set(SYNURANG_WASM OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI" OR CMAKE_SYSTEM_PROCESSOR MATCHES "wasm" OR CMAKE_C_COMPILER_TARGET MATCHES "^wasm")
+  set(SYNURANG_WASM ON)
+endif()
+
+if(NOT SYNURANG_WASM)
+  add_library(synurang_module_host SHARED module_host.c)
+  target_include_directories(synurang_module_host PUBLIC ../include)
+  target_compile_definitions(synurang_module_host PRIVATE SYNURANG_C_RUNTIME_SHARED SYNURANG_C_RUNTIME_BUILDING)
+  target_link_libraries(synurang_module_host PRIVATE ${CMAKE_DL_LIBS})
+  if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(synurang_module_host PRIVATE Threads::Threads)
+  endif()
+  set_target_properties(synurang_module_host PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+endif()
+
 # Pure-C service/stream runtime used by generated C bindings. It is kept as a
 # separate target so applications can link it without the prebuilt Go library.
-if(EMSCRIPTEN)
+if(SYNURANG_WASM)
   set(_synurang_no_threads_default ON)
 else()
   set(_synurang_no_threads_default OFF)
@@ -17,7 +34,7 @@ option(SYNURANG_C_RUNTIME_NO_THREADS
   ${_synurang_no_threads_default})
 unset(_synurang_no_threads_default)
 
-add_library(synurang_c_runtime STATIC c_runtime.c)
+add_library(synurang_c_runtime STATIC c_runtime.c call.c)
 add_library(synurang::c_runtime ALIAS synurang_c_runtime)
 target_include_directories(synurang_c_runtime PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>"
@@ -34,6 +51,14 @@ if(SYNURANG_C_RUNTIME_NO_THREADS)
 elseif(NOT WIN32)
   find_package(Threads REQUIRED)
   target_link_libraries(synurang_c_runtime PUBLIC Threads::Threads)
+endif()
+
+# WASM modules link this object with their generated code and provider. The
+# application chooses its Clang/sysroot and supplies any extra OS imports.
+if(SYNURANG_WASM)
+  add_library(synurang_wasm_bridge OBJECT wasm.c)
+  target_include_directories(synurang_wasm_bridge PRIVATE ../include)
+  return()
 endif()
 
 # synurang uses a prebuilt Go shared library

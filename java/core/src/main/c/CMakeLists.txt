@@ -1,7 +1,14 @@
 cmake_minimum_required(VERSION 3.10)
 project(synurang_jni LANGUAGES C)
 
-add_library(synurang_jni SHARED synurang_jni.c)
+get_filename_component(SYNURANG_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
+add_library(synurang_jni SHARED synurang_jni.c synurang_module_jni.c
+    "${SYNURANG_ROOT}/src/module_host.c")
+target_include_directories(synurang_jni PRIVATE "${SYNURANG_ROOT}/include")
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(synurang_jni Threads::Threads)
+endif()
 
 if(ANDROID)
     # NDK provides jni.h automatically — no find_package needed

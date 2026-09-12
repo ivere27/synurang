@@ -1,0 +1,11 @@
+[package]
+name = "synurang-rust-host-conformance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+synurang-host = { path = "../../../crates/synurang-host", default-features = false, features = ["module"] }
+tokio = { version = "1", features = ["full"] }
+prost = "0.13.5"
+futures-util = "0.3"

@@ -55,10 +55,17 @@ typedef enum SynurangExecutionMode {
  * to non-empty, or after a stream changes from having no readable output to
  * having data/EOF/error available. It may run on any producer thread and must
  * return promptly. A libuv embedding normally calls uv_async_send(); a
- * WebAssembly embedding normally schedules a microtask. The scheduled task
+ * WebAssembly embedding schedules a later event-loop task. The scheduled task
  * calls synurang_runtime_poll() and/or drains known stream handles with
- * Synurang_Stream_TryRecv(). The callback must not destroy the runtime. */
+ * Synurang_Stream_TryRecv(). The callback must not destroy the runtime.
+ * The call ABI enables additional notifications and requires a non-reentrant
+ * callback; see call.h for that contract. */
 typedef void (*SynurangWakeupFn)(void* user_data);
+
+/* Call ABI integration: before opening streams, enable notifications for both
+ * executor modes, writable input and final producer retirement. Wakeups must
+ * only schedule later work, since retirement is published under a runtime lock. */
+SYNURANG_C_RUNTIME_API void synurang_runtime_enable_call_notifications(SynurangRuntime* runtime);
 
 typedef struct SynurangRuntimeOptions {
     size_t struct_size;
@@ -134,6 +141,11 @@ SYNURANG_C_RUNTIME_API size_t synurang_runtime_poll(
 SYNURANG_C_RUNTIME_API int synurang_runtime_has_pending(
     SynurangRuntime* runtime);
 
+/* True once all streams (including retained asynchronous producer references)
+ * and entered poll/open operations have gone away. The caller must prevent new
+ * opens while using this to decide whether teardown can proceed. */
+SYNURANG_C_RUNTIME_API int synurang_runtime_is_idle(SynurangRuntime* runtime);
+
 /* Stops accepting new streams, waits for already-entered poll calls, cancels
  * existing streams, drains their runtime callbacks, and joins owned workers.
  * Thread-capable builds wait for explicitly retained stream references. A
@@ -164,6 +176,19 @@ SYNURANG_C_RUNTIME_API SynurangStream* synurang_stream_retain(
 
 SYNURANG_C_RUNTIME_API void synurang_stream_release(
     SynurangStream* stream);
+
+/* Pause message and half-close callbacks while an asynchronous consumer or a
+ * blocked response is outstanding. The bounded input queue continues accepting
+ * requests up to its capacity. Writable and cancellation callbacks still run.
+ * Resume after retrying the saved response from on_writable. Message payloads
+ * remain borrowed: copy anything needed beyond the current callback. */
+SYNURANG_C_RUNTIME_API void synurang_stream_pause_input(SynurangStream* stream);
+SYNURANG_C_RUNTIME_API void synurang_stream_resume_input(SynurangStream* stream);
+
+/* Atomically cancel an unfinished stream by handle. Returns one if cancellation
+ * wins, zero if the provider already published terminal status (or no handle).
+ * Queued responses and an existing terminal status remain intact on zero. */
+SYNURANG_C_RUNTIME_API int synurang_stream_cancel_pending(uint64_t handle);
 
 /* Callback-side response operations. write() copies data before returning.
  * A full bounded response queue returns WOULD_BLOCK before accessing data and

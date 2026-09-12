@@ -1,0 +1,23 @@
+syntax = "proto3";
+package synurang.example.shm;
+
+// Only this descriptor crosses the call ABI. The payload stays in POSIX shared
+// memory owned by the caller until completion (or host teardown on failure).
+message BufferRequest {
+  string name = 1;
+  uint64 offset = 2;
+  uint64 length = 3;
+  uint32 xor_mask = 4;
+  uint64 request_id = 5;
+}
+
+// Sent only after the C backend has stopped accessing and unmapped the payload.
+message BufferDone {
+  uint64 request_id = 1;
+  uint64 bytes_processed = 2;
+  uint64 checksum = 3;
+}
+
+service SharedMemory {
+  rpc Process(BufferRequest) returns (BufferDone);
+}

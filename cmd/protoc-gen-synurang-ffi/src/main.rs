@@ -85,9 +85,12 @@ fn generate_c_files(
     generated_files: &BTreeSet<String>,
     mode: &str,
 ) -> Result<(), String> {
-    if !matches!(mode, "" | "default" | "native" | "activex" | "lite") {
+    if !matches!(
+        mode,
+        "" | "default" | "native" | "module" | "activex" | "lite"
+    ) {
         return Err(format!(
-            "unsupported lang/mode: c/{mode}; expected default, native, activex, or lite"
+            "unsupported lang/mode: c/{mode}; expected default, native, module, activex, or lite"
         ));
     }
     if mode == "lite" {
@@ -106,7 +109,7 @@ fn generate_c_files(
         }
         return Ok(());
     }
-    if matches!(mode, "" | "default" | "native") {
+    if matches!(mode, "" | "default" | "native" | "module") {
         // The full C binding always contains the dependency-free message
         // codec and, for schema files with selected services, one public
         // service header/source pair. `mode=native` is a compatibility alias;
@@ -125,7 +128,12 @@ fn generate_c_files(
             )?;
         }
         if has_generated_services(file, service_list) {
-            for output_mode in ["ffi_header", "ffi_source"] {
+            let output_modes = if mode == "module" {
+                ["module_header", "module_source"]
+            } else {
+                ["ffi_header", "ffi_source"]
+            };
+            for output_mode in output_modes {
                 generate_from_template_with_generated_files(
                     response,
                     engine,
@@ -154,6 +162,42 @@ fn generate_c_files(
     )
 }
 
+fn validate_capabilities(lang: &str, mode: &str, target: &str) -> Result<(), String> {
+    let modes: &[&str] = match lang {
+        "go" => &["default", "plugin_server", "plugin_client", "module"],
+        "rust" => &["default", "plugin_server", "native", "wasm", "module"],
+        "cpp" => &["default", "plugin_server", "lite", "module"],
+        "c" => &["default", "native", "activex", "lite", "module"],
+        "dart" | "java" => &["default", "client"],
+        "typescript" | "ts" | "python" | "py" | "csharp" | "swift" => {
+            &["default", "lite", "client"]
+        }
+        "" => &["default"],
+        _ => return Err(format!("unsupported language {lang:?}")),
+    };
+    let mode = if mode.is_empty() { "default" } else { mode };
+    if !modes.contains(&mode) {
+        return Err(format!(
+            "unsupported lang/mode: {lang}/{mode}; expected {}",
+            modes.join(", ")
+        ));
+    }
+    if !target.is_empty() {
+        if !matches!(target, "native" | "wasm") {
+            return Err(format!(
+                "unsupported target {target:?}; expected native or wasm"
+            ));
+        }
+        if !matches!(mode, "module" | "client") {
+            return Err("target requires mode=module or mode=client".to_string());
+        }
+        if target == "wasm" && mode == "client" && !matches!(lang, "typescript" | "ts" | "dart") {
+            return Err(format!("{lang} clients provide a native host; a WASM client host is not implemented for this language"));
+        }
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), PluginError> {
     let mut input = Vec::new();
     std::io::stdin()
@@ -172,6 +216,7 @@ fn run() -> Result<(), PluginError> {
         .get("mode")
         .cloned()
         .unwrap_or_else(|| "default".to_string());
+    let grpc = parsed.flags.get("grpc").cloned().unwrap_or_default();
     let dart_package = parsed
         .flags
         .get("dart_package")
@@ -206,6 +251,28 @@ fn run() -> Result<(), PluginError> {
             "unsupported language {lang:?}; expected one of: go, dart, cpp, rust, java, csharp, typescript, c, swift, python"
         )));
     }
+    validate_capabilities(
+        &lang,
+        &mode,
+        parsed.flags.get("target").map(String::as_str).unwrap_or(""),
+    )?;
+    if !grpc.is_empty() {
+        if !matches!(lang.as_str(), "typescript" | "ts") {
+            return Err(PluginError::Codegen(format!(
+                "grpc={grpc} is only supported with lang=typescript"
+            )));
+        }
+        if grpc != "js" {
+            return Err(PluginError::Codegen(format!(
+                "unsupported grpc option {grpc:?}; expected: js"
+            )));
+        }
+        if !(mode.is_empty() || mode == "default" || mode == "client") {
+            return Err(PluginError::Codegen(format!(
+                "grpc=js cannot be combined with mode={mode}"
+            )));
+        }
+    }
     let service_list: BTreeSet<String> = parsed
         .flags
         .get("services")
@@ -225,11 +292,38 @@ fn run() -> Result<(), PluginError> {
         ..Default::default()
     };
     let generated_files: BTreeSet<String> = request.file_to_generate.iter().cloned().collect();
+    let mut emit_typescript_grpc_runtime = false;
+    let mut emit_typescript_call_runtime = false;
 
     for file_path in &request.file_to_generate {
         let file = index
             .file(file_path)
             .ok_or_else(|| format!("file not found in request: {file_path}"))?;
+        if mode == "client"
+            && matches!(
+                lang.as_str(),
+                "dart" | "java" | "python" | "py" | "csharp" | "swift"
+            )
+        {
+            let language = if lang == "py" { "python" } else { &lang };
+            let package_option = match language {
+                "dart" => &dart_package,
+                "java" => &java_package,
+                "csharp" => &csharp_namespace,
+                _ => "",
+            };
+            codegen::generate_client_files(
+                &mut response,
+                &engine,
+                &index,
+                file,
+                &service_list,
+                &active_x_options,
+                language,
+                package_option,
+            )?;
+            continue;
+        }
         if lang == "go" || lang.is_empty() {
             generate_from_template(
                 &mut response,
@@ -255,6 +349,21 @@ fn run() -> Result<(), PluginError> {
             )?;
         }
         if lang == "cpp" {
+            if mode == "module" {
+                // C++ shares the portable callback contract and dependency-free
+                // C message codec. The implementation may use normal C++ state.
+                generate_c_files(
+                    &mut response,
+                    &engine,
+                    &index,
+                    file,
+                    &service_list,
+                    &active_x_options,
+                    &generated_files,
+                    "module",
+                )?;
+                continue;
+            }
             generate_from_template(
                 &mut response,
                 &engine,
@@ -358,7 +467,8 @@ fn run() -> Result<(), PluginError> {
             )?;
         }
         if lang == "typescript" || lang == "ts" {
-            if (mode.is_empty() || mode == "default") && has_generated_services(file, &service_list)
+            if (mode.is_empty() || mode == "default" || mode == "client")
+                && has_generated_services(file, &service_list)
             {
                 generate_from_template(
                     &mut response,
@@ -381,6 +491,20 @@ fn run() -> Result<(), PluginError> {
                 "typescript",
                 &mode,
             )?;
+            if mode == "client" {
+                emit_typescript_call_runtime = true;
+            }
+            if grpc == "js" && has_generated_services(file, &service_list) {
+                codegen::generate_typescript_grpc(
+                    &mut response,
+                    &engine,
+                    &index,
+                    file,
+                    &service_list,
+                    &active_x_options,
+                )?;
+                emit_typescript_grpc_runtime = true;
+            }
         }
         if lang == "c" {
             generate_c_files(
@@ -407,6 +531,21 @@ fn run() -> Result<(), PluginError> {
                 mode_or_opt,
             )?;
         }
+    }
+
+    if emit_typescript_call_runtime {
+        response.file.push(code_generator_response::File {
+            name: Some("synurang_runtime.ts".to_string()),
+            content: Some(codegen::TYPESCRIPT_CALL_RUNTIME.to_string()),
+            ..Default::default()
+        });
+    }
+    if emit_typescript_grpc_runtime {
+        response.file.push(code_generator_response::File {
+            name: Some(codegen::TYPESCRIPT_GRPC_RUNTIME_FILE.to_string()),
+            content: Some(codegen::TYPESCRIPT_GRPC_RUNTIME.to_string()),
+            ..Default::default()
+        });
     }
 
     if parsed.annotate_code {
@@ -465,6 +604,38 @@ mod tests {
         field_descriptor_proto, DescriptorProto, FieldDescriptorProto, FileDescriptorProto,
         MethodDescriptorProto, ServiceDescriptorProto,
     };
+
+    #[test]
+    fn validates_language_role_and_target() {
+        for lang in ["c", "cpp", "rust", "go"] {
+            for target in ["native", "wasm"] {
+                assert!(validate_capabilities(lang, "module", target).is_ok());
+            }
+        }
+        for lang in [
+            "typescript",
+            "ts",
+            "dart",
+            "java",
+            "python",
+            "py",
+            "csharp",
+            "swift",
+        ] {
+            assert!(validate_capabilities(lang, "client", "native").is_ok());
+            assert!(validate_capabilities(lang, "module", "").is_err());
+        }
+        for lang in ["typescript", "dart"] {
+            assert!(validate_capabilities(lang, "client", "wasm").is_ok());
+        }
+        for lang in ["java", "python", "csharp", "swift"] {
+            assert!(validate_capabilities(lang, "client", "wasm").is_err());
+        }
+        assert!(validate_capabilities("rust", "module", "unknown").is_err());
+        assert!(validate_capabilities("c", "default", "wasm").is_err());
+        assert!(validate_capabilities("rust", "typo", "").is_err());
+        assert!(validate_capabilities("", "module", "").is_err());
+    }
 
     fn c_fixture(with_service: bool) -> Vec<FileDescriptorProto> {
         let mut file = FileDescriptorProto {

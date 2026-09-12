@@ -30,6 +30,19 @@ pub fn lower_first(s: &str) -> String {
     }
 }
 
+pub fn rust_identifier(name: &str) -> String {
+    match name {
+        "self" | "Self" | "super" | "crate" => format!("{name}_"),
+        "as" | "break" | "const" | "continue" | "else" | "enum" | "extern" | "false" | "fn"
+        | "for" | "if" | "impl" | "in" | "let" | "loop" | "match" | "mod" | "move" | "mut"
+        | "pub" | "ref" | "return" | "static" | "struct" | "trait" | "true" | "type" | "unsafe"
+        | "use" | "where" | "while" | "async" | "await" | "dyn" | "abstract" | "become" | "box"
+        | "do" | "final" | "macro" | "override" | "priv" | "typeof" | "unsized" | "virtual"
+        | "yield" | "try" | "gen" => format!("r#{name}"),
+        _ => name.to_string(),
+    }
+}
+
 pub fn pascal_from_snake(s: &str) -> String {
     s.split('_')
         .filter(|p| !p.is_empty())

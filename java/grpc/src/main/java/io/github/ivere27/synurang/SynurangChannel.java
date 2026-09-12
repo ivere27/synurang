@@ -22,6 +22,10 @@ import io.grpc.MethodDescriptor;
  * </pre>
  */
 public class SynurangChannel extends Channel {
+    /** Create a channel over the instance-scoped module ABI. */
+    public static ModuleChannel create(ModuleHost host) {
+        return new ModuleChannel(host);
+    }
     private final PluginHost host;
     private final String serviceName;
 

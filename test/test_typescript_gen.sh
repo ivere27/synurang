@@ -205,10 +205,12 @@ cat > "$OUT_DIR/package.json" <<'EOF'
   "private": true,
   "type": "module",
   "dependencies": {
-    "@bufbuild/protobuf": "2.11.0"
+    "@bufbuild/protobuf": "2.11.0",
+    "@grpc/grpc-js": "1.14.4"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "2.11.0",
+    "@types/node": "^24.0.0",
     "esbuild": "0.25.12",
     "typescript": "^5.6.0"
   }
@@ -531,6 +533,55 @@ for fixture in codec_regressions shared_message_methods compact_metadata; do
     --outfile="$OUT_DIR/$fixture.min.mjs"
   node --disallow-code-generation-from-strings "$OUT_DIR/$fixture.min.mjs" --minified
 done
+
+echo "Generating @grpc/grpc-js clients and the Synurang channel runtime..."
+protoc -I"$SCRIPT_DIR/typescript" \
+    --plugin=protoc-gen-synurang-ffi="$PLUGIN" \
+    --synurang-ffi_out="$OUT_DIR" \
+    --synurang-ffi_opt=lang=typescript,grpc=js \
+    grpc_parity.proto
+
+GRPC_TS="$OUT_DIR/grpc_parity_grpc.ts"
+GRPC_RUNTIME_TS="$OUT_DIR/synurang_grpc.ts"
+for generated in grpc_parity_lite.ts grpc_parity_ffi.ts grpc_parity_grpc.ts synurang_grpc.ts; do
+    if [ ! -f "$OUT_DIR/$generated" ]; then
+        echo "Error: $generated was not generated with grpc=js!"
+        exit 1
+    fi
+done
+assert_contains "$GRPC_TS" 'export const ParityService = {' "grpc_parity_grpc.ts missing service definition"
+assert_contains "$GRPC_TS" 'path: "/parity.v1.Parity/Bidi",' "grpc_parity_grpc.ts missing method path"
+assert_contains "$GRPC_TS" 'export interface ParityServer extends grpc.UntypedServiceImplementation {' "grpc_parity_grpc.ts missing server interface"
+assert_contains "$GRPC_TS" 'export interface ParityClient extends grpc.Client {' "grpc_parity_grpc.ts missing client interface"
+assert_contains "$GRPC_TS" '"parity.v1.Parity",' "grpc_parity_grpc.ts missing qualified service name"
+assert_contains "$GRPC_RUNTIME_TS" 'export class PluginChannel implements grpc.ChannelInterface {' "synurang_grpc.ts missing PluginChannel"
+if grep -q "@grpc/grpc-js" "$OUT_DIR/grpc_parity_ffi.ts" "$OUT_DIR/grpc_parity_lite.ts"; then
+    echo "Error: grpc=js must not add @grpc/grpc-js imports to _ffi.ts or _lite.ts"
+    exit 1
+fi
+if protoc -I"$SCRIPT_DIR/typescript" \
+    --plugin=protoc-gen-synurang-ffi="$PLUGIN" \
+    --synurang-ffi_out="$OUT_DIR" \
+    --synurang-ffi_opt=lang=typescript,mode=lite,grpc=js \
+    grpc_parity.proto 2>/dev/null; then
+    echo "Error: grpc=js must be rejected with mode=lite"
+    exit 1
+fi
+
+echo "Validating the same grpc-js client code over the network and Synurang FFI..."
+protoc -I"$SCRIPT_DIR/typescript" -I"$ROOT_DIR/api" -I/usr/include \
+    --plugin=protoc-gen-es="$OUT_DIR/node_modules/.bin/protoc-gen-es" \
+    --es_out="$PROTOBUF_ES_OUT" \
+    --es_opt=target=ts \
+    grpc_status.proto core.proto
+cp "$SCRIPT_DIR/typescript/grpc_parity.ts" "$OUT_DIR/grpc_parity.ts"
+"$OUT_DIR/node_modules/.bin/tsc" --target ES2020 \
+    --module NodeNext \
+    --moduleResolution NodeNext \
+    --strict \
+    --outDir "$OUT_DIR/dist" \
+    "$OUT_DIR/grpc_parity.ts"
+node "$OUT_DIR/dist/grpc_parity.js"
 
 echo "TypeScript Generation Test Passed!"
 rm -rf "$OUT_DIR"

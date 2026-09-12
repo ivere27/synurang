@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../csharp/Synurang.Call/Synurang.Call.csproj" />
+    <ProjectReference Include="../../../csharp/Synurang.Call.Grpc/Synurang.Call.Grpc.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(GeneratedDir)' != ''">
+    <Compile Include="$(GeneratedDir)/*.cs" />
+    <PackageReference Include="Google.Protobuf" Version="3.25.1" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(GeneratedDir)' != ''"><DefineConstants>$(DefineConstants);GENERATED_CONFORMANCE</DefineConstants></PropertyGroup>
+</Project>

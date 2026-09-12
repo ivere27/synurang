@@ -1,0 +1,80 @@
+syntax = "proto3";
+package synurang.example.shm;
+
+enum QueuePolicy {
+  QUEUE_POLICY_UNSPECIFIED = 0;
+  FIFO = 1;
+  LATEST = 2;
+  BATCH = 3;
+}
+
+// First message on Run. One pool, with tightly packed RGB24 pixels at the
+// start of each slot. Padding after the pixels is never touched by the backend.
+message QueueConfig {
+  string name = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 slot_stride = 4;
+  uint32 slot_count = 5;
+  QueuePolicy policy = 6;
+  uint32 input_capacity = 7;
+  uint32 output_capacity = 8;
+  uint32 batch_size = 9;
+  uint32 batch_wait_ms = 10;
+  // Demonstration only: interruptible wait per frame, not a performance claim.
+  uint32 simulate_work_ms = 11;
+}
+
+message Frame {
+  uint32 slot = 1;
+  // Strictly increasing per stream, including when reusing a slot.
+  uint64 frame_id = 2;
+  uint64 captured_ns = 3;
+}
+
+message QueueRequest {
+  oneof value {
+    QueueConfig config = 1;
+    Frame frame = 2;
+  }
+}
+
+enum FrameEvent {
+  FRAME_EVENT_UNSPECIFIED = 0;
+  READY = 1;
+  PROCESSED = 2;
+  DROPPED = 3;
+  SUMMARY = 4;
+}
+
+message FrameResult {
+  FrameEvent event = 1;
+  uint32 slot = 2;
+  uint64 frame_id = 3;
+  uint64 captured_ns = 4;
+  uint64 started_ns = 5;
+  uint64 completed_ns = 6;
+  uint64 batch_id = 7;
+  uint32 batch_size = 8;
+  bool detected = 9;
+  uint32 x = 10;
+  uint32 y = 11;
+  uint32 width = 12;
+  uint32 height = 13;
+  bool defect = 14;
+  // SUMMARY only; high-water marks count the two application queues, excluding
+  // the call runtime's additional bounded transport queues and active work.
+  uint32 input_high_water = 15;
+  uint32 output_high_water = 16;
+  uint64 processed = 17;
+  uint64 dropped = 18;
+  uint64 batches = 19;
+}
+
+service FrameQueue {
+  // Wait for READY, then send descriptors and receive results concurrently.
+  // PROCESSED/DROPPED return a slot exactly once. Half-close drains accepted
+  // frames, emits SUMMARY, then EOF. On failure/cancel, close the host before
+  // reclaiming outstanding slots: the result stream may no longer be readable.
+  rpc Run(stream QueueRequest) returns (stream FrameResult);
+}

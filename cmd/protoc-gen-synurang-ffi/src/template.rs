@@ -22,8 +22,8 @@ use crate::funcs_lang::{
     wasm_err_return,
 };
 use crate::names::{
-    lower_camel_from_snake, lower_first, python_identifier, python_method_name, to_screaming_snake,
-    to_snake_case,
+    lower_camel_from_snake, lower_first, python_identifier, python_method_name, rust_identifier,
+    to_screaming_snake, to_snake_case,
 };
 use crate::value::Value;
 
@@ -614,6 +614,7 @@ fn is_function(name: &str) -> bool {
             | "index"
             | "snakeCase"
             | "pythonIdent"
+            | "rustIdent"
             | "pythonMethodName"
             | "callMethod"
             | "grpcStreamType"
@@ -696,6 +697,7 @@ fn eval_function(name: &str, args: Vec<Value>, ctx: &RenderContext) -> Result<Va
         }
         "snakeCase" => Value::s(to_snake_case(&v(0).as_str())),
         "pythonIdent" => Value::s(python_identifier(&v(0).as_str())),
+        "rustIdent" => Value::s(rust_identifier(&v(0).as_str())),
         "pythonMethodName" => Value::s(python_method_name(&v(0).as_str())),
         "callMethod" => Value::s(callmethod_name(&v(0))),
         "grpcStreamType" => stream_type("grpc", &v(0), &v(1)),

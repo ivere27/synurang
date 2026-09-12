@@ -6,6 +6,8 @@ Pod::Spec.new do |s|
 SynurangLite is the zero-dependency Swift runtime for Synurang FFI plugins.
 It ships:
   - ProtoLite: a tiny protobuf wire encoder/decoder
+  - ModuleHost / ModuleClient: nonblocking module calls with Swift task cancellation
+  - ModuleResponses / ModuleDuplex: demand-driven async streaming
   - PluginHost: an actor that loads a `.dylib` / static-linked C ABI plugin
   - PluginStream / BidiStream: typed streaming wrappers
 Generated code from `protoc-gen-synurang-ffi --lang=swift --mode=lite`

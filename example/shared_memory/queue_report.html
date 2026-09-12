@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared-memory frame queues</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #101720; color: #e6edf3; }
+  body { max-width: 1180px; margin: 36px auto; padding: 0 24px; }
+  h1 { font-size: 30px; margin-bottom: 8px; }
+  p { color: #acb9c8; line-height: 1.6; }
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 24px 0; }
+  button, select { padding: 8px 12px; font: inherit; color: inherit; background: #243244; border: 1px solid #4d6179; border-radius: 6px; }
+  input { flex: 1; min-width: 180px; accent-color: #69c6a5; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  article { padding: 20px; border: 1px solid #35455a; border-radius: 12px; background: #17222f; }
+  h2 { margin: 0 0 12px; font-size: 20px; }
+  canvas { width: 100%; background: #111a25; border-radius: 6px; image-rendering: pixelated; }
+  .position { min-height: 3em; color: #d3deea; font-variant-numeric: tabular-nums; }
+  .numbers { font: 14px/1.7 ui-monospace, monospace; white-space: pre-line; }
+  .legend { border-left: 3px solid #69c6a5; padding-left: 16px; }
+  time { min-width: 90px; font-variant-numeric: tabular-nums; }
+</style>
+<h1>Shared-memory frame queues</h1>
+<p>Python / C++ capture → descriptor queue → C detection → result queue → buffer reuse.</p>
+<div class="controls">
+  <label>Caller <select id="caller"></select></label>
+  <label>Scenario <select id="scenario"></select></label>
+  <button id="play" type="button">Play</button>
+  <label>Speed <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
+  <input id="seek" type="range" min="0" max="1" step="1" value="0" aria-label="Playback time">
+  <time id="time">0 ms</time>
+</div>
+<p class="legend">Red outline: newest captured target. Green / yellow: latest returned clean / defective detection.
+  “Age” is elapsed time since that displayed frame was captured.</p>
+<div id="cards" class="cards"></div>
+<p>This replays recorded descriptors and results from independent runs, with each run starting at zero.
+  The synthetic producer waits for a free buffer. Batch groups work; the simulated wait is still per frame.
+  These end-to-end demo times include capture, queues and any configured delays.</p>
+<script>
+const reports = /* QUEUE_REPORT_DATA */ [];
+const byId = id => document.getElementById(id);
+const caller = byId('caller'), scenario = byId('scenario'), seek = byId('seek');
+let selected = [], cards = [], playing = false, previous = 0, position = 0, animation = 0;
+for (const [element, key] of [[caller, 'caller'], [scenario, 'scenario']]) {
+  for (const value of new Set(reports.map(report => report[key]))) element.add(new Option(value, value));
+}
+function stop() { playing = false; cancelAnimationFrame(animation); byId('play').textContent = 'Play'; }
+function select() {
+  stop();
+  selected = reports.filter(report => report.caller === caller.value && report.scenario === scenario.value)
+    .sort((a, b) => ['fifo', 'latest', 'batch'].indexOf(a.policy) - ['fifo', 'latest', 'batch'].indexOf(b.policy));
+  byId('cards').replaceChildren();
+  cards = selected.map(report => {
+    const article = document.createElement('article');
+    const title = document.createElement('h2');
+    title.textContent = report.policy.toUpperCase();
+    const canvas = document.createElement('canvas'); canvas.width = 384; canvas.height = 256;
+    const status = document.createElement('p'); status.className = 'position';
+    const numbers = document.createElement('div'); numbers.className = 'numbers';
+    numbers.textContent = `Total: ${report.processed} processed / ${report.dropped} dropped\n` +
+      `Latency p50/p95: ${report.latency_p50_ms.toFixed(1)} / ${report.latency_p95_ms.toFixed(1)} ms\n` +
+      `Batch ≤ ${report.max_batch_size}; queue peaks ${report.input_high_water} / ${report.output_high_water}\n` +
+      `Defects found / skipped: ${report.detected_defects} / ${report.missed_defects}\n` +
+      `Outstanding buffers at shutdown: ${report.outstanding}`;
+    article.append(title, canvas, status, numbers); byId('cards').append(article);
+    return {canvas, status};
+  });
+  seek.max = String(Math.ceil(Math.max(1, ...selected.flatMap(r => r.events.map(e => e.received_ms)))));
+  position = 0; render();
+}
+function render() {
+  seek.value = position; byId('time').textContent = `${Math.round(position)} ms`;
+  selected.forEach((report, index) => {
+    const {canvas, status} = cards[index], ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let captured = null, shown = null, drops = 0;
+    for (const event of report.events) {
+      if (event.captured_ms <= position) captured = event;
+      if (event.received_ms <= position) {
+        if (event.status === 'PROCESSED') shown = event;
+        else drops++;
+      }
+    }
+    if (shown) {
+      ctx.fillStyle = shown.defect ? '#f6cc68' : '#69c6a5';
+      ctx.fillRect(shown.x * 4, shown.y * 4, 48, 48);
+    }
+    if (captured) {
+      ctx.strokeStyle = '#fc7c88'; ctx.lineWidth = 2;
+      ctx.strokeRect((captured.id * 3 % 85) * 4, (captured.id * 2 % 53) * 4, 48, 48);
+    }
+    status.textContent = `Captured #${captured?.id ?? '—'} → displayed #${shown?.id ?? '—'}\n` +
+      `Age ${shown ? Math.round(position - shown.captured_ms) + ' ms' : '—'} · ${drops} drops received`;
+    status.style.whiteSpace = 'pre-line';
+  });
+}
+function tick(timestamp) {
+  if (!playing) return;
+  if (previous) position = Math.min(Number(seek.max), position + (timestamp - previous) * Number(byId('speed').value));
+  previous = timestamp; render();
+  if (position >= Number(seek.max)) stop(); else animation = requestAnimationFrame(tick);
+}
+byId('play').onclick = () => {
+  if (playing) { stop(); return; }
+  if (position >= Number(seek.max)) position = 0;
+  playing = true; previous = 0; byId('play').textContent = 'Pause'; animation = requestAnimationFrame(tick);
+};
+seek.oninput = () => { stop(); position = Number(seek.value); render(); };
+caller.onchange = scenario.onchange = select;
+select();
+</script>
+</html>

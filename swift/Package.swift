@@ -1,9 +1,11 @@
 // swift-tools-version:5.9
 //
-// Synurang Swift Package — lite path only (Phase A).
+// Synurang Swift Package — protobuf codecs and native module clients.
 //
 // SynurangLite provides:
 //   - ProtoLite (zero-dependency protobuf wire encoder/decoder)
+//   - ModuleHost + ModuleClient for the unified nonblocking call ABI
+//   - ModuleResponses / ModuleDuplex for demand-driven async streaming
 //   - PluginHost (actor) + PluginStream (actor) for loading and talking
 //     to Synurang FFI plugins (Go/C++/Rust shared libraries) via dlopen.
 //   - BidiStream<Req, Resp> for typed bidirectional streaming RPCs.

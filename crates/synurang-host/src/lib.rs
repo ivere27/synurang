@@ -1,35 +1,52 @@
 //! Synurang Host Library
 //!
-//! This crate provides functionality for C++/Rust applications to:
+//! This crate provides functionality for Rust applications to:
+//! - Call native modules asynchronously through the unified ABI (`module` feature)
 //! - Load Go/C++/Rust plugins via FFI (Plugin Mode)
 //! - Spawn child processes and communicate via gRPC over IPC (Process Mode)
 //!
 //! # Plugin Mode Example
 //! ```no_run
+//! # #[cfg(feature = "plugin")]
+//! # fn example() -> synurang_host::Result<()> {
 //! use synurang_host::PluginHost;
 //!
+//! let request_data = Vec::new();
 //! let plugin = PluginHost::load("./libmyplugin.so")?;
 //! let response = plugin.invoke("MyService", "/pkg.MyService/Method", &request_data)?;
 //! plugin.close();
 //! # Ok::<(), synurang_host::Error>(())
+//! # }
 //! ```
 //!
 //! # Process Mode Example
 //! ```no_run
+//! # #[cfg(feature = "process")]
+//! # async fn example() -> synurang_host::Result<()> {
 //! use synurang_host::ProcessHost;
 //!
-//! let process = ProcessHost::start("./child-process", &[])?;
+//! let mut process = ProcessHost::start("./child-process", &[]).await?;
 //! let channel = process.channel();
 //! // Use channel with tonic generated clients...
-//! process.terminate();
+//! process.terminate()?;
 //! # Ok::<(), synurang_host::Error>(())
+//! # }
 //! ```
 
+#[cfg(feature = "plugin")]
 mod plugin;
+#[cfg(feature = "process")]
 mod process;
+#[cfg(feature = "module")]
+pub mod module;
 
+#[cfg(feature = "plugin")]
 pub use plugin::{PluginHost, PluginStream};
+#[cfg(feature = "process")]
 pub use process::{new_ipc_listener, ProcessHost};
+#[cfg(feature = "module")]
+pub use module::{CancellationToken, ModuleCall, ModuleCallOptions, ModuleHost,
+    ModuleMethod, ModuleOptions, RpcError, RpcResult};
 
 use thiserror::Error;
 

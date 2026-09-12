@@ -1,0 +1,13 @@
+syntax = "proto3";
+package google.rpc;
+
+import "google/protobuf/any.proto";
+
+// Wire-compatible copy of google/rpc/status.proto. The parity test encodes
+// grpc-status-details-bin with protobuf-es from this schema, independently of
+// the Synurang runtime's own encoder.
+message Status {
+  int32 code = 1;
+  string message = 2;
+  repeated google.protobuf.Any details = 3;
+}

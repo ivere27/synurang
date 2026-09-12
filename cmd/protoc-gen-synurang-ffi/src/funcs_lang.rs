@@ -533,6 +533,7 @@ pub fn cpp_field_name(name: &str) -> String {
         "register",
         "reinterpret_cast",
         "requires",
+        "restrict",
         "return",
         "short",
         "signed",

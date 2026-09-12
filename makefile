@@ -64,7 +64,7 @@ CODEGEN_TARGETS ?= x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-p
 CODEGEN_GITHUB_REPO ?= ivere27/synurang
 CODEGEN_DIST_DIR ?= $(CURRENT_DIR)/dist/codegen
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_python test_python_gen test_python_grpc test_host_python test_codegen test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_ffi_csharp test_ffi_python test_plugin test_plugin_race run ffigen benchmark build_server build_plugin build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar docker_codegen_image docker_codegen publish_github publish_github_codegen
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_python test_python_gen test_python_grpc test_host_python test_codegen test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_ffi_csharp test_ffi_python test_plugin test_plugin_race run ffigen benchmark build_server build_plugin build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen test_typescript_grpc_plugin docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar docker_codegen_image docker_codegen publish_github publish_github_codegen
 
 # =============================================================================
 # Default Target
@@ -416,10 +416,23 @@ build_plugin_host:
 # =============================================================================
 
 # Run all tests (Go + Dart + C/C++ + Rust + Python + Native/WASM + TypeScript + C# + Swift + Plugin)
-test: test_go test_dart test_cpp test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_rust test_python test_native_wasm_gen test_typescript_gen test_csharp test_swift test_plugin test_codegen
+test: test_go test_dart test_cpp test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_rust test_python test_native_wasm_gen test_typescript_gen test_typescript_grpc_plugin test_csharp test_swift test_plugin test_codegen
 	@echo "All tests complete."
 
 # Dependency-free C protobuf-lite generation tests
+.PHONY: test_call_runtime test_call_all test_shared_memory test_shared_memory_queue
+test_call_runtime:
+	bash test/test_call_runtime.sh
+
+test_call_all:
+	SYNURANG_CALL_HOSTS=1 bash test/test_call_runtime.sh
+
+test_shared_memory:
+	bash example/shared_memory/run.sh
+
+test_shared_memory_queue:
+	bash example/shared_memory/run_queue.sh
+
 test_c_lite_gen:
 	@echo "Running C lite generation tests..."
 	./test/test_c_lite_gen.sh
@@ -481,6 +494,12 @@ test_typescript_gen:
 	@echo "Running TypeScript generation tests..."
 	./test/test_typescript_gen.sh
 	@echo "TypeScript generation tests complete."
+
+# TypeScript grpc-js client over Go gRPC (network) and the Go plugin (FFI)
+test_typescript_grpc_plugin:
+	@echo "Running TypeScript grpc-js plugin tests..."
+	./test/test_typescript_grpc_plugin.sh
+	@echo "TypeScript grpc-js plugin tests complete."
 
 # Swift Tests (Generation + FFI host)
 test_swift: test_swift_gen test_host_swift

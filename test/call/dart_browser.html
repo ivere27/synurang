@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dart Synurang WASM and worker conformance</title>
+<script src="./wasm_exec.js"></script>
+<script type="module">
+import { createWasmHost, instantiateWasm } from './synurang_wasm.js';
+import { createGoWasmHost } from './synurang_go.js';
+import { WorkerHost } from './synurang_worker.js';
+import { conformance } from './conformance.js';
+const c = await (await fetch('./c_module.wasm')).arrayBuffer();
+const cpp = await (await fetch('./cpp_module.wasm')).arrayBuffer();
+const rust = await (await fetch('./rust_module.wasm')).arrayBuffer();
+const go = await (await fetch('./go_module.wasm')).arrayBuffer();
+window.dartResult = { done: false, passed: [] };
+window.dartTestReverse = conformance;
+window.dartCreateHost = async (provider, worker) => {
+  if (worker) return new WorkerHost(new Worker(new URL(provider === 'go' ? './dart_go_worker.mjs' : `./worker.mjs?provider=${provider}`, import.meta.url), { type: 'module' }));
+  if (provider === 'go') return createGoWasmHost(go, globalThis.Go, { capacity: 2 });
+  const factory = () => instantiateWasm(provider === 'c' ? c : provider === 'cpp' ? cpp : rust);
+  return createWasmHost(factory, { capacity: 2 });
+};
+if (new URL(location.href).searchParams.get('target') === 'wasm') {
+  const dart = await import('./dart_web.mjs');
+  const compiled = await dart.compileStreaming(fetch('./dart_web.wasm'));
+  (await compiled.instantiate({})).invokeMain();
+} else {
+  const script = document.createElement('script');
+  script.src = './dart_web.js';
+  document.body.appendChild(script);
+}
+</script>

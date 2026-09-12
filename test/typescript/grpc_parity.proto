@@ -1,0 +1,22 @@
+syntax = "proto3";
+package parity.v1;
+option go_package = "github.com/ivere27/synurang/test/generated/typescript;parity";
+
+message Req {
+  string name = 1;
+  int32 count = 2;
+}
+
+message Res {
+  string message = 1;
+  int32 index = 2;
+}
+
+// Every cardinality, served both by a grpc-js network server and by a
+// Synurang plugin host, so one client scenario can compare the transports.
+service Parity {
+  rpc Unary(Req) returns (Res);
+  rpc ServerStream(Req) returns (stream Res);
+  rpc ClientStream(stream Req) returns (Res);
+  rpc Bidi(stream Req) returns (stream Res);
+}

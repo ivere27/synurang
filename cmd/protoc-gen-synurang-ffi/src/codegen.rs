@@ -27,6 +27,46 @@ use crate::value::Value;
 
 pub const TEMPLATE_FILES: &[(&str, &str)] = &[
     (
+        "dart_client.dart.tmpl",
+        include_str!("../templates/dart_client.dart.tmpl"),
+    ),
+    (
+        "java_client.java.tmpl",
+        include_str!("../templates/java_client.java.tmpl"),
+    ),
+    (
+        "python_client.py.tmpl",
+        include_str!("../templates/python_client.py.tmpl"),
+    ),
+    (
+        "csharp_client.cs.tmpl",
+        include_str!("../templates/csharp_client.cs.tmpl"),
+    ),
+    (
+        "swift_client.swift.tmpl",
+        include_str!("../templates/swift_client.swift.tmpl"),
+    ),
+    (
+        "go_module.go.tmpl",
+        include_str!("../templates/go_module.go.tmpl"),
+    ),
+    (
+        "c_module.h.tmpl",
+        include_str!("../templates/c_module.h.tmpl"),
+    ),
+    (
+        "c_module.c.tmpl",
+        include_str!("../templates/c_module.c.tmpl"),
+    ),
+    (
+        "typescript_client.ts.tmpl",
+        include_str!("../templates/typescript_client.ts.tmpl"),
+    ),
+    (
+        "rust_module.rs.tmpl",
+        include_str!("../templates/rust_module.rs.tmpl"),
+    ),
+    (
         "_rust_invoke.tmpl",
         include_str!("../templates/_rust_invoke.tmpl"),
     ),
@@ -122,7 +162,18 @@ pub const TEMPLATE_FILES: &[(&str, &str)] = &[
         "typescript_lite.ts.tmpl",
         include_str!("../templates/typescript_lite.ts.tmpl"),
     ),
+    (
+        "typescript_grpc.ts.tmpl",
+        include_str!("../templates/typescript_grpc.ts.tmpl"),
+    ),
 ];
+
+/// Output name of the @grpc/grpc-js transport emitted with `grpc=js`.
+pub const TYPESCRIPT_GRPC_RUNTIME_FILE: &str = "synurang_grpc.ts";
+/// The transport is schema-independent, so it is emitted verbatim.
+pub const TYPESCRIPT_GRPC_RUNTIME: &str = include_str!("../templates/typescript_grpc_runtime.ts");
+pub const TYPESCRIPT_CALL_RUNTIME: &str =
+    include_str!("../../../typescript/src/synurang_runtime.ts");
 
 pub struct ParsedParams {
     pub flags: HashMap<String, String>,
@@ -145,6 +196,7 @@ fn validate_api_level(param: &str, v: &str) -> Result<(), String> {
 const KNOWN_FLAGS: &[&str] = &[
     "lang",
     "mode",
+    "target",
     "dart_package",
     "java_package",
     "csharp_namespace",
@@ -152,6 +204,8 @@ const KNOWN_FLAGS: &[&str] = &[
     // enum_names=short drops the enum name repeated inside each C constant.
     // Off by default: turning it on renames every generated constant.
     "enum_names",
+    // grpc=js adds @grpc/grpc-js clients and the PluginChannel transport (TypeScript).
+    "grpc",
 ];
 
 /// Whether this invocation asked for short C enum constants (`enum_names=short`).
@@ -288,6 +342,176 @@ pub fn generate_from_template(
     )
 }
 
+/// The new client mode separates the target language's package option from
+/// template selection. Java emits one public service class per file.
+#[allow(clippy::too_many_arguments)]
+pub fn generate_client_files(
+    response: &mut CodeGeneratorResponse,
+    engine: &TemplateEngine,
+    index: &DescriptorIndex,
+    file: &FileInfo,
+    service_list: &BTreeSet<String>,
+    active_x_options: &BTreeMap<(String, String), ActiveXServiceOption>,
+    lang: &str,
+    package_option: &str,
+) -> Result<(), String> {
+    if matches!(lang, "python" | "swift") {
+        generate_from_template(
+            response,
+            engine,
+            index,
+            file,
+            service_list,
+            active_x_options,
+            lang,
+            "lite",
+        )?;
+    }
+    let mut data = build_file_data(
+        index,
+        file,
+        service_list,
+        active_x_options,
+        lang,
+        package_option,
+    );
+    if data.services.is_empty() {
+        return Ok(());
+    }
+    let (template, ext) = match lang {
+        "dart" => ("dart_client.dart.tmpl", "dart"),
+        "java" => ("java_client.java.tmpl", "java"),
+        "python" => ("python_client.py.tmpl", "py"),
+        "csharp" => ("csharp_client.cs.tmpl", "cs"),
+        "swift" => ("swift_client.swift.tmpl", "swift"),
+        _ => return Err(format!("unsupported client language: {lang}")),
+    };
+    if lang == "dart" && data.dart_package.is_empty() {
+        data.dart_package = "synurang".to_string();
+    }
+    if lang == "java" && package_option.is_empty() {
+        data.java_package = java_package(file);
+    }
+    if lang == "csharp" && package_option.is_empty() {
+        data.csharp_namespace = csharp_package(file);
+    }
+    if matches!(lang, "java" | "csharp") {
+        for service in &mut data.services {
+            for method in &mut service.methods {
+                method.input_type = managed_message_type(index, &method.input_type_key, lang)?;
+                method.output_type = managed_message_type(index, &method.output_type_key, lang)?;
+            }
+        }
+    }
+    if lang == "java" {
+        for service in data.services.clone() {
+            let name = format!("{}Client.java", service.go_name);
+            let mut service_data = data.clone();
+            service_data.services = vec![service];
+            response.file.push(code_generator_response::File {
+                name: Some(name),
+                content: Some(engine.render(template, service_data.to_value())?),
+                ..Default::default()
+            });
+        }
+    } else {
+        let base = trim_proto_suffix(&basename(&file.path));
+        response.file.push(code_generator_response::File {
+            name: Some(format!("{base}_client.{ext}")),
+            content: Some(engine.render(template, data.to_value())?),
+            ..Default::default()
+        });
+    }
+    Ok(())
+}
+fn java_package(file: &FileInfo) -> String {
+    file.desc
+        .options
+        .as_ref()
+        .and_then(|options| options.java_package.clone())
+        .unwrap_or_else(|| file.package.clone())
+}
+fn csharp_package(file: &FileInfo) -> String {
+    file.desc
+        .options
+        .as_ref()
+        .and_then(|options| options.csharp_namespace.clone())
+        .unwrap_or_else(|| {
+            file.package
+                .split('.')
+                .map(go_camel)
+                .collect::<Vec<_>>()
+                .join(".")
+        })
+}
+fn managed_message_type(index: &DescriptorIndex, key: &str, lang: &str) -> Result<String, String> {
+    let message = index
+        .message(key)
+        .ok_or_else(|| format!("Unknown message: {key}"))?;
+    let file = index
+        .file(&message.file_path)
+        .ok_or_else(|| format!("Unknown message file: {key}"))?;
+    let prefix = if file.package.is_empty() {
+        String::new()
+    } else {
+        format!("{}.", file.package)
+    };
+    let relative = message
+        .fqn
+        .trim_start_matches('.')
+        .strip_prefix(&prefix)
+        .unwrap_or(key);
+    let names = relative.split('.').map(go_camel).collect::<Vec<_>>();
+    if lang == "csharp" {
+        let package = csharp_package(file);
+        let prefix = if package.is_empty() {
+            String::new()
+        } else {
+            format!("{package}.")
+        };
+        return Ok(format!("global::{prefix}{}", names.join(".Types.")));
+    }
+    let options = file.desc.options.as_ref();
+    let package = java_package(file);
+    let mut parts = if package.is_empty() {
+        Vec::new()
+    } else {
+        vec![package]
+    };
+    if !options
+        .and_then(|options| options.java_multiple_files)
+        .unwrap_or(false)
+    {
+        let outer = options
+            .and_then(|options| options.java_outer_classname.clone())
+            .unwrap_or_else(|| {
+                let mut outer = go_camel(&trim_proto_suffix(&basename(&file.path)));
+                if file
+                    .desc
+                    .message_type
+                    .iter()
+                    .any(|item| item.name.as_deref() == Some(&outer))
+                    || file
+                        .desc
+                        .enum_type
+                        .iter()
+                        .any(|item| item.name.as_deref() == Some(&outer))
+                    || file
+                        .desc
+                        .service
+                        .iter()
+                        .any(|item| item.name.as_deref() == Some(&outer))
+                {
+                    outer.push_str("OuterClass");
+                }
+                outer
+            });
+        parts.push(outer);
+    }
+    parts.extend(names);
+    Ok(parts.join("."))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn generate_from_template_with_generated_files(
     response: &mut CodeGeneratorResponse,
@@ -353,6 +577,40 @@ pub fn generate_from_template_with_generated_files(
         .ok_or_else(|| format!("unsupported lang/mode: {lang}/{mode_or_opt}"))?;
     let content = engine.render(tmpl_name, value)?;
     let filename = output_filename_with_mode(file, lang, mode_or_opt, "");
+    response.file.push(code_generator_response::File {
+        name: Some(filename.clone()),
+        insertion_point: None,
+        content: Some(final_content(&filename, content)),
+        generated_code_info: None,
+    });
+    Ok(())
+}
+
+/// Renders `<base>_grpc.ts`: @grpc/grpc-js service definitions and clients for
+/// the lite messages of one proto file.
+pub fn generate_typescript_grpc(
+    response: &mut CodeGeneratorResponse,
+    engine: &TemplateEngine,
+    index: &DescriptorIndex,
+    file: &FileInfo,
+    service_list: &BTreeSet<String>,
+    active_x_options: &BTreeMap<(String, String), ActiveXServiceOption>,
+) -> Result<(), String> {
+    let data = build_file_data(
+        index,
+        file,
+        service_list,
+        active_x_options,
+        "typescript",
+        "default",
+    );
+    let content = engine.render("typescript_grpc.ts.tmpl", data.to_value())?;
+    let source_relative_base = trim_proto_suffix(&file.path);
+    let base = source_relative_base
+        .rsplit('/')
+        .next()
+        .unwrap_or(&source_relative_base);
+    let filename = format!("{base}_grpc.ts");
     response.file.push(code_generator_response::File {
         name: Some(filename.clone()),
         insertion_point: None,
@@ -471,7 +729,11 @@ fn build_file_data(
                 .map(|dependency| relative_c_lite_header(&file.path, &dependency))
                 .collect();
         }
-        "c" if matches!(mode_or_opt, "ffi_header" | "ffi_source") => {
+        "c" if matches!(
+            mode_or_opt,
+            "ffi_header" | "ffi_source" | "module_header" | "module_source"
+        ) =>
+        {
             data.c_ffi_dep_headers = lite_service_dependencies(index, file, service_list)
                 .into_iter()
                 .map(|dependency| relative_c_lite_header(&file.path, &dependency))
@@ -527,7 +789,11 @@ fn build_file_data(
             let m = MethodData {
                 name: method_name.clone(),
                 go_name: go_camel(&method_name),
-                full_method_name: format!("/{package}.{service_name}/{method_name}"),
+                full_method_name: if package.is_empty() {
+                    format!("/{service_name}/{method_name}")
+                } else {
+                    format!("/{package}.{service_name}/{method_name}")
+                },
                 input_type: input_go_name.clone(),
                 output_type: output_go_name.clone(),
                 input_type_key: input_fqn.trim_start_matches('.').to_string(),
@@ -541,7 +807,7 @@ fn build_file_data(
                     index,
                     file,
                     output,
-                    is_streaming,
+                    is_streaming || (lang == "go" && mode_or_opt == "module"),
                     &mut go_imports,
                 ),
                 input_python_type: qualify_python_type(input, &mut python_imports),
@@ -2034,6 +2300,7 @@ fn cpp_lite_message_type(msg: Option<&MessageInfo>, current_file: &FileInfo) -> 
 pub fn select_template(lang: &str, mode_or_opt: &str) -> Option<&'static str> {
     Some(match lang {
         "go" => match mode_or_opt {
+            "module" => "go_module.go.tmpl",
             "plugin_server" => "go_plugin_server.go.tmpl",
             "plugin_client" => "go_plugin_client.go.tmpl",
             _ => "go_default.go.tmpl",
@@ -2045,12 +2312,15 @@ pub fn select_template(lang: &str, mode_or_opt: &str) -> Option<&'static str> {
             _ => "cpp.h.tmpl",
         },
         "rust" => match mode_or_opt {
+            "module" => "rust_module.rs.tmpl",
             "plugin_server" => "rust_plugin_server.rs.tmpl",
             "native" => "rust_native.rs.tmpl",
             "wasm" => "rust_wasm.rs.tmpl",
             _ => "rust.rs.tmpl",
         },
         "c" => match mode_or_opt {
+            "module_header" => "c_module.h.tmpl",
+            "module_source" => "c_module.c.tmpl",
             "activex" => "c_activex.h.tmpl",
             "lite_header" => "c_lite.h.tmpl",
             "lite_source" => "c_lite.c.tmpl",
@@ -2076,6 +2346,8 @@ pub fn select_template(lang: &str, mode_or_opt: &str) -> Option<&'static str> {
         "typescript" | "ts" => {
             if mode_or_opt == "lite" {
                 "typescript_lite.ts.tmpl"
+            } else if mode_or_opt == "client" {
+                "typescript_client.ts.tmpl"
             } else {
                 "typescript.ts.tmpl"
             }
@@ -2114,10 +2386,10 @@ fn output_filename_with_mode(file: &FileInfo, lang: &str, mode: &str, ext: &str)
     if mode == "lite_source" && lang == "c" {
         return format!("{source_relative_base}_lite.c");
     }
-    if mode == "ffi_header" && lang == "c" {
+    if matches!(mode, "ffi_header" | "module_header") && lang == "c" {
         return format!("{source_relative_base}_ffi.h");
     }
-    if mode == "ffi_source" && lang == "c" {
+    if matches!(mode, "ffi_source" | "module_source") && lang == "c" {
         return format!("{source_relative_base}_ffi.c");
     }
     if mode == "native" {

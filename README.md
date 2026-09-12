@@ -2,6 +2,12 @@
 
 > gRPC over FFI and IPC
 
+For asynchronous services shared between **native libraries and browser/Node
+WebAssembly**, use the [module call runtime](CALL-RUNTIME.md). C/C++ compile with
+Clang directly; Rust and Go use their own runtimes. Typed clients work with or
+without workers and do not require gRPC. Go/Rust backends do not depend on the
+C callback runtime.
+
 FFI and IPC transport for gRPC. Implements `grpc.ClientConnInterface` — same client code works over FFI, IPC, or network.
 
 ```go
@@ -21,6 +27,21 @@ conn, _ := synurang.StartProcess(ctx, exec.Command("./child"))
 // Same client code works for all!
 client := pb.NewGreeterClient(conn)
 resp, _ := client.SayHello(ctx, &pb.HelloRequest{Name: "World"})
+```
+
+TypeScript follows the same model with `@grpc/grpc-js`: `PluginChannel` is a grpc-js channel, so a generated client runs unchanged over the network or FFI.
+
+```ts
+// Network gRPC (the usual way)
+const client = new GreeterClient("localhost:50051", grpc.credentials.createInsecure());
+
+// Synurang FFI - plugin host
+const client = new GreeterClient("synurang", grpc.credentials.createInsecure(), {
+  channelOverride: new PluginChannel(host, GreeterService),
+});
+
+// Same client code and the same ServiceError for both
+client.sayHello(new HelloRequest({ name: "World" }), (err, resp) => { /* ... */ });
 ```
 
 ## Use Cases
@@ -83,6 +104,11 @@ kind of output. Omitting `lang` preserves the legacy combined Go/Dart output.
 
 | Language | Mode | Output | Description |
 |----------|------|--------|-------------|
+| c / cpp | `module` | `_lite.h/.c` + `_ffi.h/.c` | Async callback provider, native and direct Clang WASM |
+| rust | `module` | `_ffi.rs` | Async Future/Waker provider, native and raw WASM |
+| go | `module` | `_ffi.pb.go` | Goroutine/context provider, native and Go WASM |
+| typescript | `client` | `_ffi.ts` + `_lite.ts` + runtime | Promise/stream client over native, WASM or workers |
+| dart / java / csharp / python / swift | `client` | Typed client and language-appropriate codecs | New call host; see the [capability table](CALL-RUNTIME.md#generator-capabilities) |
 | go | *(default)* | `_ffi.pb.go` | gRPC FFI client/server bindings |
 | dart | *(default)* | `_ffi.pb.dart` | Dart FFI client |
 | cpp | *(default)* | `_ffi.h` | C++ FFI host header |
@@ -101,7 +127,7 @@ kind of output. Omitting `lang` preserves the legacy combined Go/Dart output.
 | c | `native` | Same as C default | Deprecated compatibility alias for the complete C binding |
 | c | `activex` | `_activex.h` | COM/ActiveX dispatch header |
 
-Plugin-server outputs and the complete C binding export the standard Synurang ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`) — all data is serialized protobuf, and any Synurang host can load the plugin.
+The existing plugin-server outputs and default C binding export the service-specific ABI (`Synurang_Invoke_<Service>(method, bytes, len, &out_len)`). New `mode=module` outputs use the instance/call ABI exposed by `Synurang_GetApi` and require a module host.
 
 Rust native and WASM modes generate **per-method functions** with flattened parameters (e.g., `cache_put(store, store_len, key, key_len, value, value_len, ttl, cost)`). The complete C binding also retains compatible flattened unary entry points, with `_pb` fallbacks for methods whose inputs contain `repeated`, `oneof`, or `map` fields, while adding typed service handlers and the standard raw-protobuf plugin ABI.
 
@@ -659,6 +685,10 @@ The C codec supplies `google.protobuf.Empty`, `google.protobuf.Timestamp`, and `
 Message classes share binary/JSON conversion methods within each generated module. Each class retains its own fields, constructor defaults and concrete decoder return type. Static decoders also work as callbacks, for example `payloads.map(Response.fromBinary)`, including in minified bundles.
 
 The lite module emits compact field declarations and expands them once when the module loads. `Message.fields` retains the complete metadata, and `MessageFields` derives its field numbers from that same declaration. Enums and oneof cases use constant objects with shared numeric reverse lookup, plus TypeScript value types. Use `Status.READY` as a value, `Status` as the enum type, and `typeof Status.READY` as a single-member type. These helpers require neither an external runtime nor dynamic code evaluation; message initialization and serialization keep their existing execution paths.
+
+**TypeScript gRPC (`@grpc/grpc-js`)**: `--synurang-ffi_opt=lang=typescript,grpc=js` also emits `<schema>_grpc.ts` with grpc-js service definitions (`GreeterService`), server interfaces (`GreeterServer`) and clients (`GreeterClient`) for the lite messages, plus one shared `synurang_grpc.ts` transport. The clients are ordinary grpc-js clients: the same unary, server-, client- and bidi-streaming calls with metadata/options overloads, returning `ClientUnaryCall`/stream objects and failing with `ServiceError`. To run a client over FFI, pass `new PluginChannel(host, GreeterService)` as `channelOverride`. Like Go's `NewPluginClientConn`, it implements the transport interface itself, so interceptors, deadlines, `waitForReady` and `call.cancel()` behave as they do over the network. Clients from other grpc-js generators work with it too. This output requires Node.js; `_ffi.ts` and `_lite.ts` stay dependency-free for browsers, and IPC is not yet available from TypeScript.
+
+The host bridges to the plugin ABI (a native addon, koffi, a wasm module, ...): `invoke(serviceName, methodName, data)`, and for streaming methods `openStream(serviceName, methodName)` returning `send`/`recv`/`closeSend`/`close`. Each may return a value or a promise. For an error payload, throw `FfiError.fromPayload(payload)`: the call fails with `code` set to `grpc_code` (`UNKNOWN` when unset), `details` set to the message, and the `core.v1.Error` in the standard `grpc-status-details-bin` trailer. `FfiError.fromStatus(err)` decodes that trailer over FFI, and also over the network when the server attaches the error with `status.WithDetails`. The plugin ABI carries no metadata, so outgoing metadata is ignored and responses carry none. `test/typescript/grpc_plugin_e2e.ts` implements a koffi host and runs one client against both the Go plugin and a Go gRPC server.
 
 **Python 3.10+**: `--synurang-ffi_opt=lang=python` (or `lang=py`). Generates dependency-free `_lite.py` protobuf message classes and a transport-neutral `_ffi.py` service client for proto3 schemas. The generated `ServiceClient` accepts either `FfiTransport` for an in-process shared library or the optional synchronous `GrpcTransport` for a remote server; the existing `ServiceFfi(PluginHost)` form remains available. All four RPC cardinalities are supported. `mode=lite` emits only messages. No `google.protobuf` runtime or `protoc --python_out` step is needed. Python 2 is not supported. Python does not currently provide a plugin server or process host.
 

@@ -5,8 +5,13 @@ from .grpc_transport import GrpcTransport
 from .plugin import BidiStream, PluginHost, PluginStream
 from .protolite import DecodeError, EncodeError, Field, ProtoError, ProtoMessage
 from .transport import FfiTransport, Metadata, MetadataValue, RpcStream, RpcTransport
+from .module import (ModuleHost, ModuleCall, AsyncModuleHost, AsyncModuleCall,
+                     TypedModuleCall, TypedAsyncModuleCall, RequestClosedError)
 
 __all__ = [
+    "ModuleHost", "ModuleCall", "AsyncModuleHost", "AsyncModuleCall",
+    "TypedModuleCall", "TypedAsyncModuleCall",
+    "RequestClosedError",
     "BidiStream",
     "DecodeError",
     "EncodeError",

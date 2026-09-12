@@ -5,19 +5,28 @@ edition = "2021"
 description = "Synurang host library for loading Go/C++/Rust plugins and spawning child processes"
 license = "MIT"
 
+[features]
+default = ["module", "plugin", "process"]
+module = ["dep:libloading", "dep:futures-core", "dep:futures-util"]
+plugin = ["dep:libc", "dep:windows"]
+process = ["dep:tonic", "dep:tower", "dep:hyper-util", "dep:libc", "dep:nix", "dep:windows"]
+
 [dependencies]
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
-tonic = "0.12"
-tower = "0.4"
-hyper-util = { version = "0.1", features = ["tokio"] }
+tonic = { version = "0.12", optional = true }
+tower = { version = "0.4", optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+libloading = { version = "0.8", optional = true }
+futures-core = { version = "0.3", optional = true }
+futures-util = { version = "0.3", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
-nix = { version = "0.29", features = ["socket", "process", "fs"] }
+libc = { version = "0.2", optional = true }
+nix = { version = "0.29", features = ["socket", "process", "fs"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.58", optional = true, features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",

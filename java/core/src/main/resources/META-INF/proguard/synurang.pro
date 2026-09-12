@@ -1,4 +1,6 @@
 # Keep JNI native methods
+-keep class io.github.ivere27.synurang.ModuleJni { *; }
+-keep class io.github.ivere27.synurang.ModuleJni$Read { *; }
 -keepclassmembers class io.github.ivere27.synurang.SynurangJni {
     native <methods>;
 }

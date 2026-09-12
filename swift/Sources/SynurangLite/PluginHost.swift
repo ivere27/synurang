@@ -28,7 +28,7 @@ public typealias SynurangInvokeFn = @convention(c) (
     UnsafeMutablePointer<Int32>?  // out resp_len
 ) -> UnsafeMutablePointer<CChar>?
 
-public typealias SynurangFreeFn = @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
+public typealias SynurangFreeFn = @Sendable @convention(c) (UnsafeMutablePointer<CChar>?) -> Void
 
 public typealias SynurangStreamOpenFn = @convention(c) (
     UnsafePointer<CChar>?
@@ -86,7 +86,8 @@ public final actor PluginHost {
 
     // MARK: - State
 
-    private let handle: NativeLoader.Handle?
+    private let handleAddress: UInt
+    private var handle: NativeLoader.Handle? { UnsafeMutableRawPointer(bitPattern: handleAddress) }
     private let owns: Bool        // true if we should dlclose on deinit
     private let free: SynurangFreeFn
 
@@ -104,7 +105,7 @@ public final actor PluginHost {
     // MARK: - Construction
 
     private init(handle: NativeLoader.Handle?, owns: Bool, free: SynurangFreeFn) {
-        self.handle = handle
+        self.handleAddress = handle.map { UInt(bitPattern: $0) } ?? 0
         self.owns = owns
         self.free = free
     }
@@ -133,7 +134,7 @@ public final actor PluginHost {
     }
 
     deinit {
-        if owns, let h = handle {
+        if owns, let h = UnsafeMutableRawPointer(bitPattern: handleAddress) {
             NativeLoader.free(h)
         }
     }

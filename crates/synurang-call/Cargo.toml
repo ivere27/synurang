@@ -1,0 +1,10 @@
+[package]
+name = "synurang-call"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Portable async Synurang module runtime for native and WebAssembly"
+
+[dependencies]
+prost = "0.13.5"
+

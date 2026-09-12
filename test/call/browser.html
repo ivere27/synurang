@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Synurang browser conformance</title>
+<script type="module">
+import { conformance } from './conformance.js';
+import { createWasmHost, instantiateWasm } from './synurang_wasm.js';
+import { WorkerHost } from './synurang_worker.js';
+import { createGoWasmHost } from './synurang_go.js';
+import './wasm_exec.js';
+window.result = { done: false, passed: [] };
+let ticks = 0;
+const timer = setInterval(() => ++ticks, 1);
+try {
+  const c = await (await fetch('./c_module.wasm')).arrayBuffer();
+  const cpp = await (await fetch('./cpp_module.wasm')).arrayBuffer();
+  const rust = await (await fetch('./rust_module.wasm')).arrayBuffer();
+  const go = await (await fetch('./go_module.wasm')).arrayBuffer();
+  for (const [name, create] of [
+    ['C browser', () => createWasmHost(() => instantiateWasm(c), { capacity: 2 })],
+    ['C++ browser', () => createWasmHost(() => instantiateWasm(cpp), { capacity: 2 })],
+    ['Rust browser', () => createWasmHost(() => instantiateWasm(rust), { capacity: 2 })],
+    ['Go browser', () => createGoWasmHost(go, globalThis.Go, { capacity: 2 })],
+    ...['c', 'cpp', 'rust', 'go'].map(provider => [provider + ' Web Worker', () =>
+      new WorkerHost(new Worker(new URL(`./worker.mjs?provider=${provider}`, import.meta.url), { type: 'module' }))]),
+  ]) {
+    await conformance(create);
+    window.result.passed.push(name);
+  }
+  if (ticks < 10) throw new Error('The main event loop did not make progress');
+} catch (error) { window.result.error = error.stack ?? String(error); }
+finally { clearInterval(timer); window.result.done = true; }
+</script>

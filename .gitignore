@@ -11,6 +11,7 @@
 /example/java/android/app/build/
 /example/java/android/app/src/main/proto/
 /target/
+/cmd/protoc-gen-synurang-ffi/target/
 /example/java/rust-plugin/Cargo.lock
 /example/cpp/plugin/build/
 /example/cpp/process/build/
@@ -35,6 +36,8 @@
 /test/host/rust/Cargo.lock
 /test/generated_swift/
 /crates/synurang-host/Cargo.lock
+/crates/synurang-call/Cargo.lock
+/typescript/build/
 
 # Java build artifacts
 /java/build/

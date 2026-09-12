@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__) && \
+#if defined(__wasm__) && !defined(__wasm_threads__) && \
     !defined(SYNURANG_RUNTIME_NO_THREADS)
 #define SYNURANG_RUNTIME_NO_THREADS 1
 #endif
@@ -178,6 +178,8 @@ struct SynurangRuntime {
     size_t outbound_queue_capacity;
     SynurangWakeupFn wakeup;
     void* wakeup_user_data;
+    int call_notifications;
+    int retirement_pending;
 
     SynurangStream* ready_head;
     SynurangStream* ready_tail;
@@ -212,6 +214,7 @@ struct SynurangStream {
     int open_pending;
     int half_closed;
     int half_close_dispatched;
+    int input_paused;
     int writable_waiting;
     int writable_pending;
     int cancelled;
@@ -381,8 +384,8 @@ static int synurang_stream_has_work_locked(const SynurangStream* stream) {
     if (stream->cancelled) return 0;
     if (stream->output_terminal) return 0;
     if (stream->open_pending) return 1;
-    if (stream->input_head != NULL) return 1;
-    if (stream->half_closed && !stream->half_close_dispatched) return 1;
+    if (!stream->input_paused && stream->input_head != NULL) return 1;
+    if (!stream->input_paused && stream->half_closed && !stream->half_close_dispatched) return 1;
     if (stream->writable_pending) return 1;
     return 0;
 }
@@ -432,7 +435,7 @@ static int synurang_stream_schedule_locked(SynurangStream* stream) {
     } else {
         runtime->ready_head = stream;
         if (!runtime->stopping &&
-            runtime->execution_mode == SYNURANG_EXECUTION_MANUAL &&
+            (runtime->execution_mode == SYNURANG_EXECUTION_MANUAL || runtime->call_notifications) &&
             runtime->wakeup != NULL) {
             notify = 1;
         }
@@ -453,7 +456,7 @@ static int synurang_runtime_should_notify_manual(SynurangRuntime* runtime) {
     int notify;
     synurang_mutex_lock(&runtime->mutex);
     notify = !runtime->stopping &&
-             runtime->execution_mode == SYNURANG_EXECUTION_MANUAL &&
+             (runtime->execution_mode == SYNURANG_EXECUTION_MANUAL || runtime->call_notifications) &&
              runtime->wakeup != NULL;
     synurang_mutex_unlock(&runtime->mutex);
     return notify;
@@ -478,6 +481,12 @@ static void synurang_stream_destroy_final(SynurangStream* stream) {
     if (runtime->stream_count == 0u) {
         synurang_cond_broadcast(&runtime->state_cond);
         if (runtime->deferred_free) free_runtime = 1;
+    }
+    /* Publish final reference retirement under the same lock used by is_idle.
+     * A notification only schedules host work; it must never re-enter us. */
+    if (runtime->call_notifications && !runtime->stopping && runtime->wakeup != NULL) {
+        runtime->retirement_pending = runtime->active_pollers != 0;
+        runtime->wakeup(runtime->wakeup_user_data);
     }
     synurang_mutex_unlock(&runtime->mutex);
 
@@ -578,6 +587,25 @@ static SynurangStream* synurang_registry_take_runtime(
     }
     synurang_mutex_unlock(&g_registry_mutex);
     return stream;
+}
+
+void synurang_stream_pause_input(SynurangStream* stream) {
+    if (stream == NULL) return;
+    synurang_mutex_lock(&stream->mutex);
+    stream->input_paused = 1;
+    synurang_mutex_unlock(&stream->mutex);
+}
+
+void synurang_stream_resume_input(SynurangStream* stream) {
+    int notify;
+    SynurangRuntime* runtime;
+    if (stream == NULL) return;
+    runtime = stream->runtime;
+    synurang_mutex_lock(&stream->mutex);
+    stream->input_paused = 0;
+    notify = synurang_stream_schedule_locked(stream);
+    synurang_mutex_unlock(&stream->mutex);
+    synurang_runtime_notify(runtime, notify);
 }
 
 SynurangStatus synurang_stream_write(SynurangStream* stream,
@@ -805,7 +833,7 @@ static SynurangEventKind synurang_stream_take_event_locked(
         stream->open_pending = 0;
         return SYNURANG_EVENT_OPEN;
     }
-    if (stream->input_head != NULL) {
+    if (!stream->input_paused && stream->input_head != NULL) {
         *message = stream->input_head;
         stream->input_head = (*message)->next;
         (*message)->next = NULL;
@@ -814,7 +842,7 @@ static SynurangEventKind synurang_stream_take_event_locked(
         synurang_cond_broadcast(&stream->state_cond);
         return SYNURANG_EVENT_MESSAGE;
     }
-    if (stream->half_closed && !stream->half_close_dispatched) {
+    if (!stream->input_paused && stream->half_closed && !stream->half_close_dispatched) {
         stream->half_close_dispatched = 1;
         return SYNURANG_EVENT_HALF_CLOSE;
     }
@@ -916,11 +944,16 @@ static int synurang_runtime_begin_poll(SynurangRuntime* runtime,
     return accepted;
 }
 
-static void synurang_runtime_end_poll(SynurangRuntime* runtime) {
+static void synurang_runtime_end_poll(SynurangRuntime* runtime, size_t dispatched) {
     synurang_mutex_lock(&runtime->mutex);
     if (runtime->active_pollers != 0u) --runtime->active_pollers;
     if (runtime->active_pollers == 0u) {
         synurang_cond_broadcast(&runtime->state_cond);
+        if (runtime->call_notifications && !runtime->stopping && runtime->wakeup != NULL &&
+            (dispatched != 0 || runtime->retirement_pending)) {
+            runtime->retirement_pending = 0;
+            runtime->wakeup(runtime->wakeup_user_data);
+        }
     }
     synurang_mutex_unlock(&runtime->mutex);
 }
@@ -934,12 +967,18 @@ static size_t synurang_runtime_poll_internal(SynurangRuntime* runtime,
         return 0u;
     }
     dispatched = synurang_runtime_poll_core(runtime, max_events);
-    synurang_runtime_end_poll(runtime);
+    synurang_runtime_end_poll(runtime, dispatched);
     return dispatched;
 }
 
 size_t synurang_runtime_poll(SynurangRuntime* runtime, size_t max_events) {
     return synurang_runtime_poll_internal(runtime, max_events, 0);
+}
+
+void synurang_runtime_enable_call_notifications(SynurangRuntime* runtime) {
+    synurang_mutex_lock(&runtime->mutex);
+    runtime->call_notifications = 1;
+    synurang_mutex_unlock(&runtime->mutex);
 }
 
 int synurang_runtime_has_pending(SynurangRuntime* runtime) {
@@ -1242,6 +1281,37 @@ static void synurang_stream_cancel_taken(SynurangStream* stream) {
     synurang_mutex_unlock(&stream->mutex);
     synurang_runtime_notify(runtime, notify);
     synurang_stream_release_internal(stream); /* transferred registry ref */
+}
+
+int synurang_stream_cancel_pending(uint64_t handle) {
+    SynurangStream* stream = synurang_registry_lookup(handle);
+    SynurangRuntime* runtime;
+    int accepted = 0, notify = 0;
+    if (stream == NULL) return 0;
+    runtime = stream->runtime;
+    synurang_mutex_lock(&stream->mutex);
+    if (!stream->output_terminal) {
+        accepted = 1;
+        if (!stream->cancelled) {
+            stream->cancelled = 1;
+            notify = synurang_stream_schedule_locked(stream);
+            synurang_cond_broadcast(&stream->state_cond);
+        }
+    }
+    synurang_mutex_unlock(&stream->mutex);
+    synurang_runtime_notify(runtime, notify);
+    synurang_stream_release_internal(stream);
+    return accepted;
+}
+
+int synurang_runtime_is_idle(SynurangRuntime* runtime) {
+    int idle;
+    if (runtime == NULL) return 1;
+    synurang_mutex_lock(&runtime->mutex);
+    idle = runtime->stream_count == 0u && runtime->opening_count == 0u &&
+           runtime->active_pollers == 0u;
+    synurang_mutex_unlock(&runtime->mutex);
+    return idle;
 }
 
 static void synurang_runtime_free(SynurangRuntime* runtime) {

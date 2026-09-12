@@ -1,0 +1,15 @@
+[package]
+name = "synurang-call-conformance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+synurang-call = { path = "../../../crates/synurang-call" }
+prost = "0.13.5"
+
+[build-dependencies]
+prost-build = "0.13.5"
