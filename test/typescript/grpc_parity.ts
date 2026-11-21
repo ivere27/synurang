@@ -73,60 +73,7 @@ function coreError(error: AppError): Uint8Array {
   }));
 }
 
-// ── Network: grpc-js server ──────────────────────────────────────────────────
-
-/** What grpc-go sends for status.New(code, msg).WithDetails(&corev1.Error{...}). */
-function serverError(error: unknown): Partial<grpc.StatusObject> {
-  if (!(error instanceof AppError)) return { code: grpc.status.INTERNAL, details: String(error) };
-  const code = error.grpcCode > 0 && error.grpcCode <= 16 ? error.grpcCode : grpc.status.UNKNOWN;
-  const detail = anyPack(ErrorSchema, create(ErrorSchema, {
-    code: error.appCode,
-    message: error.message,
-    grpcCode: error.grpcCode,
-  }));
-  const metadata = new grpc.Metadata();
-  metadata.set("grpc-status-details-bin", Buffer.from(toBinary(StatusSchema, create(StatusSchema, {
-    code,
-    message: error.message,
-    details: [detail],
-  }))));
-  return { code, details: error.message, metadata };
-}
-
-function reader(stream: AsyncIterable<unknown>): Recv {
-  const iterator = stream[Symbol.asyncIterator]();
-  return async () => {
-    const next = await iterator.next();
-    return next.done ? null : (next.value as Req);
-  };
-}
-
-const networkServer: ParityServer = {
-  unary(call, callback) {
-    logic.unary(call.request).then((response) => callback(null, response), (error) => callback(serverError(error)));
-  },
-  serverStream(call) {
-    logic.serverStream(call.request, async (response) => {
-      call.write(response);
-    }).then(() => call.end(), (error) => call.emit("error", serverError(error)));
-  },
-  clientStream(call, callback) {
-    logic.clientStream(reader(call)).then((response) => callback(null, response), (error) => callback(serverError(error)));
-  },
-  bidi(call) {
-    logic.bidi(reader(call), async (response) => {
-      call.write(response);
-    }).then(() => call.end(), (error) => call.emit("error", serverError(error)));
-  },
-};
-
-// ── FFI: in-memory Synurang plugin host ──────────────────────────────────────
-
-function pluginError(error: unknown): unknown {
-  return error instanceof AppError ? FfiError.fromPayload(coreError(error)) : error;
-}
-
-/** Bounded-lifetime queue with the plugin ABI's EOF and error semantics. */
+/** Bounded-lifetime queue with EOF and error semantics shared by both servers. */
 class Pipe<T> {
   private readonly items: T[] = [];
   private readonly waiters: { resolve: (item: T | null) => void; reject: (error: unknown) => void }[] = [];
@@ -158,6 +105,61 @@ class Pipe<T> {
     if (this.ended) return Promise.resolve(null);
     return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
   }
+}
+
+// ── Network: grpc-js server ──────────────────────────────────────────────────
+
+/** What grpc-go sends for status.New(code, msg).WithDetails(&corev1.Error{...}). */
+function serverError(error: unknown): Partial<grpc.StatusObject> {
+  if (!(error instanceof AppError)) return { code: grpc.status.INTERNAL, details: String(error) };
+  const code = error.grpcCode > 0 && error.grpcCode <= 16 ? error.grpcCode : grpc.status.UNKNOWN;
+  const detail = anyPack(ErrorSchema, create(ErrorSchema, {
+    code: error.appCode,
+    message: error.message,
+    grpcCode: error.grpcCode,
+  }));
+  const metadata = new grpc.Metadata();
+  metadata.set("grpc-status-details-bin", Buffer.from(toBinary(StatusSchema, create(StatusSchema, {
+    code,
+    message: error.message,
+    details: [detail],
+  }))));
+  return { code, details: error.message, metadata };
+}
+
+function reader(stream: NodeJS.ReadableStream): Recv {
+  // Read stream events explicitly: Node 22's Readable[Symbol.asyncIterator] destroys
+  // Duplex streams on readable EOF before the writable half can call end().
+  const pipe = new Pipe<Req>();
+  stream.on("data", (request: Req) => pipe.push(request));
+  stream.once("end", () => pipe.end());
+  stream.once("error", (error: unknown) => pipe.fail(error));
+  return () => pipe.next();
+}
+
+const networkServer: ParityServer = {
+  unary(call, callback) {
+    logic.unary(call.request).then((response) => callback(null, response), (error) => callback(serverError(error)));
+  },
+  serverStream(call) {
+    logic.serverStream(call.request, async (response) => {
+      call.write(response);
+    }).then(() => call.end(), (error) => call.emit("error", serverError(error)));
+  },
+  clientStream(call, callback) {
+    logic.clientStream(reader(call)).then((response) => callback(null, response), (error) => callback(serverError(error)));
+  },
+  bidi(call) {
+    logic.bidi(reader(call), async (response) => {
+      call.write(response);
+    }).then(() => call.end(), (error) => call.emit("error", serverError(error)));
+  },
+};
+
+// ── FFI: in-memory Synurang plugin host ──────────────────────────────────────
+
+function pluginError(error: unknown): unknown {
+  return error instanceof AppError ? FfiError.fromPayload(coreError(error)) : error;
 }
 
 class MemoryPluginHost implements PluginChannelHost {
