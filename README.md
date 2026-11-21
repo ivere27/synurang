@@ -434,8 +434,9 @@ generates Go bindings.
 For an installation that does not require Rust, download the archive for your
 platform and `SHA256SUMS` from [GitHub Releases](https://github.com/ivere27/synurang/releases),
 verify it, extract it, and place `protoc-gen-synurang-ffi` (or the Windows
-`.exe`) on `PATH`. Release archives are provided for Linux x86-64, Linux
-AArch64, and Windows x86-64.
+`.exe`) on `PATH`. Release archives are provided for Linux x86-64 (static musl),
+Linux AArch64 (static musl), Windows x86-64, macOS Apple Silicon (ARM64), and
+macOS Intel (x86-64).
 
 ```bash
 # Linux x86-64 example
@@ -470,36 +471,41 @@ dart pub global activate protoc_plugin
 sudo apt-get install protobuf-compiler-grpc
 ```
 
-### Build and publish generator releases
+### Build and publish releases
 
-Release binaries are cross-compiled inside the version-pinned
-`Dockerfile.codegen` toolchain. `CODEGEN_VERSION` is required and may include
-a leading `v`.
+Transparent CI/CD builds and releases are managed by [GitHub Actions](.github/workflows/build.yml):
+
+- **Pull requests & pushes**: Run full multi-language codegen, runtime, host, Maven AAR/JAR, Python wheel/sdist, and pub.dev dry-run checks.
+- **Rolling `nightly` pre-release**: Every push to `main` (or manual `workflow_dispatch` with `release_nightly=true`) publishes verified generator binaries, Android/Desktop Maven packages, Python packages, and `SHA256SUMS` to the `nightly` GitHub pre-release.
+- **Versioned `v*` tag releases**: Pushing a synchronized `v*` tag verifies version parity across the repo, creates and checksum-verifies the draft GitHub Release, publishes stable tags (`vX.Y.Z`) to Maven Central, PyPI (OIDC), and pub.dev (OIDC) before promoting the GitHub Release, and publishes pre-release tags (`vX.Y.Z-rc.N`, `-alpha.N`, `-beta.N`, `-dev.N`) to GitHub Pre-releases only.
+
+To prepare a new version consistently across all tracked files, run:
+
+```bash
+python3 scripts/release.py set-version X.Y.Z
+python3 scripts/release.py check-versions
+```
+
+For reproducible local generator builds inside `Dockerfile.codegen`,
+`CODEGEN_VERSION` is required and may include a leading `v`:
 
 ```bash
 # Optional: build only the release image
 make docker_codegen_image
 
-# Build all default targets into dist/codegen/
-make docker_codegen CODEGEN_VERSION=0.8.0
+# Build Linux musl + Windows GNU bundles into dist/codegen/
+make docker_codegen CODEGEN_VERSION=X.Y.Z
 
-# Publishing requires a clean checkout whose pushed v0.8.0 tag points at HEAD
-git tag -a v0.8.0 -m v0.8.0
-git push origin v0.8.0
+# Tag and push to trigger the full CI release pipeline
+git tag -a vX.Y.Z -m vX.Y.Z
+git push origin vX.Y.Z
 
-# Build and create a one-shot v0.8.0 release with all assets
-make publish_github_codegen CODEGEN_VERSION=0.8.0
+# Optional: one-shot local generator release via gh CLI
+make publish_github_codegen CODEGEN_VERSION=X.Y.Z
 # `make publish_github ...` is an alias for the same generator release flow.
 ```
 
-The default bundles are static Linux x86-64/AArch64 `.tar.gz` archives and a
-Windows x86-64 `.zip`, named
-`protoc-gen-synurang-ffi-<version>-<target>.<extension>`, plus `SHA256SUMS`.
-Override the whitespace-separated target list with `CODEGEN_TARGETS`, the
-image with `CODEGEN_DOCKER_IMAGE`, or the destination repository with
-`CODEGEN_GITHUB_REPO`. `CODEGEN_DIST_DIR` selects the host output directory.
-Publishing requires an authenticated `gh` command, refuses dirty or mismatched
-tagged source, and refuses to replace an existing release.
+GitHub Actions builds all five native `protoc-gen-synurang-ffi-<version>-<target>.(tar.gz|zip)` archives (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`, `x86_64-apple-darwin`), while `Dockerfile.codegen` supports local Linux musl and `x86_64-pc-windows-gnu` cross-builds (`CODEGEN_TARGETS`, `CODEGEN_DOCKER_IMAGE`, `CODEGEN_DIST_DIR`, `CODEGEN_GITHUB_REPO`). Local publishing requires an authenticated `gh` command, refuses dirty or mismatched tagged source, and refuses to replace an existing release.
 
 ### Step 1: Define API
 

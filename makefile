@@ -64,7 +64,7 @@ CODEGEN_TARGETS ?= x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-p
 CODEGEN_GITHUB_REPO ?= ivere27/synurang
 CODEGEN_DIST_DIR ?= $(CURRENT_DIR)/dist/codegen
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_python test_python_gen test_python_grpc test_host_python test_codegen test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_ffi_csharp test_ffi_python test_plugin test_plugin_race run ffigen benchmark build_server build_plugin build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen test_typescript_grpc_plugin docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar docker_codegen_image docker_codegen publish_github publish_github_codegen
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_python test_python_gen test_python_grpc test_host_python test_codegen test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_ffi_csharp test_ffi_python test_plugin test_plugin_race run ffigen benchmark build_server build_plugin build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen test_typescript_grpc_plugin docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar docker_codegen_image docker_codegen publish_github publish_github_codegen check_versions test_release
 
 # =============================================================================
 # Default Target
@@ -162,7 +162,7 @@ proto: build_plugin
 	protoc -Iexample/api -Iapi -I/usr/include \
 		--plugin=protoc-gen-synurang-ffi=./bin/protoc-gen-synurang-ffi \
 		--synurang-ffi_out=./test/plugin/api \
-		--synurang-ffi_opt=lang=dart,mode=plugin_server,services=GoGreeterService \
+		--synurang-ffi_opt=lang=dart,services=GoGreeterService \
 		example.proto
 
 	@echo "Proto generation complete."
@@ -781,25 +781,64 @@ SWIFT_PLUGIN ?= /work/bin/libplugin_go.so
 # first because the swift:5.9 image is missing libprotobuf for the C++ plugin;
 # Go and Rust plugins are statically linked and work out of the box.
 test_host_swift: build_plugin_go
-	@echo "Testing Swift host (in $(SWIFT_DOCKER_IMAGE) Docker)..."
-	docker run --rm \
-		-v $(CURRENT_DIR):/work -w /work/swift \
-		-e SYNURANG_TEST_PLUGIN_PATH=$(SWIFT_PLUGIN) \
-		$(SWIFT_DOCKER_IMAGE) swift test
+	@if command -v swift >/dev/null 2>&1; then \
+		echo "Testing Swift host (native swift)..."; \
+		PLUGIN_PATH="$${SYNURANG_TEST_PLUGIN_PATH:-$(patsubst /work/%,$(CURRENT_DIR)/%,$(SWIFT_PLUGIN))}"; \
+		case "$$PLUGIN_PATH" in /*) ;; *) PLUGIN_PATH="$(CURRENT_DIR)/$$PLUGIN_PATH" ;; esac; \
+		if [ ! -f "$$PLUGIN_PATH" ] && [ -f "$${PLUGIN_PATH%.so}.dylib" ]; then \
+			PLUGIN_PATH="$${PLUGIN_PATH%.so}.dylib"; \
+		fi; \
+		cd $(CURRENT_DIR)/swift && \
+		SYNURANG_TEST_PLUGIN_PATH="$$PLUGIN_PATH" \
+			swift test; \
+	else \
+		echo "Testing Swift host (in $(SWIFT_DOCKER_IMAGE) Docker)..."; \
+		docker run --rm \
+			-u "$$(id -u):$$(id -g)" \
+			-e HOME=/tmp \
+			-v $(CURRENT_DIR):/work -w /work/swift \
+			-e SYNURANG_TEST_PLUGIN_PATH=$(SWIFT_PLUGIN) \
+			$(SWIFT_DOCKER_IMAGE) swift test; \
+	fi
 
 # Swift host brute-force (supports BRUTE_MODE=ffi only — Swift has no process
 # host yet). Reuses the same env vars as the C#/Java brute targets.
 test_bruteforce_hybrid_swift: build_plugin_go
-	@echo "Running Swift hybrid brute-force (in $(SWIFT_DOCKER_IMAGE) Docker)..."
-	docker run --rm \
-		-v $(CURRENT_DIR):/work -w /work/swift \
-		-e SYNURANG_TEST_PLUGIN_PATH=$(SWIFT_PLUGIN) \
-		-e SYNURANG_BRUTE=1 \
-		-e SYNURANG_BRUTE_DURATION=$(BRUTE_DURATION) \
-		-e SYNURANG_BRUTE_WORKERS=$(BRUTE_WORKERS) \
-		-e SYNURANG_BRUTE_MAX_FD_DELTA=$(BRUTE_MAX_FD_DELTA) \
-		-e SYNURANG_BRUTE_MAX_RSS_MB_DELTA=$(BRUTE_MAX_RSS_MB_DELTA) \
-		$(SWIFT_DOCKER_IMAGE) swift test --filter PluginStressTests
+	@if command -v swift >/dev/null 2>&1; then \
+		echo "Running Swift hybrid brute-force (native swift)..."; \
+		PLUGIN_PATH="$${SYNURANG_TEST_PLUGIN_PATH:-$(patsubst /work/%,$(CURRENT_DIR)/%,$(SWIFT_PLUGIN))}"; \
+		case "$$PLUGIN_PATH" in /*) ;; *) PLUGIN_PATH="$(CURRENT_DIR)/$$PLUGIN_PATH" ;; esac; \
+		if [ ! -f "$$PLUGIN_PATH" ] && [ -f "$${PLUGIN_PATH%.so}.dylib" ]; then \
+			PLUGIN_PATH="$${PLUGIN_PATH%.so}.dylib"; \
+		fi; \
+		cd $(CURRENT_DIR)/swift && \
+		SYNURANG_TEST_PLUGIN_PATH="$$PLUGIN_PATH" \
+		SYNURANG_BRUTE=1 \
+		SYNURANG_BRUTE_DURATION=$(BRUTE_DURATION) \
+		SYNURANG_BRUTE_WORKERS=$(BRUTE_WORKERS) \
+		SYNURANG_BRUTE_MAX_FD_DELTA=$(BRUTE_MAX_FD_DELTA) \
+		SYNURANG_BRUTE_MAX_RSS_MB_DELTA=$(BRUTE_MAX_RSS_MB_DELTA) \
+			swift test --filter PluginStressTests; \
+	else \
+		echo "Running Swift hybrid brute-force (in $(SWIFT_DOCKER_IMAGE) Docker)..."; \
+		docker run --rm \
+			-u "$$(id -u):$$(id -g)" \
+			-e HOME=/tmp \
+			-v $(CURRENT_DIR):/work -w /work/swift \
+			-e SYNURANG_TEST_PLUGIN_PATH=$(SWIFT_PLUGIN) \
+			-e SYNURANG_BRUTE=1 \
+			-e SYNURANG_BRUTE_DURATION=$(BRUTE_DURATION) \
+			-e SYNURANG_BRUTE_WORKERS=$(BRUTE_WORKERS) \
+			-e SYNURANG_BRUTE_MAX_FD_DELTA=$(BRUTE_MAX_FD_DELTA) \
+			-e SYNURANG_BRUTE_MAX_RSS_MB_DELTA=$(BRUTE_MAX_RSS_MB_DELTA) \
+			$(SWIFT_DOCKER_IMAGE) swift test --filter PluginStressTests; \
+	fi
+
+check_versions:
+	python3 scripts/release.py check-versions
+
+test_release:
+	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
 test_bruteforce_swift: test_bruteforce_hybrid_swift
 

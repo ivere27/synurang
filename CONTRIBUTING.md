@@ -80,27 +80,49 @@ The generator implementation is Rust even when it emits `lang=go`; do not add
 a second language-specific generator binary. The installed executable must
 remain `protoc-gen-synurang-ffi` so `protoc --synurang-ffi_out` can discover it.
 
-### Generator Releases
+### Releases & CI/CD
 
-Generator release binaries are built in `Dockerfile.codegen`, not with the
-host toolchain. `CODEGEN_VERSION` is mandatory; a leading `v` is accepted.
+All build verification and package publishing runs transparently via [`.github/workflows/build.yml`](.github/workflows/build.yml) and [`scripts/release.py`](scripts/release.py):
+
+- **Pushes to `main`**: Update the rolling `nightly` GitHub pre-release with all verified archives and `SHA256SUMS` (no external registry pushes).
+- **Pre-release tags (`vX.Y.Z-rc.N`, `-alpha.N`, `-beta.N`, `-dev.N`)**: Run all verification and artifact builds and publish only to GitHub Releases as a pre-release (Maven Central, PyPI, and pub.dev jobs are skipped).
+- **Stable tags (`vX.Y.Z`)**: Verify version consistency and `CHANGELOG.md`, build and checksum-verify all artifacts (`protoc-gen-synurang-ffi` for Linux musl x64/arm64, Windows x64, macOS arm64/x64; Maven Android AARs & Desktop JARs; Python sdist & wheel; Flutter `pub publish --dry-run`), stage a draft GitHub Release, publish externally in isolated GitHub Environments, and promote the GitHub Release only after all external registries succeed.
+  - `maven-central`: Uses Sonatype Central Portal Publisher API (`POST /api/v1/publisher/upload` as one atomic bundle + `/status` polling). Requires:
+    - `SONATYPE_USERNAME` & `SONATYPE_PASSWORD`: Central Portal User Token credentials (`Authorization: Bearer`).
+    - `MAVEN_GPG_PRIVATE_KEY`: **Raw ASCII-armored PGP private key text** (`-----BEGIN PGP PRIVATE KEY BLOCK-----...`), *not* Base64-wrapped.
+    - `MAVEN_GPG_PASSPHRASE`: GPG key passphrase (leave unset/empty only if the key has no passphrase).
+  - `pypi`: Uses OIDC Trusted Publishing (`id-token: write`).
+  - `pub-dev`: Uses OIDC Automated Publishing (`id-token: write`).
+
+`scripts/release.py set-version` and `check-versions` synchronize all version-locked and published artifacts (`pubspec.yaml`, Python metadata formatted as PEP 440, CocoaPods `.podspec` files, Docker/Makefile build scripts, and `README.md` install snippets). Unpublished workspace Rust crates (`crates/*`, `rust/synurang`, `cmd/protoc-gen-synurang-ffi`), `typescript/` (`"private": true`), and `csharp/Synurang` are intentionally versioned independently.
+
+By default, `release-ci` rejects tags older than the highest published stable release to prevent accidental version downgrades. For intentional maintenance backport releases on an older series (e.g., releasing `v0.8.1` after `v0.9.0`), set the GitHub Repository Variable `SYNURANG_ALLOW_OLDER_RELEASE=1` (forwarded to `prepare-release` in `.github/workflows/build.yml`, or pass `--allow-older` / `SYNURANG_ALLOW_OLDER_RELEASE=1` when running `scripts/release.py release-ci` via CLI); `finalize-stable` will automatically publish with `--latest=false` so the newer stable series retains GitHub's `Latest` badge.
+
+Before tagging a release, synchronize versions and add a `## X.Y.Z` section to `CHANGELOG.md` (note: PyPI-incompatible prereleases requiring `+` local versions are rejected; use `-alpha.N`, `-beta.N`, `-rc.N`, or `-dev.N`):
 
 ```bash
-# Build Linux x86-64/AArch64 and Windows x86-64 bundles plus SHA256SUMS
-make docker_codegen CODEGEN_VERSION=0.8.0
+python3 scripts/release.py set-version X.Y.Z
+make check_versions test_release
 
-# From a clean checkout, tag the release commit and push the tag first
-git tag -a v0.8.0 -m v0.8.0
-git push origin v0.8.0
-
-# Build and publish v0.8.0 (requires an authenticated GitHub CLI)
-make publish_github_codegen CODEGEN_VERSION=0.8.0
+# Commit changes, then tag and push to trigger the automated release pipeline
+git tag -a vX.Y.Z -m vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-Artifacts are written to `dist/codegen`. Use `CODEGEN_TARGETS` to select a
+For local generator cross-compilation in `Dockerfile.codegen`:
+
+```bash
+# Build Linux x86-64/AArch64 musl and Windows x86-64 GNU bundles plus SHA256SUMS
+make docker_codegen CODEGEN_VERSION=X.Y.Z
+
+# Build and publish a tag locally (requires an authenticated GitHub CLI)
+make publish_github_codegen CODEGEN_VERSION=X.Y.Z
+```
+
+Local artifacts are written to `dist/codegen`. Use `CODEGEN_TARGETS` to select a
 whitespace-separated subset, `CODEGEN_DOCKER_IMAGE` to change the build image,
 `CODEGEN_DIST_DIR` to change the output directory, and `CODEGEN_GITHUB_REPO`
-to publish to a fork. Publishing verifies that the local and remote tag both
+to publish to a fork. Local publishing verifies that the local and remote tag both
 point at the clean checkout and will not mutate an existing release.
 `make publish_github` is an alias for the generator publishing target.
 

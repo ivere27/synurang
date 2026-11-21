@@ -126,17 +126,21 @@ fi
 if command -v zig >/dev/null 2>&1; then
   echo "Building JNI: macos-x86_64..."
   mkdir -p "${NATIVES_DIR}/macos-x86_64"
-  zig cc -target x86_64-macos -shared \
-    -I"${JAVA_HOME}/include" -I"${JNI_SRC}/darwin" \
+  zig cc -target x86_64-macos -shared -O2 -pthread \
+    -I"${JAVA_HOME}/include" -I"${JNI_SRC}/darwin" -I"${REPO_ROOT}/include" \
     -o "${NATIVES_DIR}/macos-x86_64/libsynurang_jni.dylib" \
-    "${JNI_SRC}/synurang_jni.c"
+    "${JNI_SRC}/synurang_jni.c" \
+    "${JNI_SRC}/synurang_module_jni.c" \
+    "${REPO_ROOT}/src/module_host.c"
 
   echo "Building JNI: macos-aarch64..."
   mkdir -p "${NATIVES_DIR}/macos-aarch64"
-  zig cc -target aarch64-macos -shared \
-    -I"${JAVA_HOME}/include" -I"${JNI_SRC}/darwin" \
+  zig cc -target aarch64-macos -shared -O2 -pthread \
+    -I"${JAVA_HOME}/include" -I"${JNI_SRC}/darwin" -I"${REPO_ROOT}/include" \
     -o "${NATIVES_DIR}/macos-aarch64/libsynurang_jni.dylib" \
-    "${JNI_SRC}/synurang_jni.c"
+    "${JNI_SRC}/synurang_jni.c" \
+    "${JNI_SRC}/synurang_module_jni.c" \
+    "${REPO_ROOT}/src/module_host.c"
 else
   echo "SKIP: macos-x86_64, macos-aarch64 (zig not found)"
 fi
@@ -193,6 +197,22 @@ done
 if [[ "${NATIVE_COUNT}" -eq 0 ]]; then
   echo "Error: no native libraries were built." >&2
   exit 1
+fi
+if [[ "${REQUIRE_ALL_TARGETS:-0}" == "1" ]]; then
+  for expected_lib in \
+    "linux-x86_64/libsynurang_jni.so" \
+    "linux-x86/libsynurang_jni.so" \
+    "linux-armv7/libsynurang_jni.so" \
+    "linux-aarch64/libsynurang_jni.so" \
+    "windows-x86_64/synurang_jni.dll" \
+    "windows-x86/synurang_jni.dll" \
+    "macos-x86_64/libsynurang_jni.dylib" \
+    "macos-aarch64/libsynurang_jni.dylib"; do
+    if [[ ! -s "${NATIVES_DIR}/${expected_lib}" ]]; then
+      echo "Error: required native JNI library missing: ${expected_lib}" >&2
+      exit 1
+    fi
+  done
 fi
 
 mkdir -p "${DIST_DIR}"

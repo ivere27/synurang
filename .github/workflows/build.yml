@@ -1,0 +1,935 @@
+name: Build, test, and release
+
+on:
+  push:
+    branches:
+      - 'main'
+      - 'master'
+    tags:
+      - 'v*'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_nightly:
+        description: 'Update the rolling nightly pre-release after build (main/master branch only)'
+        type: boolean
+        default: false
+      run_bruteforce:
+        description: 'Run bounded stress (brute-force) suite'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION: '1.22.10'
+  RUST_VERSION: '1.97.0'
+  FLUTTER_VERSION: '3.47.7'
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+  JAVA_VERSION: '17'
+  DOTNET_VERSION: '8.0.x'
+  SWIFT_VERSION: '5.9.2'
+  PROTOC_APT_VERSION: '3.12.4'
+  PROTOC_GEN_GO_VERSION: 'v1.36.11'
+  PROTOC_GEN_GO_GRPC_VERSION: 'v1.6.0'
+  DART_PROTOC_PLUGIN_VERSION: '25.0.0'
+  WASI_SDK_VERSION: '34'
+  WASI_SDK_TARBALL: 'wasi-sdk-34.0-x86_64-linux.tar.gz'
+  WASI_SDK_SHA256: 'b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4'
+
+jobs:
+  preflight:
+    name: Preflight & version parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: preflight-${{ runner.os }}
+          workspaces: |
+            cmd/protoc-gen-synurang-ffi -> target
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Check version consistency across repository
+        id: version
+        run: |
+          python scripts/release.py check-versions
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            python scripts/release.py check-tag --tag "${GITHUB_REF_NAME}" --require-changelog
+          fi
+          ver="$(python scripts/release.py print-version)"
+          pre="$(python scripts/release.py print-prerelease)"
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${pre}" >> "$GITHUB_OUTPUT"
+
+      - name: Run release helper unit tests
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
+      - name: Validate workflow YAML syntax
+        run: |
+          if ! python -c 'import yaml' 2>/dev/null; then
+            python -m pip install --quiet pyyaml
+          fi
+          python -c 'import yaml; yaml.safe_load(open(".github/workflows/build.yml", encoding="utf-8"))'
+
+      - name: Check Rust formatting & lints
+        run: |
+          cargo fmt --manifest-path cmd/protoc-gen-synurang-ffi/Cargo.toml --check
+          cargo clippy --locked --manifest-path cmd/protoc-gen-synurang-ffi/Cargo.toml --all-targets
+
+      - name: Check Go vet
+        run: go vet -unsafeptr=false ./...
+
+      - name: Dry-run Flutter / Dart pub publish
+        run: |
+          flutter pub get
+          # Root 'flutter pub get' updates analysis_options.yaml and example/ plugin registrants;
+          # revert those side effects so 'flutter pub publish' sees a clean git working tree.
+          git checkout -- analysis_options.yaml example
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "Working tree is dirty before pub publish dry-run:" >&2
+            git status --short >&2
+            exit 1
+          fi
+          dart analyze lib
+          flutter pub publish --dry-run
+
+  codegen:
+    name: Build & verify protoc-gen-synurang-ffi (${{ matrix.target }})
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '29.3'
+          repo-token: ${{ github.token }}
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: codegen-${{ matrix.os }}-${{ matrix.target }}
+          workspaces: |
+            cmd/protoc-gen-synurang-ffi -> target
+
+      - name: Install musl linker toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools binutils
+
+      - name: Run protoc-gen-synurang-ffi unit tests
+        run: cargo test --locked --manifest-path cmd/protoc-gen-synurang-ffi/Cargo.toml
+
+      - name: Build release binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          CARGO_INCREMENTAL: '0'
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          if [[ "${TARGET}" == *-linux-musl ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static --remap-path-prefix=${GITHUB_WORKSPACE}=."
+          else
+            export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=."
+          fi
+          cargo build --release --locked \
+            --manifest-path cmd/protoc-gen-synurang-ffi/Cargo.toml \
+            --target "${TARGET}"
+
+      - name: Verify binary, run protoc smoke test, and package archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          PROJECT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          ext=""
+          if [[ "${TARGET}" == *-windows-* ]]; then
+            ext=".exe"
+          fi
+          bin="cmd/protoc-gen-synurang-ffi/target/${TARGET}/release/protoc-gen-synurang-ffi${ext}"
+          if [[ ! -f "$bin" ]]; then
+            bin="target/${TARGET}/release/protoc-gen-synurang-ffi${ext}"
+          fi
+          python scripts/release.py package-codegen \
+            --target "${TARGET}" \
+            --version "${PROJECT_VERSION}" \
+            --binary "$bin" \
+            --out dist/codegen \
+            --smoke-test
+
+      - name: Upload codegen archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: codegen-${{ matrix.target }}
+          path: dist/codegen/*
+          if-no-files-found: error
+
+  test-core:
+    name: Core tests, codegen matrix & bindings
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: test-core-${{ runner.os }}
+          workspaces: |
+            cmd/protoc-gen-synurang-ffi -> target
+            crates/synurang-call -> target
+            crates/synurang-host -> target
+            rust/synurang -> target
+      - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
+        with:
+          swift-version: ${{ env.SWIFT_VERSION }}
+
+      - name: Install system & language tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler \
+            libprotobuf-dev \
+            protobuf-compiler-grpc \
+            libgrpc++-dev \
+            pkg-config \
+            libclang-dev \
+            clang \
+            cmake \
+            build-essential
+          python -m pip install --no-cache-dir grpcio
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}"
+          go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          dart pub global activate protoc_plugin "${DART_PROTOC_PLUGIN_VERSION}"
+          echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
+          npm ci --prefix typescript --no-audit --no-fund
+          echo "${GITHUB_WORKSPACE}/typescript/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Verify committed proto generation is up to date
+        run: |
+          protoc --version | grep -Fq "libprotoc ${PROTOC_APT_VERSION}"
+          make proto
+          git diff --exit-code
+
+      - name: Analyze Dart packages (root + example)
+        run: |
+          flutter pub get
+          dart analyze lib
+          (cd example && flutter pub get && dart analyze --no-fatal-warnings lib)
+          # Revert flutter pub get side effects on tracked files
+          git checkout -- analysis_options.yaml example
+
+      - name: Run Go & Dart runtime tests (including HangFor recovery)
+        run: |
+          make test_go
+          make test_dart_debug
+
+      - name: Run C runtime & codegen test suites
+        run: |
+          make test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges
+
+      - name: Run generator matrix & per-language codegen suites
+        run: |
+          make test_codegen
+          make test_cpp_gen test_rust_gen test_native_wasm_gen test_csharp_gen test_swift_gen
+          make test_typescript_gen
+          make test_python test_python_grpc
+
+      - name: Run Rust crates & C# runtime build
+        run: |
+          cargo test --manifest-path crates/synurang-call/Cargo.toml
+          cargo test --manifest-path crates/synurang-host/Cargo.toml
+          cargo test --manifest-path rust/synurang/Cargo.toml
+          dotnet build csharp/Synurang/
+
+  test-ffi-hosts:
+    name: Polyglot FFI, Plugin & Host matrix
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: test-ffi-hosts-${{ runner.os }}
+          workspaces: |
+            cmd/protoc-gen-synurang-ffi -> target
+            example/rust/plugin -> target
+            test/ffi/rust -> target
+            test/host/rust -> target
+            test/rust_ffi -> target
+      - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
+        with:
+          swift-version: ${{ env.SWIFT_VERSION }}
+
+      - name: Install system & protoc tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler \
+            libprotobuf-dev \
+            protobuf-compiler-grpc \
+            libgrpc++-dev \
+            pkg-config \
+            libclang-dev \
+            cmake \
+            build-essential \
+            curl
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}"
+          go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          dart pub global activate protoc_plugin "${DART_PROTOC_PLUGIN_VERSION}"
+          echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
+          npm ci --prefix typescript --no-audit --no-fund
+          echo "${GITHUB_WORKSPACE}/typescript/node_modules/.bin" >> "$GITHUB_PATH"
+          flutter pub get
+
+      - name: Run plugin tests & race detector
+        run: |
+          make test_plugin
+          make test_plugin_race
+
+      - name: Run FFI API & Host matrix across Go, C++, Rust, Java, Dart, C#, Python, Swift
+        run: |
+          make test_ffi
+          make test_host_all
+          make test_cpp_ffi test_rust_ffi
+          make test_typescript_grpc_plugin
+
+  test-call-runtime:
+    name: Call runtime (Native + WASM + Browser + Shm)
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: test-call-runtime-${{ runner.os }}
+          workspaces: |
+            cmd/protoc-gen-synurang-ffi -> target
+            test/call/rust_provider -> target
+            test/call/rust_host -> target
+      - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
+        with:
+          swift-version: ${{ env.SWIFT_VERSION }}
+
+      - name: Cache & install verified WASI SDK
+        id: cache-wasi
+        uses: actions/cache@v4
+        with:
+          path: ~/wasi-sdk
+          key: wasi-sdk-${{ env.WASI_SDK_VERSION }}-${{ env.WASI_SDK_SHA256 }}
+
+      - name: Download WASI SDK if cache miss
+        if: steps.cache-wasi.outputs.cache-hit != 'true'
+        run: |
+          tmp_tar="${RUNNER_TEMP}/${WASI_SDK_TARBALL}"
+          curl -fsSL "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/${WASI_SDK_TARBALL}" -o "${tmp_tar}"
+          echo "${WASI_SDK_SHA256}  ${tmp_tar}" | sha256sum --check --strict
+          mkdir -p "$HOME/wasi-sdk"
+          tar --strip-components=1 -xzf "${tmp_tar}" -C "$HOME/wasi-sdk"
+          rm -f "${tmp_tar}"
+
+      - name: Install system, Playwright, and protoc dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler \
+            libprotobuf-dev \
+            ripgrep \
+            cmake \
+            build-essential \
+            curl
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}"
+          go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          dart pub global activate protoc_plugin "${DART_PROTOC_PLUGIN_VERSION}"
+          echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
+          echo "WASI_SDK_PATH=$HOME/wasi-sdk" >> "$GITHUB_ENV"
+          echo "NODE_INCLUDE=$(dirname "$(dirname "$(which node)")")/include/node" >> "$GITHUB_ENV"
+          npm ci --prefix typescript --no-audit --no-fund
+          echo "${GITHUB_WORKSPACE}/typescript/node_modules/.bin" >> "$GITHUB_PATH"
+          # test/test_call_runtime.sh invokes 'playwright install chromium' without OS deps
+          sudo ./typescript/node_modules/.bin/playwright install-deps chromium
+          flutter pub get
+
+      - name: Run call runtime conformance & all host bindings
+        run: SYNURANG_CALL_HOSTS=1 bash test/test_call_runtime.sh
+
+      - name: Run shared-memory & frame-queue conformance suites
+        run: make test_shared_memory test_shared_memory_queue
+
+  build-maven:
+    name: Build & verify Maven AAR / Desktop JAR bundles
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build Android AAR Docker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile
+          tags: synurang-android-aar:ci
+          load: true
+          cache-from: type=gha,scope=android-aar
+          cache-to: type=gha,mode=max,scope=android-aar
+
+      - name: Build Desktop JAR Docker image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.desktop
+          tags: synurang-desktop-jar:ci
+          load: true
+          cache-from: type=gha,scope=desktop-jar
+          cache-to: type=gha,mode=max,scope=desktop-jar
+
+      - name: Build Android AARs & Desktop JARs inside containers
+        env:
+          PROJECT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          mkdir -p dist/maven /tmp/maven-cache/gradle
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "${GITHUB_WORKSPACE}:/workspace/synurang" \
+            -v "/tmp/maven-cache/gradle:/cache/gradle" \
+            -w /workspace/synurang \
+            -e HOME=/tmp \
+            -e GRADLE_USER_HOME=/cache/gradle \
+            -e VERSION="${PROJECT_VERSION}" \
+            synurang-android-aar:ci
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "${GITHUB_WORKSPACE}:/workspace/synurang" \
+            -v "/tmp/maven-cache/gradle:/cache/gradle" \
+            -w /workspace/synurang \
+            -e HOME=/tmp \
+            -e GRADLE_USER_HOME=/cache/gradle \
+            -e VERSION="${PROJECT_VERSION}" \
+            -e REQUIRE_ALL_TARGETS=1 \
+            synurang-desktop-jar:ci
+
+      - name: Verify all 16 Maven artifacts & embedded JNI libraries
+        env:
+          PROJECT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: python scripts/release.py verify-maven --dist dist/maven --version "${PROJECT_VERSION}"
+
+      - name: Upload Maven distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-dist
+          path: dist/maven/*
+          if-no-files-found: error
+
+  build-python:
+    name: Build & verify Python sdist / wheel
+    needs: [preflight]
+    if: ${{ !cancelled() && needs.preflight.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build Python sdist & wheel
+        env:
+          PYTHONSAFEPATH: '1'
+          PROJECT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          python -m pip install --no-cache-dir build twine
+          python -m build --outdir dist/python python
+          twine check --strict dist/python/*
+          python scripts/release.py verify-python --dist dist/python --version "${PROJECT_VERSION}"
+
+      - name: Smoke-test installed wheel inside isolated venv
+        env:
+          PYTHONSAFEPATH: '1'
+          PROJECT_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          python -m venv /tmp/synurang-py-smoke
+          /tmp/synurang-py-smoke/bin/pip install --no-cache-dir dist/python/*.whl
+          /tmp/synurang-py-smoke/bin/python -c '
+          import os, sys, synurang
+          from pathlib import Path
+          sys.path.insert(0, str(Path("scripts").resolve()))
+          import release
+          expected = release.parse_semver(os.environ["PROJECT_VERSION"]).pep440
+          assert synurang.__version__ == expected, f"{synurang.__version__!r} != {expected!r}"
+          print("Installed synurang:", synurang.__version__)
+          '
+
+      - name: Upload Python distribution artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/python/*
+          if-no-files-found: error
+
+  test-bruteforce:
+    name: Bounded stress (brute-force) smoke run
+    needs: [preflight]
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.run_bruteforce == true
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: swift-actions/setup-swift@7ca6abe6b3b0e8b5421b88be48feee39cbf52c6a # v2
+        with:
+          swift-version: ${{ env.SWIFT_VERSION }}
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libprotobuf-dev protobuf-compiler-grpc libgrpc++-dev \
+            pkg-config libclang-dev cmake build-essential curl
+          flutter pub get
+          make test_bruteforce_plugin_go test_bruteforce_hybrid_csharp test_bruteforce_hybrid_swift BRUTE_DURATION=15s
+
+  release-nightly:
+    name: Publish rolling nightly pre-release
+    needs: [preflight, codegen, test-core, test-ffi-hosts, test-call-runtime, build-maven, build-python]
+    concurrency:
+      group: ${{ github.workflow }}-release-nightly
+      cancel-in-progress: false
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.codegen.result == 'success' &&
+      needs.test-core.result == 'success' &&
+      needs.test-ffi-hosts.result == 'success' &&
+      needs.test-call-runtime.result == 'success' &&
+      needs.build-maven.result == 'success' &&
+      needs.build-python.result == 'success' && (
+        (github.event_name == 'push' && github.repository == 'ivere27/synurang' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')) ||
+        (github.event_name == 'workflow_dispatch' && inputs.release_nightly == true && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'))
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PROJECT_VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: codegen-*
+          path: artifacts/codegen
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maven-dist
+          path: artifacts/maven
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: artifacts/python
+      - name: Stage & verify complete nightly release bundle
+        run: |
+          python scripts/release.py stage-ci \
+            --out release-dist \
+            --codegen-dir artifacts/codegen \
+            --maven-dir artifacts/maven \
+            --python-dir artifacts/python \
+            --version "${PROJECT_VERSION}"
+      - name: Update rolling nightly GitHub pre-release
+        run: |
+          python scripts/release.py release-ci \
+            --channel nightly \
+            --dist release-dist \
+            --sha "${GITHUB_SHA}" \
+            --repo "${GITHUB_REPOSITORY}"
+
+  prepare-release:
+    name: Stage & verify draft GitHub Release
+    needs: [preflight, codegen, test-core, test-ffi-hosts, test-call-runtime, build-maven, build-python]
+    concurrency:
+      group: ${{ github.workflow }}-release-${{ github.ref }}
+      cancel-in-progress: false
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.codegen.result == 'success' &&
+      needs.test-core.result == 'success' &&
+      needs.test-ffi-hosts.result == 'success' &&
+      needs.test-call-runtime.result == 'success' &&
+      needs.build-maven.result == 'success' &&
+      needs.build-python.result == 'success' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PROJECT_VERSION: ${{ needs.preflight.outputs.version }}
+      SYNURANG_ALLOW_OLDER_RELEASE: ${{ vars.SYNURANG_ALLOW_OLDER_RELEASE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: codegen-*
+          path: artifacts/codegen
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: maven-dist
+          path: artifacts/maven
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: artifacts/python
+      - name: Stage & verify tagged release bundle
+        run: |
+          python scripts/release.py stage-ci \
+            --out release-dist \
+            --codegen-dir artifacts/codegen \
+            --maven-dir artifacts/maven \
+            --python-dir artifacts/python \
+            --version "${PROJECT_VERSION}"
+          python scripts/release.py verify-ci --dist release-dist --tag "${GITHUB_REF_NAME}"
+      - name: Create/update & checksum-verify Draft GitHub Release
+        run: |
+          python scripts/release.py release-ci \
+            --channel draft-stable \
+            --dist release-dist \
+            --sha "${GITHUB_SHA}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}"
+      - name: Upload staged release bundle for finalize job
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-release-dist
+          path: release-dist/*
+          if-no-files-found: error
+
+  publish-maven:
+    name: Publish to Maven Central (io.github.ivere27)
+    needs: [preflight, prepare-release]
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.prerelease != 'true' &&
+      needs.prepare-release.result == 'success' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    environment: maven-central
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: maven-dist
+          path: dist/maven
+      - name: Sign, upload & verify Maven Central bundle
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          python scripts/release.py publish-maven-ci \
+            --dist dist/maven \
+            --tag "${GITHUB_REF_NAME}"
+
+  publish-pypi:
+    name: Publish to PyPI (OIDC)
+    needs: [preflight, prepare-release]
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.prerelease != 'true' &&
+      needs.prepare-release.result == 'success' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist/python
+      - name: Verify Python packages against release tag
+        run: |
+          python scripts/release.py check-tag --tag "${GITHUB_REF_NAME}" --require-changelog
+          python scripts/release.py verify-python --dist dist/python --version "${GITHUB_REF_NAME#v}"
+      - name: Publish to PyPI via Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          packages-dir: dist/python
+
+  publish-pubdev:
+    name: Publish to pub.dev (OIDC)
+    needs: [preflight, prepare-release]
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.prerelease != 'true' &&
+      needs.prepare-release.result == 'success' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: pub-dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+      - name: Verify & publish package to pub.dev
+        run: |
+          python scripts/release.py check-tag --tag "${GITHUB_REF_NAME}" --require-changelog
+          flutter pub get
+          # Root 'flutter pub get' updates analysis_options.yaml and example/ plugin registrants;
+          # revert those side effects so 'flutter pub publish' sees a clean git working tree.
+          git checkout -- analysis_options.yaml example
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "Working tree is dirty before pub publish:" >&2
+            git status --short >&2
+            exit 1
+          fi
+          flutter pub publish --force
+
+  finalize-release:
+    name: Promote verified GitHub Release
+    needs: [preflight, prepare-release, publish-maven, publish-pypi, publish-pubdev]
+    concurrency:
+      group: ${{ github.workflow }}-release-${{ github.ref }}
+      cancel-in-progress: false
+    if: >-
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.prepare-release.result == 'success' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') && (
+        (needs.preflight.outputs.prerelease == 'true' &&
+         needs.publish-maven.result == 'skipped' &&
+         needs.publish-pypi.result == 'skipped' &&
+         needs.publish-pubdev.result == 'skipped') ||
+        (needs.preflight.outputs.prerelease != 'true' &&
+         needs.publish-maven.result == 'success' &&
+         needs.publish-pypi.result == 'success' &&
+         needs.publish-pubdev.result == 'success')
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: staged-release-dist
+          path: release-dist
+      - name: Verify draft digests & promote GitHub Release
+        run: |
+          python scripts/release.py release-ci \
+            --channel finalize-stable \
+            --dist release-dist \
+            --sha "${GITHUB_SHA}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}"
