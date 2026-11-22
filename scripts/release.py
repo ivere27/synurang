@@ -89,6 +89,17 @@ def require(condition: object, message: str) -> None:
         raise ReleaseError(message)
 
 
+def parse_bool_flag(raw: str, *, name: str) -> bool:
+    normalized = raw.strip().lower()
+    if not normalized or normalized in ("0", "false", "no"):
+        return False
+    if normalized in ("1", "true", "yes"):
+        return True
+    raise ReleaseError(
+        f"Invalid boolean value for {name}: {raw!r} (expected one of 1, true, yes, 0, false, no)"
+    )
+
+
 @dataclass(frozen=True)
 class SemVer:
     major: int
@@ -1024,6 +1035,22 @@ def stage_ci(
     return staged_files
 
 
+def _parse_sha256sums(sums_path: Path) -> dict[str, str]:
+    require(sums_path.is_file() and not sums_path.is_symlink(), f"Missing SHA256SUMS: {sums_path}")
+    lines = sums_path.read_text(encoding="utf-8").splitlines()
+    parsed_sums: dict[str, str] = {}
+    for line in lines:
+        if not line.strip():
+            continue
+        match = _SHA256_LINE_RE.fullmatch(line)
+        require(match is not None, f"Malformed SHA256SUMS line: {line!r}")
+        assert match is not None
+        digest_hex, fname = match.group(1), match.group(2)
+        require(fname not in parsed_sums, f"Duplicate SHA256SUMS entry: {fname}")
+        parsed_sums[fname] = digest_hex
+    return parsed_sums
+
+
 def verify_ci(
     *,
     dist_dir: Path,
@@ -1079,17 +1106,7 @@ def verify_ci(
     assets = [dist_dir / name for name in sorted(expected_names)]
 
     if checksum_file.is_file():
-        lines = checksum_file.read_text(encoding="utf-8").splitlines()
-        parsed_sums: dict[str, str] = {}
-        for line in lines:
-            if not line.strip():
-                continue
-            match = _SHA256_LINE_RE.fullmatch(line)
-            require(match is not None, f"Malformed SHA256SUMS line: {line!r}")
-            assert match is not None
-            digest_hex, fname = match.group(1), match.group(2)
-            require(fname not in parsed_sums, f"Duplicate SHA256SUMS entry: {fname}")
-            parsed_sums[fname] = digest_hex
+        parsed_sums = _parse_sha256sums(checksum_file)
         require(
             set(parsed_sums.keys()) == expected_names,
             f"SHA256SUMS asset list mismatch: expected {sorted(expected_names)}, got {sorted(parsed_sums.keys())}",
@@ -1124,6 +1141,10 @@ def resolve_repository(repo: str, root: Path = ROOT) -> str:
     return resolved
 
 
+def _resolve_gh_host() -> str:
+    return os.environ.get("GH_HOST", "").strip() or "github.com"
+
+
 def _gh_api(
     path: str,
     *,
@@ -1132,7 +1153,7 @@ def _gh_api(
     method: str | None = None,
     fields: list[tuple[str, str]] | None = None,
 ):
-    cmd = ["gh", "api", "--hostname", "github.com", path]
+    cmd = ["gh", "api", "--hostname", _resolve_gh_host(), path]
     if paginate:
         cmd += ["--paginate", "--slurp"]
     if method:
@@ -1168,6 +1189,10 @@ def list_release_assets(repo: str, release_id: int, root: Path = ROOT) -> list[d
     return _gh_api(f"repos/{repo}/releases/{release_id}/assets?per_page=100", root=root, paginate=True)
 
 
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def verify_release_assets(
     repo: str,
     tag: str,
@@ -1186,7 +1211,7 @@ def verify_release_assets(
         )
     release = found[0]
     release_id = release.get("id")
-    if isinstance(release_id, int):
+    if _is_positive_int(release_id):
         actual = list_release_assets(repo, release_id, root=root)
     else:
         actual = release.get("assets") or []
@@ -1422,7 +1447,7 @@ def release_ci(
                 draft_id = existing_for_tag.get("id")
                 existing_assets = (
                     list_release_assets(target_repo, draft_id, root=root)
-                    if isinstance(draft_id, int)
+                    if _is_positive_int(draft_id)
                     else (existing_for_tag.get("assets") or [])
                 )
                 for stale in [
@@ -1524,7 +1549,7 @@ def release_ci(
             nightly_id = existing_for_tag.get("id")
             existing_assets = (
                 list_release_assets(target_repo, nightly_id, root=root)
-                if isinstance(nightly_id, int)
+                if _is_positive_int(nightly_id)
                 else (existing_for_tag.get("assets") or [])
             )
             stale_names = [
@@ -1582,7 +1607,7 @@ def _write_maven_checksums(path: Path) -> tuple[Path, Path]:
     return md5_path, sha1_path
 
 
-def _gpg_sign_file(file_path: Path, *, gnupghome: Path, passphrase_file: Path | None) -> Path:
+def _gpg_sign_file(file_path: Path, *, gnupghome: Path, gpg_passphrase: str = "") -> Path:
     asc_path = Path(f"{file_path}.asc")
     cmd = [
         "gpg",
@@ -1594,14 +1619,21 @@ def _gpg_sign_file(file_path: Path, *, gnupghome: Path, passphrase_file: Path | 
         "--detach-sign",
         "--output", str(asc_path),
     ]
-    if passphrase_file is not None:
-        cmd.extend(["--passphrase-file", str(passphrase_file)])
+    if gpg_passphrase:
+        cmd.extend(["--passphrase-fd", "0"])
     else:
         cmd.extend(["--passphrase", ""])
-    cmd.append(str(file_path))
+    cmd.extend(["--", str(file_path)])
     env = os.environ.copy()
     env["GNUPGHOME"] = str(gnupghome)
-    res = subprocess.run(cmd, check=False, env=env, capture_output=True, text=True)
+    res = subprocess.run(
+        cmd,
+        input=gpg_passphrase if gpg_passphrase else None,
+        check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
     if res.returncode != 0:
         detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
         raise ReleaseError(f"Failed to GPG-sign {file_path.name}: {detail}")
@@ -1663,14 +1695,30 @@ def _maven_curl_auth_config(username: str, password: str) -> str:
     return f'header = "Authorization: Bearer {token}"\n'
 
 
+def _validate_http_url(url: str, *, label: str) -> str:
+    require(isinstance(url, str) and bool(url.strip()), f"{label} must not be empty")
+    normalized = url.strip()
+    require(not any(ch.isspace() for ch in normalized), f"Invalid {label}: {url!r}")
+    parsed = urllib_parse.urlsplit(normalized)
+    require(
+        parsed.scheme in ("http", "https") and bool(parsed.netloc) and bool(parsed.hostname),
+        f"Invalid {label}: {url!r}",
+    )
+    return normalized
+
+
 def _derive_maven_status_url(upload_url: str, status_url: str | None = None) -> str:
-    if status_url:
-        return status_url
-    parsed = urllib_parse.urlsplit(upload_url)
-    if parsed.path.endswith("/upload"):
-        status_path = parsed.path[: -len("/upload")] + "/status"
-        return urllib_parse.urlunsplit((parsed.scheme, parsed.netloc, status_path, "", ""))
-    return MAVEN_STATUS_URL
+    normalized_upload = _validate_http_url(upload_url, label="Maven upload URL")
+    if status_url is not None:
+        return _validate_http_url(status_url, label="Maven status URL")
+    parsed = urllib_parse.urlsplit(normalized_upload)
+    require(
+        parsed.path.endswith("/upload"),
+        f"Cannot derive Maven status URL from upload URL {upload_url!r} "
+        "(expected path ending with '/upload' or pass --status-url)",
+    )
+    status_path = parsed.path[: -len("/upload")] + "/status"
+    return urllib_parse.urlunsplit((parsed.scheme, parsed.netloc, status_path, "", ""))
 
 
 def _upload_maven_bundle_curl(
@@ -1857,6 +1905,315 @@ def _wait_maven_deployment(
         time.sleep(min(poll_interval, remaining))
 
 
+def _write_secret_file(path: Path, text: str) -> Path:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+    with fh:
+        fh.write(text)
+    os.chmod(path, 0o600)
+    return path
+
+
+def _gpg_sign_file_local(
+    file_path: Path,
+    *,
+    gpg_key: str = "",
+    gpg_passphrase: str = "",
+) -> Path:
+    asc_path = Path(f"{file_path}.asc")
+    if gpg_passphrase:
+        cmd = [
+            "gpg",
+            "--batch",
+            "--yes",
+            "--pinentry-mode", "loopback",
+            "--armor",
+            "--detach-sign",
+            "--passphrase-fd", "0",
+        ]
+        if gpg_key:
+            cmd.extend(["--local-user", gpg_key])
+        cmd.extend(["--output", str(asc_path), "--", str(file_path)])
+        res = subprocess.run(cmd, input=gpg_passphrase, check=False, capture_output=True, text=True)
+        if res.returncode != 0:
+            detail = res.stderr.strip() or res.stdout.strip() or f"exit {res.returncode}"
+            raise ReleaseError(f"Failed to GPG-sign {file_path.name}: {detail}")
+    else:
+        cmd = [
+            "gpg",
+            "--yes",
+            "--armor",
+            "--detach-sign",
+        ]
+        if gpg_key:
+            cmd.extend(["--local-user", gpg_key])
+        cmd.extend(["--output", str(asc_path), "--", str(file_path)])
+        env = os.environ.copy()
+        if (
+            not env.get("GPG_TTY", "").strip()
+            and sys.stdin is not None
+            and sys.stdin.isatty()
+            and hasattr(os, "ttyname")
+        ):
+            try:
+                env["GPG_TTY"] = os.ttyname(sys.stdin.fileno())
+            except OSError:
+                pass
+        res = subprocess.run(cmd, check=False, env=env)
+        if res.returncode != 0:
+            raise ReleaseError(
+                f"Failed to GPG-sign {file_path.name} (gpg exit {res.returncode}). "
+                "For SSH or non-interactive sessions without a cached gpg-agent passphrase, "
+                "export GPG_TTY=$(tty) or set MAVEN_GPG_PASSPHRASE."
+            )
+    require(asc_path.is_file() and asc_path.stat().st_size > 0, f"GPG signature not created: {asc_path}")
+    return asc_path
+
+
+def _parse_maven_settings_credentials(settings_path: Path, *, server_id: str = "central") -> tuple[str, str]:
+    require(
+        settings_path.is_file(),
+        f"Maven settings not found: {settings_path} (create it or set SONATYPE_USERNAME/SONATYPE_PASSWORD)",
+    )
+    target_server_id = server_id.strip()
+    require(bool(target_server_id), "Maven settings server_id must not be empty")
+    try:
+        tree = ET.parse(settings_path)
+    except ET.ParseError as err:
+        raise ReleaseError(f"Malformed Maven settings XML in {settings_path}: {err}") from err
+    root = tree.getroot()
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag[: root.tag.index("}") + 1]
+
+    def raw_text_of(elem: ET.Element, tag: str) -> str:
+        child = elem.find(f"{ns}{tag}")
+        return child.text if child is not None and child.text is not None else ""
+
+    matches = [
+        server
+        for server in root.findall(f"{ns}servers/{ns}server")
+        if raw_text_of(server, "id").strip() == target_server_id
+    ]
+    require(
+        len(matches) <= 1,
+        f"Duplicate <server><id>{target_server_id}</id> entries in {settings_path}",
+    )
+    require(
+        len(matches) == 1,
+        f"Server {target_server_id!r} not found in {settings_path} (pass --server-id to select another <server>)",
+    )
+    server = matches[0]
+    raw_username = raw_text_of(server, "username")
+    raw_password = raw_text_of(server, "password")
+    require("\r" not in raw_username and "\n" not in raw_username, f"Invalid newline in <username> in {settings_path}")
+    require("\r" not in raw_password and "\n" not in raw_password, f"Invalid newline in <password> in {settings_path}")
+    username = raw_username.strip()
+    password = raw_password
+    require(bool(username), f"Missing <username> for server {target_server_id!r} in {settings_path}")
+    require(bool(password.strip()), f"Missing <password> for server {target_server_id!r} in {settings_path}")
+    if password.startswith("{") and password.endswith("}"):
+        raise ReleaseError(
+            f"Encrypted Maven <password> ({{...}}) is not supported in {settings_path}; "
+            "use a plaintext Sonatype Central User Token in <password> or set SONATYPE_USERNAME/SONATYPE_PASSWORD"
+        )
+    return username, password
+
+
+def _resolve_local_maven_credentials(*, settings_path: Path, server_id: str = "central") -> tuple[str, str]:
+    raw_user = os.environ.get("SONATYPE_USERNAME", "")
+    raw_pass = os.environ.get("SONATYPE_PASSWORD", "")
+    if raw_user or raw_pass:
+        require("\r" not in raw_user and "\n" not in raw_user, "SONATYPE_USERNAME must not contain newlines")
+        require("\r" not in raw_pass and "\n" not in raw_pass, "SONATYPE_PASSWORD must not contain newlines")
+        env_user = raw_user.strip()
+        env_pass = raw_pass
+        require(
+            bool(env_user) and bool(env_pass.strip()),
+            "Both SONATYPE_USERNAME and SONATYPE_PASSWORD must be set when using environment credentials",
+        )
+        return env_user, env_pass
+    return _parse_maven_settings_credentials(settings_path, server_id=server_id)
+
+
+def _download_maven_from_github_release(
+    *,
+    tag: str,
+    version: str,
+    repo: str = "",
+    download_dir: Path,
+    allow_prerelease: bool = False,
+    allow_draft: bool = False,
+    root: Path = ROOT,
+) -> None:
+    require(shutil.which("gh") is not None, "gh CLI is required to download GitHub release assets")
+    target_repo = resolve_repository(repo, root=root)
+    matches = [rel for rel in list_releases(target_repo, root=root) if rel.get("tag_name") == tag]
+    require(len(matches) == 1, f"Expected one GitHub release for tag {tag!r} on {target_repo}, found {len(matches)}")
+    release = matches[0]
+    is_draft = release.get("draft") is True
+    if is_draft and not allow_draft:
+        raise ReleaseError(f"GitHub release {tag!r} is a draft (pass --allow-draft to override)")
+    if release.get("prerelease") is True and not allow_prerelease:
+        raise ReleaseError(
+            f"GitHub release {tag!r} is a prerelease (pass --allow-prerelease to override)"
+        )
+
+    release_id = release.get("id")
+    if _is_positive_int(release_id):
+        actual_assets = list_release_assets(target_repo, release_id, root=root)
+    else:
+        actual_assets = release.get("assets") or []
+    require(isinstance(actual_assets, list), f"Invalid asset payload on release {tag!r}")
+
+    asset_by_name = {
+        item.get("name"): item
+        for item in actual_assets
+        if isinstance(item, dict) and item.get("name")
+    }
+    expected_maven = expected_maven_filenames(version)
+    required_assets = expected_maven | {"SHA256SUMS"}
+    missing_remote = sorted(required_assets - set(asset_by_name))
+    require(
+        not missing_remote,
+        f"GitHub release {tag!r} is missing expected Maven/checksum asset(s): {', '.join(missing_remote)}",
+    )
+    for name in sorted(required_assets):
+        meta = asset_by_name[name]
+        if meta.get("state") != "uploaded" or not _is_positive_int(meta.get("size")):
+            raise ReleaseError(
+                f"GitHub release asset {name!r} on {tag!r} is incomplete (state={meta.get('state')!r}, size={meta.get('size')!r})"
+            )
+        asset_id = meta.get("id")
+        if is_draft and not _is_positive_int(asset_id):
+            raise ReleaseError(f"GitHub release asset {name!r} on draft {tag!r} lacks a valid asset id")
+        digest = meta.get("digest")
+        if not isinstance(digest, str) or not _GITHUB_DIGEST_RE.fullmatch(digest):
+            raise ReleaseError(f"GitHub release asset {name!r} on {tag!r} lacks a valid SHA-256 digest: {digest!r}")
+
+    if download_dir.exists():
+        require(
+            download_dir.is_dir() and not download_dir.is_symlink(),
+            f"Download target must be a directory: {download_dir}",
+        )
+    download_dir.mkdir(parents=True, exist_ok=True)
+    gh_host = _resolve_gh_host()
+    if is_draft:
+        # Draft releases do not have a finalized git tag, so fetch directly by asset ID
+        # instead of `gh release download <tag>` which can fail with 404.
+        for name in sorted(required_assets):
+            asset_id = asset_by_name[name]["id"]
+            local_path = download_dir / name
+            cmd = [
+                "gh", "api", "--hostname", gh_host,
+                "-H", "Accept: application/octet-stream",
+                f"repos/{target_repo}/releases/assets/{asset_id}",
+            ]
+            with local_path.open("wb") as fh:
+                res = subprocess.run(cmd, cwd=root, stdout=fh, stderr=subprocess.PIPE, check=False)
+            if res.returncode != 0:
+                local_path.unlink(missing_ok=True)
+                detail = res.stderr.decode("utf-8", errors="replace").strip() or f"exit {res.returncode}"
+                raise ReleaseError(f"gh api failed downloading draft asset {name!r} (id={asset_id}): {detail}")
+    else:
+        dl_cmd = [
+            "gh", "release", "download", tag,
+            "--repo", f"{gh_host}/{target_repo}",
+            "--dir", str(download_dir),
+            "--clobber",
+        ]
+        for name in sorted(required_assets):
+            dl_cmd.extend(["-p", name])
+        res = subprocess.run(dl_cmd, cwd=root, capture_output=True, text=True, check=False)
+        if res.returncode != 0:
+            detail = (res.stderr or "").strip() or (res.stdout or "").strip() or f"exit {res.returncode}"
+            raise ReleaseError(f"gh release download failed for {tag!r}: {detail}")
+
+    local_sha256_by_name: dict[str, str] = {}
+    for name in sorted(required_assets):
+        local_path = download_dir / name
+        require(local_path.is_file() and not local_path.is_symlink(), f"Downloaded asset missing: {local_path}")
+        actual_size = local_path.stat().st_size
+        meta = asset_by_name[name]
+        require(
+            actual_size == meta["size"],
+            f"Downloaded asset {name!r} size mismatch: local={actual_size} github={meta['size']}",
+        )
+        actual_hex = _sha256_file(local_path)
+        actual_digest = "sha256:" + actual_hex
+        require(
+            actual_digest == meta["digest"],
+            f"Downloaded asset {name!r} digest mismatch: local={actual_digest} github={meta['digest']}",
+        )
+        local_sha256_by_name[name] = actual_hex
+
+    parsed_sums = _parse_sha256sums(download_dir / "SHA256SUMS")
+    for name in sorted(expected_maven):
+        require(name in parsed_sums, f"SHA256SUMS on release {tag!r} is missing entry for {name}")
+        actual_hex = local_sha256_by_name[name]
+        require(
+            parsed_sums[name] == actual_hex,
+            f"SHA256SUMS mismatch for {name}: manifest={parsed_sums[name]} actual={actual_hex}",
+        )
+
+    verify_maven(download_dir, version=version)
+
+
+def _publish_signed_maven_bundle(
+    *,
+    dist_dir: Path,
+    version: str,
+    username: str,
+    password: str,
+    upload_url: str,
+    status_url: str | None,
+    publishing_type: str,
+    poll_interval: float,
+    poll_timeout: float,
+    max_transient_errors: int,
+    sign_fn,
+) -> dict[str, str]:
+    bundle_name = f"synurang-{version}"
+    resolved_status_url = _derive_maven_status_url(upload_url, status_url)
+    with tempfile.TemporaryDirectory(prefix="synurang-maven-upload-") as tmp:
+        bundle_zip = Path(tmp) / f"{bundle_name}-maven-bundle.zip"
+        build_maven_bundle_zip(
+            dist_dir=dist_dir,
+            version=version,
+            out_zip=bundle_zip,
+            sign_fn=sign_fn,
+        )
+        signed_files = _validate_zip_container(bundle_zip)
+        require(
+            len(signed_files) == len(MAVEN_ARTIFACTS) * 4 * 4,
+            f"Expected {len(MAVEN_ARTIFACTS) * 16} signed files in Maven bundle, got {len(signed_files)}",
+        )
+        deployment_id = _upload_maven_bundle_curl(
+            bundle_zip=bundle_zip,
+            bundle_name=bundle_name,
+            username=username,
+            password=password,
+            upload_url=upload_url,
+            publishing_type=publishing_type,
+        )
+        final_status = _wait_maven_deployment(
+            deployment_id=deployment_id,
+            username=username,
+            password=password,
+            status_url=resolved_status_url,
+            publishing_type=publishing_type,
+            poll_interval=poll_interval,
+            poll_timeout=poll_timeout,
+            max_transient_errors=max_transient_errors,
+        )
+        final_state = str(final_status.get("deploymentState", ""))
+    return {"bundle": bundle_name, "deployment_id": deployment_id, "state": final_state}
+
+
 def publish_maven_ci(
     *,
     dist_dir: Path,
@@ -1885,11 +2242,12 @@ def publish_maven_ci(
         raise ReleaseError(
             f"Refusing to publish prerelease version {ver!r} to Maven Central (pass --allow-prerelease to override)"
         )
+    normalized_upload_url = _validate_http_url(upload_url, label="Maven upload URL")
+    resolved_status_url = _derive_maven_status_url(normalized_upload_url, status_url)
 
     verify_maven(dist_dir, version=ver)
 
     bundle_name = f"synurang-{ver}"
-    resolved_status_url = _derive_maven_status_url(upload_url, status_url)
     if dry_run:
         with tempfile.TemporaryDirectory(prefix="synurang-maven-dryrun-") as tmp:
             bundle_zip = Path(tmp) / f"{bundle_name}-maven-bundle.zip"
@@ -1897,18 +2255,23 @@ def publish_maven_ci(
             files = _validate_zip_container(bundle_zip)
             require(len(files) == len(MAVEN_ARTIFACTS) * 4 * 3, f"Unexpected dry-run Maven bundle file count: {len(files)}")
         artifact_list = ", ".join(f"{artifact}-{ver}" for artifact, _, _ in MAVEN_ARTIFACTS)
-        print(f"Dry run (Maven Central -> {upload_url}): {bundle_name} ({artifact_list})", flush=True)
+        print(f"Dry run (Maven Central -> {normalized_upload_url}): {bundle_name} ({artifact_list})", flush=True)
         return {"bundle": bundle_name, "deployment_id": "dry-run", "state": "DRY_RUN"}
 
-    username = os.environ.get("SONATYPE_USERNAME", "").strip()
-    password = os.environ.get("SONATYPE_PASSWORD", "").strip()
+    raw_username = os.environ.get("SONATYPE_USERNAME", "")
+    raw_password = os.environ.get("SONATYPE_PASSWORD", "")
+    require("\r" not in raw_username and "\n" not in raw_username, "SONATYPE_USERNAME must not contain newlines")
+    require("\r" not in raw_password and "\n" not in raw_password, "SONATYPE_PASSWORD must not contain newlines")
+    username = raw_username.strip()
+    password = raw_password
     gpg_key = os.environ.get("MAVEN_GPG_PRIVATE_KEY", "")
     gpg_passphrase = os.environ.get("MAVEN_GPG_PASSPHRASE", "")
 
     require(bool(username), "SONATYPE_USERNAME environment variable is required")
-    require(bool(password), "SONATYPE_PASSWORD environment variable is required")
+    require(bool(password.strip()), "SONATYPE_PASSWORD environment variable is required")
     require(bool(gpg_key.strip()), "MAVEN_GPG_PRIVATE_KEY environment variable is required")
     require(shutil.which("gpg") is not None, "gpg is required to sign Maven Central artifacts")
+    require(shutil.which("curl") is not None, "curl is required to upload bundles to Maven Central")
 
     with tempfile.TemporaryDirectory(prefix="synurang-gnupg-") as gpg_tmp:
         gnupghome = Path(gpg_tmp) / "gnupg"
@@ -1917,9 +2280,7 @@ def publish_maven_ci(
         try:
             passphrase_file: Path | None = None
             if gpg_passphrase:
-                passphrase_file = Path(gpg_tmp) / "passphrase"
-                passphrase_file.write_text(gpg_passphrase, encoding="utf-8")
-                os.chmod(passphrase_file, 0o600)
+                passphrase_file = _write_secret_file(Path(gpg_tmp) / "passphrase", gpg_passphrase)
 
             env = os.environ.copy()
             env["GNUPGHOME"] = str(gnupghome)
@@ -1935,46 +2296,133 @@ def publish_maven_ci(
             else:
                 import_cmd.extend(["--passphrase", ""])
             import_cmd.append("--import")
-            imp = subprocess.run(import_cmd, input=gpg_key, text=True, capture_output=True, env=env, check=False)
+            try:
+                imp = subprocess.run(import_cmd, input=gpg_key, text=True, capture_output=True, env=env, check=False)
+            finally:
+                if passphrase_file is not None:
+                    passphrase_file.unlink(missing_ok=True)
             require(imp.returncode == 0, f"Failed to import MAVEN_GPG_PRIVATE_KEY: {imp.stderr.strip()}")
 
-            bundles_dir = Path(gpg_tmp) / "bundles"
-            bundles_dir.mkdir()
-            bundle_zip = bundles_dir / f"{bundle_name}-maven-bundle.zip"
-            build_maven_bundle_zip(
+            return _publish_signed_maven_bundle(
                 dist_dir=dist_dir,
                 version=ver,
-                out_zip=bundle_zip,
-                sign_fn=lambda path: _gpg_sign_file(path, gnupghome=gnupghome, passphrase_file=passphrase_file),
-            )
-            signed_files = _validate_zip_container(bundle_zip)
-            require(
-                len(signed_files) == len(MAVEN_ARTIFACTS) * 4 * 4,
-                f"Expected {len(MAVEN_ARTIFACTS) * 16} signed files in Maven bundle, got {len(signed_files)}",
-            )
-            deployment_id = _upload_maven_bundle_curl(
-                bundle_zip=bundle_zip,
-                bundle_name=bundle_name,
                 username=username,
                 password=password,
-                upload_url=upload_url,
-                publishing_type=publishing_type,
-            )
-            final_status = _wait_maven_deployment(
-                deployment_id=deployment_id,
-                username=username,
-                password=password,
+                upload_url=normalized_upload_url,
                 status_url=resolved_status_url,
                 publishing_type=publishing_type,
                 poll_interval=poll_interval,
                 poll_timeout=poll_timeout,
                 max_transient_errors=max_transient_errors,
+                sign_fn=lambda path: _gpg_sign_file(path, gnupghome=gnupghome, gpg_passphrase=gpg_passphrase),
             )
-            final_state = str(final_status.get("deploymentState", ""))
         finally:
             _kill_gpg_agent(gnupghome)
 
-    return {"bundle": bundle_name, "deployment_id": deployment_id, "state": final_state}
+
+def publish_maven_local(
+    *,
+    dist_dir: Path | None = None,
+    tag: str = "",
+    version: str = "",
+    repo: str = "",
+    settings_path: Path | None = None,
+    server_id: str = "central",
+    gpg_key: str = "",
+    upload_url: str = MAVEN_UPLOAD_URL,
+    status_url: str | None = None,
+    publishing_type: str = "AUTOMATIC",
+    poll_interval: float = DEFAULT_MAVEN_POLL_INTERVAL,
+    poll_timeout: float = DEFAULT_MAVEN_POLL_TIMEOUT,
+    max_transient_errors: int = 5,
+    allow_prerelease: bool = False,
+    allow_draft: bool = False,
+    dry_run: bool = False,
+    root: Path = ROOT,
+) -> dict[str, str]:
+    require(publishing_type in MAVEN_PUBLISHING_TYPES, f"Unsupported publishing_type: {publishing_type!r}")
+    require(bool(tag) ^ (dist_dir is not None), "Specify exactly one of --tag or --dist")
+    if tag:
+        require(tag.startswith("v"), f"Release tag must start with 'v': {tag!r}")
+        require(not version, "Do not pass --version together with --tag")
+        ver = tag[1:]
+    else:
+        assert dist_dir is not None
+        require(not repo, "Do not pass --repo together with --dist")
+        require(not allow_draft, "Do not pass --allow-draft together with --dist")
+        ver = version if version else check_versions(root)
+    parsed_ver = parse_semver(ver)
+    if parsed_ver.is_prerelease and not allow_prerelease:
+        raise ReleaseError(
+            f"Refusing to publish prerelease version {ver!r} to Maven Central (pass --allow-prerelease to override)"
+        )
+
+    normalized_upload_url = _validate_http_url(upload_url, label="Maven upload URL")
+    resolved_status_url = _derive_maven_status_url(normalized_upload_url, status_url)
+
+    resolved_settings = settings_path if settings_path is not None else (root / ".maven-settings.xml")
+    resolved_gpg_key = gpg_key.strip() or os.environ.get("MAVEN_GPG_KEY", "").strip()
+
+    username = ""
+    password = ""
+    if not dry_run:
+        username, password = _resolve_local_maven_credentials(
+            settings_path=resolved_settings,
+            server_id=server_id,
+        )
+        require(shutil.which("gpg") is not None, "gpg is required to sign Maven Central artifacts")
+        require(shutil.which("curl") is not None, "curl is required to upload bundles to Maven Central")
+
+    with tempfile.TemporaryDirectory(prefix="synurang-maven-local-") as work_tmp:
+        work_path = Path(work_tmp)
+        if tag:
+            maven_dir = work_path / "downloaded-maven"
+            _download_maven_from_github_release(
+                tag=tag,
+                version=ver,
+                repo=repo,
+                download_dir=maven_dir,
+                allow_prerelease=allow_prerelease,
+                allow_draft=allow_draft,
+                root=root,
+            )
+        else:
+            assert dist_dir is not None
+            maven_dir = dist_dir
+            verify_maven(maven_dir, version=ver)
+
+        bundle_name = f"synurang-{ver}"
+        if dry_run:
+            bundle_zip = work_path / f"{bundle_name}-maven-bundle.zip"
+            build_maven_bundle_zip(dist_dir=maven_dir, version=ver, out_zip=bundle_zip)
+            files = _validate_zip_container(bundle_zip)
+            require(
+                len(files) == len(MAVEN_ARTIFACTS) * 4 * 3,
+                f"Unexpected dry-run Maven bundle file count: {len(files)}",
+            )
+            artifact_list = ", ".join(f"{artifact}-{ver}" for artifact, _, _ in MAVEN_ARTIFACTS)
+            print(f"Dry run (Maven Central -> {normalized_upload_url}): {bundle_name} ({artifact_list})", flush=True)
+            return {"bundle": bundle_name, "deployment_id": "dry-run", "state": "DRY_RUN"}
+
+        gpg_passphrase = os.environ.get("MAVEN_GPG_PASSPHRASE", "")
+
+        return _publish_signed_maven_bundle(
+            dist_dir=maven_dir,
+            version=ver,
+            username=username,
+            password=password,
+            upload_url=normalized_upload_url,
+            status_url=resolved_status_url,
+            publishing_type=publishing_type,
+            poll_interval=poll_interval,
+            poll_timeout=poll_timeout,
+            max_transient_errors=max_transient_errors,
+            sign_fn=lambda path: _gpg_sign_file_local(
+                path,
+                gpg_key=resolved_gpg_key,
+                gpg_passphrase=gpg_passphrase,
+            ),
+        )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -2065,6 +2513,28 @@ def _build_parser() -> argparse.ArgumentParser:
     pmc.add_argument("--allow-prerelease", action="store_true", help="Allow uploading a prerelease version to Maven Central")
     pmc.add_argument("--dry-run", action="store_true")
 
+    pml = sub.add_parser(
+        "publish-maven-local",
+        help="Verify (or download from a GitHub Release), locally GPG-sign, and upload Maven Central bundle",
+    )
+    pml_src = pml.add_mutually_exclusive_group(required=True)
+    pml_src.add_argument("--tag", default="", help="GitHub Release tag to download and publish (e.g. v0.8.1)")
+    pml_src.add_argument("--dist", type=Path, default=None, help="Existing local Maven dist directory")
+    pml.add_argument("--version", default="", help="Project version (with --dist)")
+    pml.add_argument("--repo", default="", help="GitHub repository OWNER/REPO for --tag downloads")
+    pml.add_argument("--settings", type=Path, default=None, help="Maven settings XML path (default: .maven-settings.xml)")
+    pml.add_argument("--server-id", default="central", help="Maven settings <server><id> entry (default: central)")
+    pml.add_argument("--gpg-key", default="", help="Optional GPG key ID or fingerprint for --local-user")
+    pml.add_argument("--upload-url", default=MAVEN_UPLOAD_URL)
+    pml.add_argument("--status-url", default=None)
+    pml.add_argument("--publishing-type", choices=MAVEN_PUBLISHING_TYPES, default="AUTOMATIC")
+    pml.add_argument("--poll-interval", type=float, default=DEFAULT_MAVEN_POLL_INTERVAL)
+    pml.add_argument("--poll-timeout", type=float, default=DEFAULT_MAVEN_POLL_TIMEOUT)
+    pml.add_argument("--max-transient-errors", type=int, default=5)
+    pml.add_argument("--allow-prerelease", action="store_true", help="Allow uploading a prerelease release/version")
+    pml.add_argument("--allow-draft", action="store_true", help="Allow downloading from a draft GitHub release")
+    pml.add_argument("--dry-run", action="store_true")
+
     return parser
 
 
@@ -2150,11 +2620,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Verified {len(assets)} CI release artifacts for {ver}")
         elif args.command == "release-ci":
-            allow_older = args.allow_older or os.environ.get("SYNURANG_ALLOW_OLDER_RELEASE", "").strip().lower() in (
-                "1",
-                "true",
-                "yes",
+            env_allow_older = parse_bool_flag(
+                os.environ.get("SYNURANG_ALLOW_OLDER_RELEASE", ""),
+                name="SYNURANG_ALLOW_OLDER_RELEASE",
             )
+            allow_older = args.allow_older or env_allow_older
             release_ci(
                 channel=args.channel,
                 dist_dir=args.dist,
@@ -2166,7 +2636,7 @@ def main(argv: list[str] | None = None) -> int:
                 root=root,
             )
         elif args.command == "publish-maven-ci":
-            publish_maven_ci(
+            res = publish_maven_ci(
                 dist_dir=args.dist,
                 tag=args.tag,
                 version=args.version,
@@ -2180,6 +2650,38 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 root=root,
             )
+            if not args.dry_run:
+                print(
+                    f"Completed Maven Central deployment for {res['bundle']} "
+                    f"(deploymentId={res['deployment_id']}, state={res['state']})",
+                    flush=True,
+                )
+        elif args.command == "publish-maven-local":
+            res = publish_maven_local(
+                dist_dir=args.dist,
+                tag=args.tag,
+                version=args.version,
+                repo=args.repo,
+                settings_path=args.settings,
+                server_id=args.server_id,
+                gpg_key=args.gpg_key,
+                upload_url=args.upload_url,
+                status_url=args.status_url,
+                publishing_type=args.publishing_type,
+                poll_interval=args.poll_interval,
+                poll_timeout=args.poll_timeout,
+                max_transient_errors=args.max_transient_errors,
+                allow_prerelease=args.allow_prerelease,
+                allow_draft=args.allow_draft,
+                dry_run=args.dry_run,
+                root=root,
+            )
+            if not args.dry_run:
+                print(
+                    f"Completed Maven Central deployment for {res['bundle']} "
+                    f"(deploymentId={res['deployment_id']}, state={res['state']})",
+                    flush=True,
+                )
         return 0
     except (ReleaseError, OSError, ET.ParseError, tarfile.TarError, zipfile.BadZipFile, subprocess.CalledProcessError) as err:
         print(f"Release error: {err}", file=sys.stderr)

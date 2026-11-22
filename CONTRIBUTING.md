@@ -82,17 +82,46 @@ remain `protoc-gen-synurang-ffi` so `protoc --synurang-ffi_out` can discover it.
 
 ### Releases & CI/CD
 
-All build verification and package publishing runs transparently via [`.github/workflows/build.yml`](.github/workflows/build.yml) and [`scripts/release.py`](scripts/release.py):
+All build verification and GitHub Release packaging runs transparently via [`.github/workflows/build.yml`](.github/workflows/build.yml) and [`scripts/release.py`](scripts/release.py):
 
 - **Pushes to `main`**: Update the rolling `nightly` GitHub pre-release with all verified archives and `SHA256SUMS` (no external registry pushes).
-- **Pre-release tags (`vX.Y.Z-rc.N`, `-alpha.N`, `-beta.N`, `-dev.N`)**: Run all verification and artifact builds and publish only to GitHub Releases as a pre-release (Maven Central, PyPI, and pub.dev jobs are skipped).
-- **Stable tags (`vX.Y.Z`)**: Verify version consistency and `CHANGELOG.md`, build and checksum-verify all artifacts (`protoc-gen-synurang-ffi` for Linux musl x64/arm64, Windows x64, macOS arm64/x64; Maven Android AARs & Desktop JARs; Python sdist & wheel; Flutter `pub publish --dry-run`), stage a draft GitHub Release, publish externally in isolated GitHub Environments, and promote the GitHub Release only after all external registries succeed.
-  - `maven-central`: Uses Sonatype Central Portal Publisher API (`POST /api/v1/publisher/upload` as one atomic bundle + `/status` polling). Requires:
-    - `SONATYPE_USERNAME` & `SONATYPE_PASSWORD`: Central Portal User Token credentials (`Authorization: Bearer`).
-    - `MAVEN_GPG_PRIVATE_KEY`: **Raw ASCII-armored PGP private key text** (`-----BEGIN PGP PRIVATE KEY BLOCK-----...`), *not* Base64-wrapped.
-    - `MAVEN_GPG_PASSPHRASE`: GPG key passphrase (leave unset/empty only if the key has no passphrase).
-  - `pypi`: Uses OIDC Trusted Publishing (`id-token: write`).
-  - `pub-dev`: Uses OIDC Automated Publishing (`id-token: write`).
+- **Pre-release tags (`vX.Y.Z-rc.N`, `-alpha.N`, `-beta.N`, `-dev.N`)**: Run all verification and artifact builds and publish only to GitHub Releases as a pre-release (external registry jobs are skipped).
+- **Stable tags (`vX.Y.Z`)**: Verify version consistency and `CHANGELOG.md`, build and checksum-verify all artifacts (`protoc-gen-synurang-ffi` for Linux musl x64/arm64, Windows x64, macOS arm64/x64; Maven Android AARs & Desktop JARs; Python sdist & wheel; Flutter `pub publish --dry-run`), stage and checksum-verify a draft GitHub Release, run any enabled external publish jobs, and promote the GitHub Release to public.
+  - External registry publish jobs are **opt-in** via GitHub Repository Variables (disabled by default so no signing keys or tokens need to live on GitHub when publishing Maven locally):
+    - `SYNURANG_PUBLISH_MAVEN=true` (`maven-central` environment): Uses Sonatype Central Portal Publisher API (`POST /api/v1/publisher/upload` as one atomic bundle + `/status` polling). Requires `SONATYPE_USERNAME`, `SONATYPE_PASSWORD`, `MAVEN_GPG_PRIVATE_KEY` (raw ASCII-armored PGP private key text, *not* Base64-wrapped), and `MAVEN_GPG_PASSPHRASE` (optional only if the key has no passphrase).
+    - `SYNURANG_PUBLISH_PYPI=true` (`pypi` environment): Uses OIDC Trusted Publishing (`id-token: write`).
+    - `SYNURANG_PUBLISH_PUBDEV=true` (`pub-dev` environment): Uses OIDC Automated Publishing (`id-token: write`).
+
+To keep your GPG private key and Sonatype credentials purely local while still letting GitHub Actions cross-compile and verify the Maven AAR/JAR artifacts, push a `vX.Y.Z` tag and then run local verification, GPG signing, and atomic Maven Central upload against the published GitHub Release:
+
+```bash
+# Dry-run download + verification first (no GPG signing or upload):
+make publish_maven_release TAG=vX.Y.Z DRY_RUN=1
+
+# Download Maven artifacts + SHA256SUMS from GitHub Release vX.Y.Z, verify digests & JNI/POMs,
+# sign with your local GPG keyring (gpg-agent caching avoids repeated prompts across 16 signatures),
+# and upload one atomic bundle via .maven-settings.xml (<id>central</id>)
+make publish_maven_release TAG=vX.Y.Z
+
+# Useful Make overrides:
+# - REPO=owner/repo                    select a different GitHub repository when downloading a release
+# - MAVEN_SERVER_ID=sonatype           select a different <server><id> in .maven-settings.xml
+# - MAVEN_GPG_KEY=<key-id>             select a specific local GPG signing key (--local-user)
+# - MAVEN_REPO_URL / MAVEN_STATUS_URL  override Sonatype Central Portal upload/status endpoints
+# - ALLOW_DRAFT=1 / ALLOW_PRERELEASE=1 allow publishing from a draft or prerelease tag (default: disabled)
+
+# Or publish artifacts already built locally into dist/maven:
+make publish_maven
+```
+
+Prefer standard `gpg-agent` caching so pinentry prompts once across all 16 artifact signatures. When using `.maven-settings.xml`, `<password>` must be your plaintext Sonatype Central User Token (Maven-encrypted `{...}` passwords from `mvn --encrypt-password` are not supported). If `gpg-agent` caching is off (or you provide Sonatype credentials via `SONATYPE_USERNAME`/`SONATYPE_PASSWORD` instead of `.maven-settings.xml`), export secrets via environment variables rather than passing them as `make` command-line arguments (which exposes plaintext values in shell history and `ps`):
+
+```bash
+read -rsp "GPG passphrase: " MAVEN_GPG_PASSPHRASE; echo
+export MAVEN_GPG_PASSPHRASE
+make publish_maven_release TAG=vX.Y.Z
+unset MAVEN_GPG_PASSPHRASE
+```
 
 `scripts/release.py set-version` and `check-versions` synchronize all version-locked and published artifacts (`pubspec.yaml`, Python metadata formatted as PEP 440, CocoaPods `.podspec` files, Docker/Makefile build scripts, and `README.md` install snippets). Unpublished workspace Rust crates (`crates/*`, `rust/synurang`, `cmd/protoc-gen-synurang-ffi`), `typescript/` (`"private": true`), and `csharp/Synurang` are intentionally versioned independently.
 

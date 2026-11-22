@@ -48,6 +48,7 @@ DOCKER_GO_BUILD_CACHE_DIR ?= /cache/go-build
 DOCKER_GRADLE_CACHE_DIR ?= /cache/gradle
 MAVEN_SETTINGS ?= $(CURRENT_DIR)/.maven-settings.xml
 MAVEN_REPO_URL ?= https://central.sonatype.com/api/v1/publisher/upload
+MAVEN_STATUS_URL ?=
 
 # Docker Desktop JAR packaging
 DESKTOP_DOCKER_IMAGE ?= synurang-desktop-jar:latest
@@ -64,7 +65,7 @@ CODEGEN_TARGETS ?= x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-p
 CODEGEN_GITHUB_REPO ?= ivere27/synurang
 CODEGEN_DIST_DIR ?= $(CURRENT_DIR)/dist/codegen
 
-.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_python test_python_gen test_python_grpc test_host_python test_codegen test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_ffi_csharp test_ffi_python test_plugin test_plugin_race run ffigen benchmark build_server build_plugin build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen test_typescript_grpc_plugin docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven docker_desktop_jar_image docker_desktop_jar docker_codegen_image docker_codegen publish_github publish_github_codegen check_versions test_release
+.PHONY: all proto shared_linux shared_android shared_plugin clean test test_go test_dart test_cpp test_rust test_csharp test_csharp_gen test_csharp_ffi test_swift test_swift_gen test_python test_python_gen test_python_grpc test_host_python test_codegen test_c_lite_gen test_c_ffi_gen test_c_runtime test_lite_codegen_edges test_ffi_csharp test_ffi_python test_plugin test_plugin_race run ffigen benchmark build_server build_plugin build_plugin_host build_jni build_java build_csharp test_host_java test_host_csharp test_host_swift run_android_java build_process_go_android test_ffi test_ffi_go test_ffi_cpp test_ffi_rust test_ffi_java test_ffi_dart test_bruteforce_go test_bruteforce_process_go test_bruteforce_plugin test_bruteforce_plugin_go test_bruteforce_cpp test_bruteforce_plugin_cpp test_bruteforce_rust test_bruteforce_plugin_rust build_brute_all test_bruteforce_process_cpp test_bruteforce_process_rust test_bruteforce_dart test_bruteforce_hybrid_dart test_bruteforce_java test_bruteforce_hybrid_java test_bruteforce_csharp test_bruteforce_hybrid_csharp test_bruteforce_swift test_bruteforce_hybrid_swift build_host_csharp_brute build_process_tcp_child test_bruteforce download_grpc_jars test_native_wasm_gen test_typescript_gen test_typescript_grpc_plugin docker_android_aar_image docker_android_aar docker_android_aar_debug publish_maven publish_maven_release docker_desktop_jar_image docker_desktop_jar docker_codegen_image docker_codegen publish_github publish_github_codegen check_versions test_release
 
 # =============================================================================
 # Default Target
@@ -273,70 +274,42 @@ docker_android_aar_debug:
 		AAR_ARTIFACT_ID_GRPC="$(AAR_DEBUG_ARTIFACT_ID_GRPC)" \
 		AAR_VERSION="$(AAR_VERSION)"
 
+_MAVEN_BOOL_TRUE := 1 true yes TRUE YES True Yes
+_MAVEN_BOOL_FALSE := 0 false no FALSE NO False No
+_MAVEN_BOOL_FLAG = $(if $(strip $($(1))),$(if $(filter 1,$(words $(strip $($(1))))),$(if $(filter $(_MAVEN_BOOL_TRUE),$(strip $($(1)))),$(2),$(if $(filter $(_MAVEN_BOOL_FALSE),$(strip $($(1)))),,$(error Invalid $(1)='$(strip $($(1)))' (expected 1/true/yes or 0/false/no)))),$(error Invalid $(1)='$(strip $($(1)))' (expected 1/true/yes or 0/false/no))))
+
 publish_maven:
-	@if [ ! -f "$(MAVEN_SETTINGS)" ]; then \
-		echo "Error: Maven settings not found: $(MAVEN_SETTINGS)"; \
-		echo "Create .maven-settings.xml with your Sonatype Central credentials."; \
+	@if [ "$(strip $(AAR_VERSION))" != "$(strip $(DESKTOP_VERSION))" ]; then \
+		echo "Error: AAR_VERSION ($(AAR_VERSION)) != DESKTOP_VERSION ($(DESKTOP_VERSION))"; \
 		exit 1; \
 	fi
-	@MAVEN_USER=$$(sed -n 's|.*<username>\(.*\)</username>.*|\1|p' "$(MAVEN_SETTINGS)" | head -1); \
-	MAVEN_PASS=$$(sed -n 's|.*<password>\(.*\)</password>.*|\1|p' "$(MAVEN_SETTINGS)" | head -1); \
-	DIST="$(CURRENT_DIR)/dist/maven"; \
-	upload_bundle() { \
-		local ARTIFACT="$$1" VERSION="$$2" EXT="$$3" GROUP="$$4"; \
-		local FILE="$$DIST/$$ARTIFACT-$$VERSION.$$EXT"; \
-		local POM="$$DIST/$$ARTIFACT-$$VERSION.pom"; \
-		local GROUP_PATH=$$(echo "$$GROUP" | tr '.' '/'); \
-		local TOP_DIR=$$(echo "$$GROUP" | cut -d. -f1); \
-		if [ ! -f "$$FILE" ] || [ ! -f "$$POM" ]; then \
-			echo "Error: $$ARTIFACT-$$VERSION not found in $$DIST"; \
-			echo "Run 'make docker_android_aar docker_desktop_jar' first."; \
-			exit 1; \
-		fi; \
-		echo "Creating bundle for $$ARTIFACT-$$VERSION..."; \
-		BUNDLE_DIR=$$(mktemp -d); \
-		BUNDLE_ZIP="/tmp/synurang-bundle-$$$$.zip"; \
-		rm -f "$$BUNDLE_ZIP"; \
-		TARGET="$$BUNDLE_DIR/$$GROUP_PATH/$$ARTIFACT/$$VERSION"; \
-		mkdir -p "$$TARGET"; \
-		cp "$$FILE" "$$TARGET/"; \
-		cp "$$POM" "$$TARGET/"; \
-		for CLASSIFIER in sources javadoc; do \
-			CFILE="$$DIST/$$ARTIFACT-$$VERSION-$$CLASSIFIER.jar"; \
-			if [ -f "$$CFILE" ]; then cp "$$CFILE" "$$TARGET/"; fi; \
-		done; \
-		for f in "$$TARGET"/*; do \
-			md5sum "$$f" | cut -d' ' -f1 > "$$f.md5"; \
-			sha1sum "$$f" | cut -d' ' -f1 > "$$f.sha1"; \
-			gpg -ab "$$f"; \
-		done; \
-		cd "$$BUNDLE_DIR" && zip -qr "$$BUNDLE_ZIP" "$$TOP_DIR" || { echo "zip failed"; exit 1; }; \
-		rm -rf "$$BUNDLE_DIR"; \
-		echo "Uploading $$ARTIFACT-$$VERSION to Maven Central..."; \
-		RESPONSE=$$(curl -s -w "\n%{http_code}" \
-			-u "$$MAVEN_USER:$$MAVEN_PASS" \
-			-X POST "$(MAVEN_REPO_URL)" \
-			-F "bundle=@$$BUNDLE_ZIP" \
-			-F "name=$$ARTIFACT-$$VERSION" \
-			-F "publishingType=AUTOMATIC"); \
-		rm -f "$$BUNDLE_ZIP"; \
-		HTTP_CODE=$$(echo "$$RESPONSE" | tail -1); \
-		BODY=$$(echo "$$RESPONSE" | head -n -1); \
-		if [ "$$HTTP_CODE" -ge 200 ] && [ "$$HTTP_CODE" -lt 300 ]; then \
-			echo "Upload successful (HTTP $$HTTP_CODE): $$ARTIFACT-$$VERSION"; \
-			echo "$$BODY"; \
-		else \
-			echo "Upload failed (HTTP $$HTTP_CODE): $$ARTIFACT-$$VERSION"; \
-			echo "$$BODY"; \
-			exit 1; \
-		fi; \
-	}; \
-	for ARTIFACT in $(AAR_ARTIFACT_ID_CORE) $(AAR_ARTIFACT_ID_GRPC); do \
-		upload_bundle "$$ARTIFACT" "$(AAR_VERSION)" "aar" "$(AAR_GROUP_ID)"; \
-	done; \
-	for ARTIFACT in $(DESKTOP_ARTIFACT_ID_CORE) $(DESKTOP_ARTIFACT_ID_GRPC); do \
-		upload_bundle "$$ARTIFACT" "$(DESKTOP_VERSION)" "jar" "$(DESKTOP_GROUP_ID)"; \
-	done
+	python3 scripts/release.py publish-maven-local \
+		--dist "$(CURRENT_DIR)/dist/maven" \
+		--version "$(strip $(AAR_VERSION))" \
+		$(if $(strip $(MAVEN_SETTINGS)),--settings "$(strip $(MAVEN_SETTINGS))") \
+		$(if $(strip $(MAVEN_SERVER_ID)),--server-id "$(strip $(MAVEN_SERVER_ID))") \
+		$(if $(strip $(MAVEN_REPO_URL)),--upload-url "$(strip $(MAVEN_REPO_URL))") \
+		$(if $(strip $(MAVEN_STATUS_URL)),--status-url "$(strip $(MAVEN_STATUS_URL))") \
+		$(if $(strip $(MAVEN_GPG_KEY)),--gpg-key "$(strip $(MAVEN_GPG_KEY))") \
+		$(call _MAVEN_BOOL_FLAG,ALLOW_PRERELEASE,--allow-prerelease) \
+		$(call _MAVEN_BOOL_FLAG,DRY_RUN,--dry-run)
+
+publish_maven_release:
+	@test -n "$(strip $(TAG))" || { \
+		echo "Error: TAG is required (for example: make publish_maven_release TAG=v0.8.1)."; \
+		exit 1; \
+	}
+	python3 scripts/release.py publish-maven-local \
+		--tag "$(strip $(TAG))" \
+		$(if $(strip $(REPO)),--repo "$(strip $(REPO))") \
+		$(if $(strip $(MAVEN_SETTINGS)),--settings "$(strip $(MAVEN_SETTINGS))") \
+		$(if $(strip $(MAVEN_SERVER_ID)),--server-id "$(strip $(MAVEN_SERVER_ID))") \
+		$(if $(strip $(MAVEN_REPO_URL)),--upload-url "$(strip $(MAVEN_REPO_URL))") \
+		$(if $(strip $(MAVEN_STATUS_URL)),--status-url "$(strip $(MAVEN_STATUS_URL))") \
+		$(if $(strip $(MAVEN_GPG_KEY)),--gpg-key "$(strip $(MAVEN_GPG_KEY))") \
+		$(call _MAVEN_BOOL_FLAG,ALLOW_PRERELEASE,--allow-prerelease) \
+		$(call _MAVEN_BOOL_FLAG,ALLOW_DRAFT,--allow-draft) \
+		$(call _MAVEN_BOOL_FLAG,DRY_RUN,--dry-run)
 
 # =============================================================================
 # Desktop JAR (Docker)
@@ -1248,7 +1221,8 @@ help:
 	@echo "  docker_desktop_jar - Build desktop JARs (JNI natives + classes) into dist/maven"
 	@echo "  docker_codegen    - Build Rust generator release archives (requires CODEGEN_VERSION)"
 	@echo "  publish_github_codegen - Build and upload generator archives to a GitHub release"
-	@echo "  publish_maven     - Upload all bundles (AAR + desktop JAR) to Maven Central"
+	@echo "  publish_maven     - Verify, sign locally, and upload dist/maven to Maven Central"
+	@echo "  publish_maven_release - Download verified Maven bundles from GitHub Release TAG and publish locally"
 	@echo ""
 	@echo "Test Targets:"
 	@echo "  test              - Run all tests (Go + Dart + C/C++ + Rust + Python + Native/WASM + C# + Swift + Plugin)"
