@@ -51,6 +51,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      publish_maven: ${{ steps.publish_flags.outputs.publish_maven }}
+      publish_pypi: ${{ steps.publish_flags.outputs.publish_pypi }}
+      publish_pubdev: ${{ steps.publish_flags.outputs.publish_pubdev }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -86,6 +89,39 @@ jobs:
           pre="$(python scripts/release.py print-prerelease)"
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${pre}" >> "$GITHUB_OUTPUT"
+
+      - name: Snapshot publish opt-in flags
+        id: publish_flags
+        env:
+          SYNURANG_PUBLISH_MAVEN: ${{ vars.SYNURANG_PUBLISH_MAVEN }}
+          SYNURANG_PUBLISH_PYPI: ${{ vars.SYNURANG_PUBLISH_PYPI }}
+          SYNURANG_PUBLISH_PUBDEV: ${{ vars.SYNURANG_PUBLISH_PUBDEV }}
+          SYNURANG_ALLOW_OLDER_RELEASE: ${{ vars.SYNURANG_ALLOW_OLDER_RELEASE }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, sys
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path("scripts").resolve()))
+          import release
+
+          try:
+              for env_name, out_name in (
+                  ("SYNURANG_PUBLISH_MAVEN", "publish_maven"),
+                  ("SYNURANG_PUBLISH_PYPI", "publish_pypi"),
+                  ("SYNURANG_PUBLISH_PUBDEV", "publish_pubdev"),
+              ):
+                  enabled = release.parse_bool_flag(os.environ.get(env_name, ""), name=env_name)
+                  print(f"{out_name}={'true' if enabled else 'false'}")
+
+              release.parse_bool_flag(
+                  os.environ.get("SYNURANG_ALLOW_OLDER_RELEASE", ""),
+                  name="SYNURANG_ALLOW_OLDER_RELEASE",
+              )
+          except release.ReleaseError as err:
+              print(f"Release variable error: {err}", file=sys.stderr)
+              sys.exit(1)
+          PY
 
       - name: Run release helper unit tests
         run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
@@ -784,6 +820,7 @@ jobs:
     needs: [preflight, prepare-release]
     if: >-
       !cancelled() &&
+      needs.preflight.outputs.publish_maven == 'true' &&
       needs.preflight.result == 'success' &&
       needs.preflight.outputs.prerelease != 'true' &&
       needs.prepare-release.result == 'success' &&
@@ -819,6 +856,7 @@ jobs:
     needs: [preflight, prepare-release]
     if: >-
       !cancelled() &&
+      needs.preflight.outputs.publish_pypi == 'true' &&
       needs.preflight.result == 'success' &&
       needs.preflight.outputs.prerelease != 'true' &&
       needs.prepare-release.result == 'success' &&
@@ -853,6 +891,7 @@ jobs:
     needs: [preflight, prepare-release]
     if: >-
       !cancelled() &&
+      needs.preflight.outputs.publish_pubdev == 'true' &&
       needs.preflight.result == 'success' &&
       needs.preflight.outputs.prerelease != 'true' &&
       needs.prepare-release.result == 'success' &&
@@ -905,9 +944,12 @@ jobs:
          needs.publish-pypi.result == 'skipped' &&
          needs.publish-pubdev.result == 'skipped') ||
         (needs.preflight.outputs.prerelease != 'true' &&
-         needs.publish-maven.result == 'success' &&
-         needs.publish-pypi.result == 'success' &&
-         needs.publish-pubdev.result == 'success')
+         ((needs.preflight.outputs.publish_maven == 'true' && needs.publish-maven.result == 'success') ||
+          (needs.preflight.outputs.publish_maven != 'true' && needs.publish-maven.result == 'skipped')) &&
+         ((needs.preflight.outputs.publish_pypi == 'true' && needs.publish-pypi.result == 'success') ||
+          (needs.preflight.outputs.publish_pypi != 'true' && needs.publish-pypi.result == 'skipped')) &&
+         ((needs.preflight.outputs.publish_pubdev == 'true' && needs.publish-pubdev.result == 'success') ||
+          (needs.preflight.outputs.publish_pubdev != 'true' && needs.publish-pubdev.result == 'skipped')))
       )
     runs-on: ubuntu-24.04
     timeout-minutes: 10
