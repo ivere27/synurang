@@ -440,7 +440,7 @@ macOS Intel (x86-64).
 
 ```bash
 # Linux x86-64 example
-VERSION=0.8.0
+VERSION=0.8.1
 TARGET=x86_64-unknown-linux-musl
 ASSET="protoc-gen-synurang-ffi-${VERSION}-${TARGET}.tar.gz"
 BASE="https://github.com/ivere27/synurang/releases/download/v${VERSION}"
@@ -847,13 +847,13 @@ The desktop JAR auto-extracts the native library at runtime — no `-Djava.libra
 
 ```groovy
 // Android (build.gradle)
-implementation 'io.github.ivere27:synurang-android:0.8.0'
-implementation 'io.github.ivere27:synurang-android-grpc:0.8.0'  // optional, for gRPC channel
+implementation 'io.github.ivere27:synurang-android:0.8.1'
+implementation 'io.github.ivere27:synurang-android-grpc:0.8.1'  // optional, for gRPC channel
 implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
 
 // Desktop (build.gradle)
-implementation 'io.github.ivere27:synurang-desktop:0.8.0'
-implementation 'io.github.ivere27:synurang-desktop-grpc:0.8.0'  // optional, for gRPC channel
+implementation 'io.github.ivere27:synurang-desktop:0.8.1'
+implementation 'io.github.ivere27:synurang-desktop-grpc:0.8.1'  // optional, for gRPC channel
 implementation 'io.grpc:grpc-api:1.60.0'                        // required if using -grpc
 ```
 

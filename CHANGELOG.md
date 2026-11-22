@@ -1,3 +1,10 @@
+## 0.8.1
+
+*   **Automated CI/CD & release verification**: Added GitHub Actions workflows (`.github/workflows/build.yml`) and release tooling (`scripts/release.py`) covering cross-platform `protoc-gen-synurang-ffi` binaries, multi-language test matrices, Android AAR / Desktop JAR and Python sdist/wheel verification, `SHA256SUMS` manifests, rolling `nightly` pre-releases, and draft/stable GitHub Release staging with opt-in Maven Central, PyPI (OIDC), and pub.dev (OIDC) publishing.
+*   **Local Maven Central publishing**: Added `make publish_maven` and `make publish_maven_release` (`scripts/release.py publish-maven-local`) to download and checksum-verify GitHub Release Maven artifacts (or verify local `dist/maven`), GPG-sign locally, and upload one atomic bundle via the Sonatype Central Portal API, including `--dry-run` support.
+*   **Desktop JAR macOS JNI cross-build fix**: Updated `docker/build_desktop_jar.sh` to compile `module_host.c` and `synurang_module_jni.c` with `-O2 -pthread` for macOS targets and enforce all 8 platform JNI libraries when `REQUIRE_ALL_TARGETS=1`.
+*   **TypeScript gRPC parity test fix**: Updated `test/typescript/grpc_parity.ts` to read Node stream events explicitly instead of `Symbol.asyncIterator` so Node 22 does not close Duplex streams prematurely on readable EOF.
+
 ## 0.8.0
 
 *   **Native and WebAssembly call modules**: Added `mode=module` providers for C/C++, Rust and Go with a shared asynchronous `Synurang_GetApi` call ABI. All four RPC forms support bounded queues, backpressure, cancellation, deadlines and coordinated shutdown, with each provider using its own runtime.
